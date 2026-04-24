@@ -1,0 +1,51 @@
+# Models (multi-GB safetensors + GGUF)
+models/
+models_gguf/
+*.safetensors
+*.gguf
+*.bin
+
+# Results (generated output)
+results/
+
+# Caches
+.cache/
+*.pyc
+__pycache__/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Environment
+.env
+.env.*
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+.opencode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker logs
+docker/*.log
+
+# Test / coverage
+.coverage
+coverage.xml
+htmlcov/
+
+# GGUF conversion output
+gguf-output/
+
+# Workspace-specific scripts (not part of the publishable project)
+run_gsm8k_overnight.sh
+gsm8k_overnight.log
+
+markdown/

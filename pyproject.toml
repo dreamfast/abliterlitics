@@ -1,0 +1,98 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "abliterlitics"
+version = "1.0.0"
+description = "Comparative forensic analysis of LLM abliteration techniques"
+requires-python = ">=3.10"
+dependencies = [
+    "tqdm>=4.65.0",
+    "safetensors>=0.4.0",
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+    "matplotlib-venn>=1.1.0",
+    "transformers>=4.45.0",
+    "accelerate>=0.26.0",
+    "datasets>=2.18.0",
+    "bitsandbytes>=0.43.0",
+    "jsonschema>=4.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+
+# Math/linear-algebra conventions: U, S, Vh are standard SVD variable names.
+# Report generation: long f-strings in provenance reports are acceptable.
+# E741: single-letter loop variables (l) are acceptable in matplotlib contexts.
+# E501: long lines in docstrings/comments in benchmark scripts accepted.
+[tool.ruff.lint.per-file-ignores]
+"src/weight/svd_analysis.py" = ["N806", "E501"]           # U, S, Vh from SVD
+"src/weight/lowrank_reconstruction.py" = ["N806", "E501"]  # U, S, V, Vh from SVD
+"src/weight/subspace_alignment.py" = ["N806"]              # A, B, Q_a, Q_b, M from linear algebra
+"src/weight/stacking_analysis.py" = ["N806"]                # D_a, D_b, D_r, D_e are edit vectors
+"src/report/generate_graphs.py" = ["E741", "E501"]         # l in matplotlib labels, long format strings
+"src/report/provenance_report.py" = ["E501", "N802"]       # Long f-strings in reports, L() helper
+"src/kl/kl_divergence.py" = ["N812", "E501"]               # torch.nn.functional as F is standard, long log messages
+"src/benchmark/benchmark_eval.py" = ["N806", "E501", "B905"]  # BitsAndBytesConfig, docstring lines, zip
+"src/benchmark/harmbench_classify.py" = ["E501"]            # Long docstring and regex patterns
+"src/benchmark/harmbench_generate.py" = ["E501", "SIM113"]  # Long comprehension, done_count pattern
+"src/benchmark/harmbench_review.py" = ["E501"]              # Long regex and format strings
+"src/weight/cross_arch_comparison.py" = ["E741", "B007", "B905"]  # l in labels, unused loop vars
+"src/weight/technique_correlation.py" = ["E741"]            # l in label iteration
+"src/weight/technique_fingerprint.py" = ["E501"]            # Long dict comprehensions
+"src/weight/expert_analysis.py" = ["E501"]                  # Long filter expressions
+"src/weight/layer_analysis.py" = ["E501"]                   # Long lambda expressions
+"src/weight/edit_vector_analysis.py" = ["E501"]             # Long help text
+"src/model_config.py" = ["SIM118"]                           # safe_open objects are not iterable, must use .keys()
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
+
+# Weight analysis: processes heterogeneous JSON structures with dynamic keys.
+# Bare dict/list types are intentional — each script has different result shapes.
+# TODO: Narrow overrides as scripts mature — these are transitional package-scoped debt controls.
+[[tool.mypy.overrides]]
+module = ["src.weight.*"]
+disable_error_code = ["type-arg", "no-any-return", "union-attr", "attr-defined", "arg-type", "assignment", "index"]
+
+# Benchmark scripts: complex third-party (vLLM, transformers) interactions.
+# Dynamic JSON I/O and subprocess management make full typing impractical.
+# TODO: Add type annotations incrementally as interfaces stabilize.
+[[tool.mypy.overrides]]
+module = ["src.benchmark.*"]
+disable_error_code = ["type-arg", "no-untyped-def", "no-untyped-call", "no-any-return", "union-attr", "misc", "operator", "index", "arg-type", "assignment", "call-overload", "attr-defined"]
+
+# FROZEN: KL divergence computation must remain byte-identical to original.
+# Only CLI/logging/metadata changes are allowed — no type annotation changes in compute.
+[[tool.mypy.overrides]]
+module = ["src.kl.kl_divergence"]
+disable_error_code = ["type-arg", "no-untyped-def", "no-untyped-call", "no-any-return", "union-attr", "misc", "operator", "index", "arg-type", "assignment"]
+
+# Report scripts: heavy string templating (L() builder pattern) and JSON loading.
+# Internal helper functions are not part of any public API.
+[[tool.mypy.overrides]]
+module = ["src.report.*"]
+disable_error_code = ["type-arg", "no-untyped-def", "no-untyped-call", "assignment", "arg-type", "attr-defined"]
+
+# Third-party untyped libs we can't fix
+[[tool.mypy.overrides]]
+module = ["safetensors.*", "jsonschema.*", "seaborn.*", "matplotlib.*", "matplotlib_venn.*", "tqdm.*", "datasets.*", "requests.*", "flask.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

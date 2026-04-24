@@ -1,0 +1,13 @@
+# Abliterlitics Inference — llama.cpp (official) + GGUF conversion
+# Uses the public GGML Docker image (pinned tag)
+FROM ghcr.io/ggml-org/llama.cpp:server-cuda
+
+# Install build deps + Python + latest gguf from llama.cpp source
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends git python3 python3-pip && \
+    rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp /opt/llama.cpp && \
+    pip3 install --no-cache-dir --break-system-packages /opt/llama.cpp/gguf-py sentencepiece
+
+# Server on port 8080
+EXPOSE 8080

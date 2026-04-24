@@ -1,0 +1,6 @@
+# Exclude everything not needed for Docker builds
+*
+!requirements.txt
+!src/
+!comparison.schema.json
+!docker/Dockerfile.*

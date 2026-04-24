@@ -1,0 +1,32 @@
+# Abliterlitics LM-Eval — lm-evaluation-harness via vLLM
+# Based on public vLLM image (pinned version)
+FROM vllm/vllm-openai:v0.19.0
+
+USER root
+
+# Fix: vllm-openai image has distutils blinker 1.4 which blocks flask upgrade
+RUN pip install --no-cache-dir --ignore-installed blinker>=1.9.0
+
+# Install lm-eval + dependencies + bitsandbytes for large model quantization
+RUN pip install --no-cache-dir \
+    "lm-eval[vllm,api]>=0.4.0,<1.0.0" \
+    ray \
+    flask \
+    bitsandbytes
+
+# Upgrade transformers to support glm4_moe_lite (GLM-4.7-Flash)
+# vLLM 0.19.0 ships transformers 4.57.x which doesn't recognize it
+RUN pip install --no-cache-dir --upgrade "transformers>=5.5.0"
+
+# Install SGLang — alternative backend for lm-eval that handles
+# MLA + BNB4 without the dtype mismatch bug (vllm-project/vllm#37934)
+# Used for generate_until tasks (GSM8K) where vLLM crashes.
+RUN pip install --no-cache-dir "sglang[all]"
+
+# Override vLLM serve entrypoint — we use lm_eval directly
+ENTRYPOINT []
+
+# NOTE: If vLLM 0.19.0 still needs CPU offload patch for specific models,
+# add the patch here. Test with GLM-4.7 first.
+
+WORKDIR /root

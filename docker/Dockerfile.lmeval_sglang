@@ -1,0 +1,22 @@
+# Abliterlitics LM-Eval — SGLang backend
+# Based on official SGLang image (fixes MLA+BNB4 dtype bug in vLLm#37934)
+FROM lmsysorg/sglang:latest
+
+USER root
+
+# Fix: SGLang image has debian Python packages without RECORD files
+RUN pip install --no-cache-dir --ignore-installed --force-reinstall \
+    PyJWT blinker
+
+# Install lm-evaluation-harness WITHOUT vllm extra (we use SGLang backend).
+# The vllm extra would pull in vLLM which upgrades torch and breaks SGLang kernels.
+# Also install bitsandbytes for 4-bit quantization support.
+RUN pip install --no-cache-dir \
+    "lm-eval[api,sglang]>=0.4.0,<1.0.0" \
+    bitsandbytes \
+    ray \
+    flask
+
+# Clear entrypoint for direct command use
+ENTRYPOINT []
+WORKDIR /root

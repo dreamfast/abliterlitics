@@ -1,0 +1,26 @@
+{
+  "name": "glm47-flash",
+  "base": "models/GLM-4.7-Flash",
+  "variants": {
+    "heretic": {
+      "path": "models/GLM-4.7-Flash-heretic",
+      "display_name": "Heretic"
+    },
+    "hauhau": {
+      "path": "models/GLM-4.7-Flash-Uncensored-HauhauCS-safetensor",
+      "display_name": "HauhauCS"
+    },
+    "huihui": {
+      "path": "models/Huihui-GLM-4.7-Flash-abliterated",
+      "display_name": "Huihui"
+    },
+    "abliterix": {
+      "path": "models/GLM-4.7-Flash-abliterated-abliterix",
+      "display_name": "Abliterix"
+    }
+  },
+  "settings": {
+    "inference_backend": "vllm",
+    "lm_eval_max_model_len": 4096
+  }
+}

@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GLM-4.7-Flash Abliteration Forensics — Weight Analysis</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #c9d1d9; --text-dim: #8b949e; --accent: #58a6ff;
+    --heretic: #e74c3c; --hauhau: #3498db; --huihui: #2ecc71; --abliterix: #f39c12;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; line-height: 1.6; padding: 2rem; }
+  h1 { font-size: 1.8rem; margin-bottom: 0.25rem; color: #fff; }
+  h2 { font-size: 1.1rem; color: var(--accent); margin-bottom: 1.5rem; font-weight: 400; }
+  .meta { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.5rem; margin-bottom: 2rem; display: flex; gap: 2rem; flex-wrap: wrap; font-size: 0.9rem; }
+  .meta dt { color: var(--text-dim); }
+  .meta dd { font-weight: 600; margin-left: 0.5rem; }
+  .legend { display: flex; gap: 1.5rem; flex-wrap: wrap; margin-bottom: 2rem; }
+  .legend span { display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; }
+  .legend .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  .grid { display: grid; grid-template-columns: 1fr; gap: 2rem; max-width: 1200px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .card-header { padding: 1rem 1.5rem 0.5rem; }
+  .card-header h3 { font-size: 1.05rem; color: #fff; margin-bottom: 0.25rem; }
+  .card-header p { font-size: 0.85rem; color: var(--text-dim); }
+  .card img { width: 100%; display: block; }
+  .card-footer { padding: 0.5rem 1.5rem 1rem; font-size: 0.78rem; color: var(--text-dim); }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; }
+  @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+  .tag { display: inline-block; font-size: 0.7rem; padding: 0.15rem 0.5rem; border-radius: 4px; margin-right: 0.3rem; font-weight: 600; text-transform: uppercase; }
+  .tag-legacy { background: #1f6feb33; color: #58a6ff; }
+  .tag-new { background: #f0883e33; color: #f0883e; }
+  .tag-moe { background: #a371f733; color: #a371f7; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+</style>
+</head>
+<body>
+
+<h1>GLM-4.7-Flash Abliteration Forensics</h1>
+<h2>Weight Analysis Visualizations — 4 techniques vs base model</h2>
+
+<div class="meta">
+  <dl>
+    <dt>Model</dt><dd>GLM-4.7-Flash (MoE, 64 routed + shared experts, 47 layers, ~59GB)</dd>
+  </dl>
+  <dl>
+    <dt>Variants</dt><dd>Heretic · HauhauCS · Huihui · Abliterix</dd>
+  </dl>
+  <dl>
+    <dt>Total tensors</dt><dd>9,491</dd>
+  </dl>
+  <dl>
+    <dt>Generated</dt><dd id="date"></dd>
+  </dl>
+</div>
+
+<div class="legend">
+  <span><span class="dot" style="background:var(--heretic)"></span> Heretic (1,826 tensors, 19.2%)</span>
+  <span><span class="dot" style="background:var(--hauhau)"></span> HauhauCS (9,210 tensors, 97.0%)</span>
+  <span><span class="dot" style="background:var(--huihui)"></span> Huihui (3,084 tensors, 32.5%)</span>
+  <span><span class="dot" style="background:var(--abliterix)"></span> Abliterix (1,088 tensors, 11.5%)</span>
+</div>
+
+<div class="grid">
+
+<!-- ──── SECTION: Overview ──── -->
+
+<div class="card">
+  <div class="card-header">
+    <h3>1. Abliteration Aggressiveness <span class="tag tag-legacy">Legacy</span></h3>
+    <p>How many weight tensors each technique modifies. HauhauCS touches nearly every tensor (97%); Abliterix is the most surgical (11.5%). The right panel shows the same as a percentage of all 9,491 tensors.</p>
+  </div>
+  <img src="https://asciibird.birdnest.live/glm/weight_aggressiveness.svg">
+  <div class="card-footer">Source: fingerprint_*.json → scope.changed_tensors</div>
+</div>
+
+<div class="two-col">
+  <div class="card">
+    <div class="card-header">
+      <h3>2. Modification Scope <span class="tag tag-legacy">Legacy</span></h3>
+      <p>Donut charts showing the proportion of modified vs unmodified tensors for each technique. Clearly shows HauhauCS's blanket approach vs Abliterix's precision targeting.</p>
+    </div>
+    <img src="https://asciibird.birdnest.live/glm/weight_scope.svg">
+    <div class="card-footer">Source: fingerprint_*.json → scope.changed_pct</div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <h3>3. Technique Edit Overlap <span class="tag tag-legacy">Legacy</span></h3>
+      <p>Venn diagram of which tensors are modified by each technique. Since Heretic is a strict subset of HauhauCS (all 1,826 Heretic tensors are also touched by HauhauCS), the Heretic circle is entirely within the HauhauCS circle.</p>
+    </div>
+    <img src="https://asciibird.birdnest.live/glm/weight_venn.svg">
+    <div class="card-footer">Source: panel_comparison.json/multi_model_panel.json</div>
+  </div>
+</div>
+
+<hr>
+
+<!-- ──── SECTION: Magnitude ──── -->
+
+<div class="card">
+  <div class="card-header">
+    <h3>4. Edit Magnitude Distribution <span class="tag tag-legacy">Legacy</span></h3>
+    <p>Left: violin plot of absolute edit norms (L2 distance from base). Right: box plot of relative edits (as fraction of the original weight norm). Abliterix has a dramatically different distribution — lower absolute edits but wider relative spread, reflecting its shared-expert and router targeting strategy.</p>
+  </div>
+  <img src="https://asciibird.birdnest.live/glm/weight_magnitude.svg">
+  <div class="card-footer">Source: fingerprint_*.json → per_key[edit_norm, rel_norm]</div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h3>5. Pairwise Cosine Similarity <span class="tag tag-legacy">Legacy</span> <span class="tag tag-new">+ Abliterix</span></h3>
+    <p>Measures whether different techniques push weights in the same direction. All values are well below 0.5 — there is no universal "abliteration subspace." Heretic↔Abliterix is the highest pair (~0.35), consistent with Abliterix being based on Heretic's methodology.</p>
+  </div>
+  <img src="https://asciibird.birdnest.live/glm/weight_pairwise_cosine.svg">
+  <div class="card-footer">Source: technique_correlation.json + correlation_*_vs_abliterix.json</div>
+</div>
+
+<hr>
+
+<!-- ──── SECTION: Layer-wise ──── -->
+
+<div class="card">
+  <div class="card-header">
+    <h3>6. Layer-wise Edit Profile <span class="tag tag-legacy">Legacy</span></h3>
+    <p>Per-variant breakdown of edit norm (bars) and relative edit percentage (line) across all 47 layers. Heretic starts at layer 19, HauhauCS edits all layers uniformly, Huihui starts at layer 10, and Abliterix has a distinctive pattern targeting specific layer ranges.</p>
+  </div>
+  <img src="https://asciibird.birdnest.live/glm/weight_layer_profile.svg">
+  <div class="card-footer">Source: layer_*.json → layer_progression</div>
+</div>
+
+<div class="two-col">
+  <div class="card">
+    <div class="card-header">
+      <h3>7. Edit Density by Layer <span class="tag tag-legacy">Legacy</span></h3>
+      <p>All four techniques overlaid — percentage of tensors modified in each layer. Heretic and Huihui have sharp onsets (layer 19 and 10 respectively); HauhauCS is flat at ~100% across all layers.</p>
+    </div>
+    <img src="https://asciibird.birdnest.live/glm/weight_layer_edit_density.svg">
+    <div class="card-footer">Source: layer_*.json → layer_progression.edit_density</div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <h3>8. Mean Norm Shift by Layer <span class="tag tag-legacy">Legacy</span></h3>
+      <p>Whether edits cause weights to grow (positive) or shrink (negative). Near-zero values across all techniques suggest abliteration primarily redirects weights rather than scaling them up or down.</p>
+    </div>
+    <img src="https://asciibird.birdnest.live/glm/weight_layer_norm_shift.svg">
+    <div class="card-footer">Source: layer_*.json → layer_progression.mean_norm_shift</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h3>9. Tensor Types Modified <span class="tag tag-legacy">Legacy</span></h3>
+    <p>Breakdown by tensor category — which weight matrices each technique targets. Expert down_proj weights dominate across all three original techniques; Heretic exclusively targets these while HauhauCS touches all types.</p>
+  </div>
+  <img src="https://asciibird.birdnest.live/glm/weight_tensor_types.svg">
+  <div class="card-footer">Source: technique_correlation.json → per_key_details</div>
+</div>
+
+<hr>
+
+<!-- ──── SECTION: Expert Analysis (MoE-specific) ──── -->
+
+<div class="card">
+  <div class="card-header">
+    <h3>10. Expert Heatmap — Heretic <span class="tag tag-moe">MoE</span> <span class="tag tag-legacy">Legacy</span></h3>
+    <p>Edit magnitude across all 64 routed experts × 28 active layers (L19–L46). Heretic modifies only expert down_proj weights with a uniform magnitude (~1.0) — no expert specialization, consistent with a blanket refusal-direction ablation.</p>
+  </div>
+  <img src="https://asciibird.birdnest.live/glm/weight_expert_heatmap_heretic.svg">
+  <div class="card-footer">Source: expert_analysis.json → per_expert_details[heretic]</div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h3>11. Expert Heatmap — HauhauCS <span class="tag tag-moe">MoE</span> <span class="tag tag-legacy">Legacy</span></h3>
+    <p>HauhauCS edits every expert in every layer — all 64×46 = 2,944 expert-layer pairs. The magnitudes are tiny (order 10⁻⁶) but systematic, suggesting a fine-grained distributed intervention rather than a targeted one.</p>
+  </div>
+  <img src="https://asciibird.birdnest.live/glm/weight_expert_heatmap_hauhau.svg">
+  <div class="card-footer">Source: expert_analysis.json → per_expert_details[hauhau]</div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h3>12. Expert Heatmap — Huihui <span class="tag tag-moe">MoE</span> <span class="tag tag-legacy">Legacy</span></h3>
+    <p>Huihui starts at layer 10 and targets expert down_proj weights with magnitudes comparable to Heretic (~0.9–1.0). Covers 46 layers, giving it broader layer coverage than Heretic but similar per-expert edit strength.</p>
+  </div>
+  <img src="https://asciibird.birdnest.live/glm/weight_expert_heatmap_huihui.svg">
+  <div class="card-footer">Source: expert_analysis.json → per_expert_details[huihui]</div>
+</div>
+
+<div class="two-col">
+  <div class="card">
+    <div class="card-header">
+      <h3>13. Router (Gate) Weight Edits <span class="tag tag-moe">MoE</span> <span class="tag tag-new">New</span></h3>
+      <p>MoE router/gate weights determine which experts are activated. Only Huihui modifies router weights — a unique aspect of its approach that may influence expert selection behavior during inference.</p>
+    </div>
+    <img src="https://asciibird.birdnest.live/glm/weight_router_edits.svg">
+    <div class="card-footer">Source: expert_analysis.json → router_edits</div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <h3>14. Shared Expert Weight Edits <span class="tag tag-moe">MoE</span> <span class="tag tag-new">New</span></h3>
+      <p>GLM-4.7 has shared experts that always activate (unlike routed experts). Only HauhauCS touches these — with extremely small magnitudes (10⁻⁸ relative). Neither Heretic nor Huihui modify shared expert weights.</p>
+    </div>
+    <img src="https://asciibird.birdnest.live/glm/weight_shared_expert_edits.svg">
+    <div class="card-footer">Source: expert_analysis.json → shared_expert_edits</div>
+  </div>
+</div>
+
+<hr>
+
+<!-- ──── SECTION: Structural Analysis ──── -->
+
+<div class="card">
+  <div class="card-header">
+    <h3>15. SVD Analysis <span class="tag tag-legacy">Legacy</span></h3>
+    <p>Singular Value Decomposition of the edit matrices. Top: effective rank (number of singular values needed to capture 90% of edit energy). Bottom: energy in the top-1 singular value. Higher rank = more complex edit structure; higher top-1 energy = edits are more "rank-1" (simpler direction).</p>
+  </div>
+  <img src="https://asciibird.birdnest.live/glm/weight_svd.svg">
+  <div class="card-footer">Source: svd_heretic.json → tensor_results</div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h3>16. Subspace Alignment <span class="tag tag-new">New</span></h3>
+    <p>Principal angles between the edit subspaces of each technique pair. Cosine of principal angles close to 1.0 would indicate aligned subspaces. The low values (mean ~0.22) confirm that different techniques operate in largely orthogonal subspaces — they're not just variants of the same intervention.</p>
+  </div>
+  <img src="https://asciibird.birdnest.live/glm/weight_subspace.svg">
+  <div class="card-footer">Source: subspace_alignment.json → all_principal_angles_*, principal_angles_*</div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h3>17. Stacking Analysis <span class="tag tag-new">New</span></h3>
+    <p>Can one technique's edits be reconstructed from another's? Left: scatter plot of Heretic vs HauhauCS edit norms on overlapping tensors. Right: distribution of reconstruction ratios. The low R² (0.04) and mean cosine (0.20) confirm the techniques make fundamentally different edits even on shared tensors.</p>
+  </div>
+  <img src="https://asciibird.birdnest.live/glm/weight_stacking.svg">
+  <div class="card-footer">Source: stacking_analysis.json → per_tensor, stacking_metrics</div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h3>18. Low-Rank Reconstruction <span class="tag tag-new">New</span></h3>
+    <p>How well can edit matrices be approximated by low-rank decompositions? Lower curves = more compressible edits. Steep drops would indicate edits are low-rank (simple); flat curves = high-rank (complex, distributed changes). Includes cross-technique reconstruction against Abliterix.</p>
+  </div>
+  <img src="https://asciibird.birdnest.live/glm/weight_lowrank.svg">
+  <div class="card-footer">Source: lowrank_reconstruction.json + lowrank_*_vs_abliterix.json</div>
+</div>
+
+</div>
+
+<hr>
+<p style="text-align:center; color:var(--text-dim); font-size:0.8rem; padding:1rem 0;">
+  Generated by <code>make_https://asciibird.birdnest.live/glm/weight_graphs.py</code> · Abliteration Forensics Suite · GLM-4.7-Flash
+</p>
+
+<script>document.getElementById('date').textContent = new Date().toLocaleDateString('en-AU', {year:'numeric',month:'long',day:'numeric',hour:'2-digit',minute:'2-digit'});</script>
+
+</body>
+</html>

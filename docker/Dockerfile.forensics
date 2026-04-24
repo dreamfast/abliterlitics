@@ -1,0 +1,18 @@
+# Abliterlitics Forensics — Weight analysis + KL divergence
+# Based on NVIDIA NGC PyTorch (pinned tag)
+FROM nvcr.io/nvidia/pytorch:26.02-py3
+
+WORKDIR /app
+
+ENV PIP_CACHE_DIR=/root/.cache/pip
+
+COPY requirements.txt .
+RUN --mount=type=cache,target=/root/.cache/pip pip3 install --no-cache-dir -r requirements.txt
+
+COPY src/ ./src/
+COPY comparison.schema.json ./
+
+ENV PYTHONPATH=/app
+
+# Default: run Python scripts
+ENTRYPOINT ["python3"]

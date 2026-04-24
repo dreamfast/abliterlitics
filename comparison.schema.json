@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Abliterlitics Comparison Configuration",
+  "type": "object",
+  "required": ["name", "base", "variants"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "description": "Slug-safe comparison name. Used for result directory naming."
+    },
+    "base": {
+      "type": "string",
+      "description": "Directory name of the base model, relative to comparison.json location."
+    },
+    "variants": {
+      "type": "object",
+      "minProperties": 1,
+      "patternProperties": {
+        "^[a-z0-9][a-z0-9_-]*$": {
+          "type": "object",
+          "required": ["path"],
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Directory name of the variant model."
+            },
+            "display_name": {
+              "type": "string",
+              "description": "Human-readable name for reports. Defaults to variant key."
+            },
+            "skip_kl": {
+              "type": "boolean",
+              "default": false
+            },
+            "skip_lm_eval": {
+              "type": "boolean",
+              "default": false
+            },
+            "skip_harmbench": {
+              "type": "boolean",
+              "default": false
+            },
+            "skip_weight": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gguf_dir": {
+          "type": ["string", "null"],
+          "description": "Directory for GGUF files. null = auto-convert when needed."
+        },
+        "tokenizer_dir": {
+          "type": ["string", "null"],
+          "description": "Tokenizer directory for lm-eval. null = use base model."
+        },
+        "inference_backend": {
+          "type": "string",
+          "enum": ["vllm", "llamacpp", "ik_llamacpp", "auto"],
+          "default": "auto",
+          "description": "Inference backend for benchmarks. 'auto' selects based on model size and GPU VRAM."
+        },
+        "lm_eval_tasks": {
+          "type": "string",
+          "default": "mmlu,gsm8k,hellaswag,arc_challenge,winogrande,truthfulqa,piqa,lambada_openai"
+        },
+        "lm_eval_max_gen_toks": {
+          "type": "integer",
+          "default": 2048,
+          "description": "Maximum generation tokens for generate_until tasks (GSM8K, TruthfulQA)."
+        },
+        "lm_eval_max_model_len": {
+          "type": "integer",
+          "default": 4096,
+          "description": "Maximum model context length for vLLM."
+        },
+        "harmbench_max_tokens": {
+          "type": "integer",
+          "default": 2048
+        },
+        "kl_num_prompts": {
+          "type": "integer",
+          "default": 100
+        },
+        "kl_dataset": {
+          "type": "string",
+          "default": "mlabonne/harmless_alpaca"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,47 @@
+# Abliterlitics Inference — ik_llama.cpp (performance fork of llama.cpp)
+# Builds from source using the same approach as official llama.cpp CI
+# CUDA 12.8+ required for Blackwell (sm_120 / RTX 5090)
+FROM nvidia/cuda:12.8.0-devel-ubuntu24.04 AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git cmake build-essential ninja-build libgomp1 libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+ARG IK_LLAMA_CPP_COMMIT=main
+
+RUN git clone https://github.com/ikawrakow/ik_llama.cpp /build && \
+    cd /build && \
+    git checkout ${IK_LLAMA_CPP_COMMIT}
+
+RUN cd /build && \
+    cmake -S . -B build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CUDA_ARCHITECTURES="89;120" \
+        -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined \
+        -DGGML_CUDA=ON && \
+    cmake --build build
+
+# Collect build outputs
+RUN mkdir -p /dist && \
+    cp /build/build/bin/llama-server /dist/ && \
+    find /build/build -name "*.so" -exec cp {} /dist/ \;
+
+# Runtime image
+FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 curl python3 python3-pip && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /dist/llama-server /app/llama-server
+COPY --from=builder /dist/*.so /app/
+COPY --from=builder /build/convert_hf_to_gguf.py /opt/llama.cpp/convert_hf_to_gguf.py
+
+RUN pip3 install --no-cache-dir --break-system-packages gguf sentencepiece
+
+ENV LD_LIBRARY_PATH=/app
+ENV LLAMA_ARG_HOST=0.0.0.0
+WORKDIR /app
+
+EXPOSE 8080
+ENTRYPOINT ["/app/llama-server"]
