@@ -41,7 +41,8 @@ def main() -> None:
             print(f'error "Invalid variant key: {k}"')
             sys.exit(1)
         names.append(k)
-        print(f"VARIANT_PATH_{k}={shlex.quote(comp_dir + '/' + v['path'])}")
+        var_name = k.replace("-", "_")
+        print(f"VARIANT_PATH_{var_name}={shlex.quote(comp_dir + '/' + v['path'])}")
 
     print(f"VARIANT_NAMES={shlex.quote(' '.join(names))}")
 

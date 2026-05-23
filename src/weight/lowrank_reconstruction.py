@@ -67,6 +67,8 @@ def run_analysis(
     all_keys = sorted(set(base_map) & set(mapa) & set(mapb))
     log.info("  Common keys: %d", len(all_keys))
 
+    MAX_GPU_ELEMENT_BYTES = 2 * 1024**3
+
     per_tensor: list[dict] = []
     total_orig_energy_a = 0.0
     total_orig_energy_b = 0.0
@@ -77,25 +79,30 @@ def run_analysis(
         t_b = load_tensor(mapb, ck)
         if t_base is None or t_a is None or t_b is None:
             continue
-        t_base = t_base.float().to(device)
-        t_a = t_a.float().to(device)
-        t_b = t_b.float().to(device)
 
-        delta_a = t_a - t_base
-        delta_b = t_b - t_base
+        numel = t_base.numel()
+        elem_bytes = numel * 4
+        use_dev = device if elem_bytes <= MAX_GPU_ELEMENT_BYTES else torch.device("cpu")
+        if use_dev.type == "cpu" and device.type == "cuda":
+            log.info("  %s: CPU fallback (%d elements)", ck, numel)
+
+        t_base_f = t_base.float()
+        delta_a = (t_a.float() - t_base_f).to(use_dev)
+        delta_b = (t_b.float() - t_base_f).to(use_dev)
+        del t_base, t_a, t_b, t_base_f
 
         norm_a = delta_a.norm().item()
         norm_b = delta_b.norm().item()
 
         if norm_a < THRESHOLD and norm_b < THRESHOLD:
-            del t_base, t_a, t_b, delta_a, delta_b
+            del delta_a, delta_b
             continue
 
         entry: dict = {
             "key": ck,
             "type": cfg.get_tensor_type(ck),
             "layer": cfg.get_layer_index(ck),
-            "numel": t_base.numel(),
+            "numel": numel,
             "edit_norm_a": norm_a,
             "edit_norm_b": norm_b,
         }
@@ -150,10 +157,10 @@ def run_analysis(
                 log.warning("Cross-reconstruction SVD failed for %s: %s", ck, exc)
 
         per_tensor.append(entry)
-        del t_base, t_a, t_b, delta_a, delta_b
+        del delta_a, delta_b
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
         if (i + 1) % 200 == 0:
-            if device.type == "cuda":
-                torch.cuda.empty_cache()
             gc.collect()
             log.info("  processed %d/%d", i + 1, len(all_keys))
 

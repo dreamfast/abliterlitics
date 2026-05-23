@@ -1,3 +1,6 @@
+# Binary tensors (cached logits, not needed in git - upload to HF separately)
+*.pt
+
 # Models (multi-GB safetensors + GGUF)
 models/
 models_gguf/
@@ -5,8 +8,8 @@ models_gguf/
 *.gguf
 *.bin
 
-# Results (generated output)
-results/
+# Results (generated output at top level, not per-comparison)
+/results/
 
 # Caches
 .cache/
@@ -29,6 +32,9 @@ venv/
 .idea/
 .opencode/
 
+# LLM agent session files
+.llm/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -48,4 +54,8 @@ gguf-output/
 run_gsm8k_overnight.sh
 gsm8k_overnight.log
 
+# Blog markdown source (published separately)
 markdown/
+
+# Writing style guide (internal, not for publication)
+WRITING_STYLE.md

@@ -1,0 +1,16 @@
+tqdm>=4.65.0
+safetensors>=0.4.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+matplotlib-venn>=1.1.0
+transformers>=4.45.0
+accelerate>=0.26.0
+datasets>=2.18.0
+bitsandbytes>=0.43.0
+jsonschema>=4.20.0
+
+[dev]
+pytest>=7.0
+pytest-cov>=4.0
+ruff>=0.4.0
+mypy>=1.10

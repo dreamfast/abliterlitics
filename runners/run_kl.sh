@@ -47,6 +47,13 @@ COMP_DIR="${1:?Error: comparison_dir required. Use --help for usage.}"
 
 load_comparison "$COMP_DIR"
 GPU="${GPU:-$(detect_best_gpu)}"
+COMPARISON_DIR="$(cd "$(dirname "${COMPARISON_DIR}")" && pwd)/$(basename "${COMPARISON_DIR}")"
+BASE_DIR="$(cd "${BASE_DIR}" && pwd)"
+for variant in $VARIANT_NAMES; do
+    variant_slug="$(echo "$variant" | tr '-' '_')"
+    variant_path_var="VARIANT_PATH_${variant_slug}"
+    eval "VARIANT_PATH_${variant_slug}=\"\$(cd \"${!variant_path_var}\" && pwd)\""
+done
 RESULTS_DIR="${COMPARISON_DIR}/results/kl"
 mkdir -p "$RESULTS_DIR"
 
@@ -60,49 +67,76 @@ if result_exists "$BASE_LOGITS"; then
 else
     log "Phase 1: Collecting base logits from ${BASE_DIR}"
     if [[ $DRY_RUN -eq 1 ]]; then
-        log "  [dry-run] docker_run ${GPU} ${FORENSICS_IMAGE} kl_divergence.py collect --model ${BASE_DIR} --output /results/logits_base.pt"
+        log "  [dry-run] docker_run ${GPU} ${FORENSICS_IMAGE} kl_divergence.py collect --model /model --output /results/logits_base.pt"
     else
         docker_run "$GPU" "$FORENSICS_IMAGE" \
             -v "${BASE_DIR}:/model:ro" \
             -v "${RESULTS_DIR}:/results" \
-            -v "${ABL_ROOT}/src:/app/src:ro" \
-            -e PYTHONPATH=/app/src \
+            -v "${ABL_ROOT}:/app:ro" \
+            -e PYTHONPATH=/app \
             -- \
-            python3 /app/src/kl/kl_divergence.py collect \
+            /app/src/kl/kl_divergence.py collect \
                 --model /model \
                 --output /results/logits_base.pt \
+                --response-prefix auto \
+                --save-prefix /results/response_prefix.txt \
                 "${EXTRA_ARGS[@]}"
     fi
 fi
 
 # Phase 2: Collect variant logits + compute KL divergence
 for variant in $VARIANT_NAMES; do
-    variant_path_var="VARIANT_PATH_${variant}"
+    variant_path_var="VARIANT_PATH_$(echo "$variant" | tr '-' '_')"
     variant_path="${!variant_path_var}"
-    out_file="${RESULTS_DIR}/kl_${variant}.json"
+    variant_logits="${RESULTS_DIR}/logits_${variant}.pt"
 
+    # Phase 2a: Collect variant logits
+    if result_exists "$variant_logits"; then
+        log "Skipping (exists): logits for ${variant}"
+    else
+        log "Phase 2a: Collecting logits for variant ${variant}"
+        if [[ $DRY_RUN -eq 1 ]]; then
+            log "  [dry-run] docker_run ${GPU} ${FORENSICS_IMAGE} kl_divergence.py collect --model /model --output /results/logits_${variant}.pt"
+        else
+            docker_run "$GPU" "$FORENSICS_IMAGE" \
+                -v "${variant_path}:/model:ro" \
+                -v "${BASE_DIR}:/tokenizer:ro" \
+                -v "${RESULTS_DIR}:/results" \
+                -v "${ABL_ROOT}:/app:ro" \
+                -e PYTHONPATH=/app \
+                -- \
+                /app/src/kl/kl_divergence.py collect \
+                    --model /model \
+                    --tokenizer /tokenizer \
+                    --output "/results/logits_${variant}.pt" \
+                    --response-prefix "$(cat "${RESULTS_DIR}/response_prefix.txt" 2>/dev/null || echo none)" \
+                    "${EXTRA_ARGS[@]}"
+        fi
+    fi
+
+    # Phase 2b: Compute KL divergence
+    out_file="${RESULTS_DIR}/kl_${variant}.json"
     if result_exists "$out_file"; then
         log "Skipping (exists): KL for ${variant}"
         continue
     fi
 
-    log "Phase 2: KL divergence for variant ${variant}"
+    log "Phase 2b: Computing KL divergence for variant ${variant}"
     if [[ $DRY_RUN -eq 1 ]]; then
-        log "  [dry-run] docker_run ${GPU} ${FORENSICS_IMAGE} kl_divergence.py compute --base-logits /results/logits_base.pt --model /model --output /results/kl_${variant}.json"
+        log "  [dry-run] docker_run ${GPU} ${FORENSICS_IMAGE} kl_divergence.py compute --base-logits /results/logits_base.pt --variant-logits /results/logits_${variant}.pt"
         continue
     fi
 
     docker_run "$GPU" "$FORENSICS_IMAGE" \
-        -v "${variant_path}:/model:ro" \
         -v "${RESULTS_DIR}:/results" \
-        -v "${ABL_ROOT}/src:/app/src:ro" \
-        -e PYTHONPATH=/app/src \
+        -v "${ABL_ROOT}:/app:ro" \
+        -e PYTHONPATH=/app \
         -- \
-        python3 /app/src/kl/kl_divergence.py compute \
+        /app/src/kl/kl_divergence.py compute \
             --base-logits /results/logits_base.pt \
-            --model /model \
-            --output "/results/kl_${variant}.json" \
-            "${EXTRA_ARGS[@]}"
+            --variant-logits "/results/logits_${variant}.pt" \
+            --variant-label "${variant}" \
+            --output "/results/kl_${variant}.json"
 done
 
 log "KL analysis complete"

@@ -111,6 +111,17 @@ class TestDetectArchitecture:
         arch = _detect_architecture(tmp_model_dir_glm)
         assert arch == "glm"
 
+    def test_gemma4_detected(self, tmp_model_dir_gemma4):
+        arch = _detect_architecture(tmp_model_dir_gemma4)
+        assert arch == "gemma4"
+
+    def test_gemma4_config_json_fallback(self, tmp_path):
+        """Verify config.json model_type fallback works for Gemma4."""
+        from tests.conftest import create_mock_model
+        model_dir = create_mock_model(tmp_path / "model", arch="gemma4", seed=42)
+        arch = _detect_architecture(model_dir)
+        assert arch == "gemma4"
+
 
 # ---------------------------------------------------------------------------
 # Model size computation

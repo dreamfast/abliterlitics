@@ -23,6 +23,13 @@ from src.model_config import build_shard_map, detect_architecture, load_tensor
 log = logging.getLogger(__name__)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+LARGE_TENSOR_THRESHOLD = 1_000_000_000
+
+
+def _device_for_tensor(numel: int) -> torch.device:
+    if numel > LARGE_TENSOR_THRESHOLD:
+        return torch.device("cpu")
+    return DEVICE
 
 
 def compute_svd_stats(
@@ -152,7 +159,8 @@ def run_analysis(
         if t_base.shape != t_a.shape:
             continue
 
-        delta_a = t_a.float().to(DEVICE) - t_base.float().to(DEVICE)
+        dev = _device_for_tensor(t_base.numel())
+        delta_a = t_a.float().to(dev) - t_base.float().to(dev)
 
         result: dict = {
             "key": key,
@@ -167,8 +175,8 @@ def run_analysis(
         if mapb:
             t_b = load_tensor(mapb, key)
             if t_b is not None and t_b.shape == t_base.shape:
-                delta_b = t_b.float().to(DEVICE) - t_base.float().to(DEVICE)
-                delta_ab = t_b.float().to(DEVICE) - t_a.float().to(DEVICE)
+                delta_b = t_b.float().to(dev) - t_base.float().to(dev)
+                delta_ab = t_b.float().to(dev) - t_a.float().to(dev)
                 result[f"{label_b}_vs_base"] = compute_svd_stats(delta_b, TOP_K, full_svd)
                 result[f"{label_b}_minus_{label_a}"] = compute_svd_stats(delta_ab, TOP_K, full_svd)
                 del t_b, delta_b, delta_ab

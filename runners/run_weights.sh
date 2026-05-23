@@ -52,7 +52,8 @@ COMP_DIR="${1:?Error: comparison_dir required. Use --help for usage.}"
 
 load_comparison "$COMP_DIR"
 GPU="${GPU:-$(detect_best_gpu)}"
-RESULTS_DIR="${COMPARISON_DIR}/results/weight"
+COMPARISON_DIR="$(cd "$(dirname "${COMPARISON_DIR}")" && pwd)/$(basename "${COMPARISON_DIR}")"
+RESULTS_DIR="${COMPARISON_DIR}/results"
 mkdir -p "$RESULTS_DIR"
 
 # Run a weight analysis script inside Docker.
@@ -63,7 +64,7 @@ run_script() {
     local output_file="$2"
     shift 2
 
-    local out_path="${RESULTS_DIR}/${output_file}"
+    local out_path="${RESULTS_DIR}/${COMPARISON_NAME}/weight/${output_file}"
     if result_exists "$out_path"; then
         log "Skipping (exists): ${output_file}"
         return 0
@@ -77,13 +78,14 @@ run_script() {
 
     docker_run "$GPU" "$FORENSICS_IMAGE" \
         -v "${COMPARISON_DIR}:/comparison:ro" \
+        -v "${ABL_ROOT}/models:/models:ro" \
         -v "${RESULTS_DIR}:/results" \
-        -v "${ABL_ROOT}/src:/app/src:ro" \
-        -e PYTHONPATH=/app/src \
+        -v "${ABL_ROOT}:/app:ro" \
+        -e PYTHONPATH=/app \
         -- \
-        python3 "/app/src/weight/${script_name}" \
+        "/app/src/weight/${script_name}" \
             --comparison /comparison \
-            --output "/results/${output_file}" \
+            --results-dir /results \
             "$@"
 }
 

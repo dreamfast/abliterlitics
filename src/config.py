@@ -220,6 +220,7 @@ def _detect_architecture(model_path: Path) -> str:
         has_language_model = False
         has_experts = False
         has_mamba = False
+        has_gemma4 = False
 
         for f in sorted(model_path.glob("*.safetensors")):
             with safe_open(str(f), framework="pt", device="cpu") as sf:  # type: ignore[no-untyped-call]
@@ -231,9 +232,13 @@ def _detect_architecture(model_path: Path) -> str:
                     has_experts = True
                 if "linear_attn" in k or "conv1d" in k:
                     has_mamba = True
+                if "layer_scalar" in k or "per_layer_projection" in k:
+                    has_gemma4 = True
             # Check first shard only for fast detection
             break
 
+        if has_gemma4:
+            return "gemma4"
         if has_language_model:
             return "qwen3.5"
         if has_experts:
@@ -249,6 +254,8 @@ def _detect_architecture(model_path: Path) -> str:
         config = json.load(cf)
 
     model_type = config.get("model_type", "")
+    if "gemma4" in model_type.lower():
+        return "gemma4"
     if "glm" in model_type.lower():
         return "glm"
 

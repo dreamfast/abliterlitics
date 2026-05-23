@@ -1,0 +1,22 @@
+Metadata-Version: 2.4
+Name: abliterlitics
+Version: 1.0.0
+Summary: Comparative forensic analysis of LLM abliteration techniques
+Requires-Python: >=3.10
+License-File: LICENSE
+Requires-Dist: tqdm>=4.65.0
+Requires-Dist: safetensors>=0.4.0
+Requires-Dist: matplotlib>=3.7.0
+Requires-Dist: seaborn>=0.12.0
+Requires-Dist: matplotlib-venn>=1.1.0
+Requires-Dist: transformers>=4.45.0
+Requires-Dist: accelerate>=0.26.0
+Requires-Dist: datasets>=2.18.0
+Requires-Dist: bitsandbytes>=0.43.0
+Requires-Dist: jsonschema>=4.20.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.0; extra == "dev"
+Requires-Dist: ruff>=0.4.0; extra == "dev"
+Requires-Dist: mypy>=1.10; extra == "dev"
+Dynamic: license-file

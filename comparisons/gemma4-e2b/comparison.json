@@ -1,0 +1,63 @@
+{
+  "name": "gemma4-e2b",
+  "base": "../../models/gemma4-e2b/google-base",
+  "variants": {
+    "coder3101": {
+      "path": "../../models/gemma4-e2b/coder3101-heretic",
+      "display_name": "Coder3101 Heretic"
+    },
+    "duoneural": {
+      "path": "../../models/gemma4-e2b/duoneural-heretic",
+      "display_name": "Duoneural Heretic"
+    },
+    "ether4o4": {
+      "path": "../../models/gemma4-e2b/ether4o4-opus",
+      "display_name": "Ether Opus"
+    },
+    "huihui-v1": {
+      "path": "../../models/gemma4-e2b/huihui-v1",
+      "display_name": "Huihui v1"
+    },
+    "huihui-v2": {
+      "path": "../../models/gemma4-e2b/huihui-v2",
+      "display_name": "Huihui v2"
+    },
+    "kasper": {
+      "path": "../../models/gemma4-e2b/kasper-heretic",
+      "display_name": "Kasper Heretic"
+    },
+    "llmfan46": {
+      "path": "../../models/gemma4-e2b/llmfan46-heretic",
+      "display_name": "LLMFan46 Heretic"
+    },
+    "pew": {
+      "path": "../../models/gemma4-e2b/pew-heretic-ara",
+      "display_name": "PEW Heretic ARA"
+    },
+    "prithiv": {
+      "path": "../../models/gemma4-e2b/prithiv-max",
+      "display_name": "Prithiv Max"
+    },
+    "treadon": {
+      "path": "../../models/gemma4-e2b/treadon-dual",
+      "display_name": "Treadon Dual"
+    },
+    "trevorjs": {
+      "path": "../../models/gemma4-e2b/trevorjs-biprojection",
+      "display_name": "TrevorJS BiProjection"
+    },
+    "wangzhang": {
+      "path": "../../models/gemma4-e2b/wangzhang-abliterix",
+      "display_name": "Wangzhang Abliterix"
+    },
+    "wwtcyberlab": {
+      "path": "../../models/gemma4-e2b/wwtcyberlab-abliterated",
+      "display_name": "WWT CyberLab"
+    }
+  },
+  "settings": {
+    "tokenizer_dir": "../../models/gemma4-e2b/google-base",
+    "lm_eval_max_model_len": 8192,
+    "harmbench_max_tokens": 4096
+  }
+}

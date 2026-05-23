@@ -111,25 +111,32 @@ def generate_one(session, base_url, prompt, max_tokens, request_id):
                 json={
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": max_tokens,
+                    "temperature": 0,
+                    "thinking_token_budget": max_tokens - 2048,
+                    "chat_template_kwargs": {"enable_thinking": True},
                 },
                 timeout=600,
             )
             if r.status_code == 200:
-                msg = r.json()["choices"][0]["message"]
+                choice = r.json()["choices"][0]
+                msg = choice["message"]
                 content = msg.get("content", "") or ""
-                reasoning = msg.get("reasoning_content", "") or ""
-                return request_id, content, reasoning, None
+                reasoning = msg.get("reasoning", msg.get("reasoning_content", "")) or ""
+                finish_reason = choice.get("finish_reason", "")
+                usage = r.json().get("usage", {})
+                completion_tokens = usage.get("completion_tokens", 0)
+                return request_id, content, reasoning, None, finish_reason, completion_tokens
             else:
                 if attempt < 4:
                     time.sleep(10 * (attempt + 1))
                     continue
-                return request_id, "", "", f"HTTP {r.status_code}: {r.text[:200]}"
+                return request_id, "", "", f"HTTP {r.status_code}: {r.text[:200]}", "", 0
         except Exception as e:
             if attempt < 4:
                 time.sleep(10 * (attempt + 1))
                 continue
-            return request_id, "", "", str(e)
-    return request_id, "", "", "Max retries exceeded"
+            return request_id, "", "", str(e), "", 0
+    return request_id, "", "", "Max retries exceeded", "", 0
 
 
 def check_refusal(response):
@@ -141,7 +148,7 @@ def main():
     parser = argparse.ArgumentParser(description="Generate HarmBench responses via llama-server API")
     parser.add_argument("--base-url", required=True, help="llama-server URL (e.g. http://localhost:8080)")
     parser.add_argument("--output", required=True, help="Output JSON path")
-    parser.add_argument("--max-tokens", type=int, default=2048)
+    parser.add_argument("--max-tokens", type=int, default=6144)
     parser.add_argument("--concurrent", type=int, default=1)
     parser.add_argument("--model-name", default="unknown", help="Model name for metadata")
     args = parser.parse_args()
@@ -176,7 +183,7 @@ def main():
         output = {
             "model": args.model_name,
             "max_tokens": args.max_tokens,
-            "temperature": "server_default",
+            "temperature": 0,
             "results_version": RESULTS_VERSION,
             "harmbench": results,
         }
@@ -186,7 +193,7 @@ def main():
         for i, b in enumerate(behaviors):
             if results[i] is not None and not results[i].get("error"):
                 continue
-            _, content, reasoning, error = generate_one(session, args.base_url, b["Behavior"], args.max_tokens, i)
+            _, content, reasoning, error, finish_reason, completion_tokens = generate_one(session, args.base_url, b["Behavior"], args.max_tokens, i)
             results[i] = {
                 "behavior_id": b.get("BehaviorID", ""),
                 "behavior": b["Behavior"],
@@ -196,6 +203,8 @@ def main():
                 "reasoning": reasoning if not error else "",
                 "error": error,
                 "is_refusal": check_refusal(content) if not error else True,
+                "finish_reason": finish_reason,
+                "completion_tokens": completion_tokens,
             }
             if (i + 1) % 25 == 0:
                 save_partial()
@@ -214,7 +223,7 @@ def main():
             done_count = 0
             for f in as_completed(futures):
                 idx = futures[f]
-                _, content, reasoning, error = f.result()
+                _, content, reasoning, error, finish_reason, completion_tokens = f.result()
                 results[idx] = {
                     "behavior_id": behaviors[idx].get("BehaviorID", ""),
                     "behavior": behaviors[idx]["Behavior"],
@@ -224,6 +233,8 @@ def main():
                     "reasoning": reasoning if not error else "",
                     "error": error,
                     "is_refusal": check_refusal(content) if not error else True,
+                    "finish_reason": finish_reason,
+                    "completion_tokens": completion_tokens,
                 }
                 done_count += 1
                 if done_count % 25 == 0:
@@ -240,7 +251,7 @@ def main():
     output = {
         "model": args.model_name,
         "max_tokens": args.max_tokens,
-        "temperature": "server_default",
+        "temperature": 0,
         "results_version": RESULTS_VERSION,
         "harmbench": results,
     }

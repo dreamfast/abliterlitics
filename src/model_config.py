@@ -1,5 +1,5 @@
 """
-Architecture auto-detection for Qwen3, Qwen3.5, GLM models.
+Architecture auto-detection for Qwen3, Qwen3.5, Gemma4, GLM models.
 
 Builds safetensors shard maps, provides lazy tensor loading.
 This is the foundation for all weight analysis scripts.
@@ -34,12 +34,15 @@ class ArchitectureConfig:
     expert_count: int = 0
     has_shared_experts: bool = False
     has_mamba: bool = False
+    has_multimodal_towers: bool = False
     layer_count: int = 0
     total_keys: int = 0
     lm_keys: list[str] = field(default_factory=list)
 
+    _LANGUAGE_MODEL_FAMILIES = frozenset({"qwen35", "gemma4"})
+
     def is_lm_key(self, raw_key: str, canonical_key: str) -> bool:
-        if self.family == "qwen35":
+        if self.family in self._LANGUAGE_MODEL_FAMILIES:
             return "language_model" in canonical_key and "visual" not in raw_key and "mtp" not in raw_key
         return True
 
@@ -53,7 +56,7 @@ class ArchitectureConfig:
         return int(m.group(1)) if m else None
 
     def get_tensor_type(self, canonical_key: str) -> str:
-        if self.family == "qwen35":
+        if self.family in self._LANGUAGE_MODEL_FAMILIES:
             for prefix in ("model.language_model.layers.",):
                 if canonical_key.startswith(prefix):
                     rest = canonical_key[len(prefix) :]
@@ -97,6 +100,7 @@ class ArchitectureConfig:
                 "layernorm",
                 "input_layernorm",
                 "post_attention_layernorm",
+                "post_per_layer_input_norm",
                 "q_norm",
                 "k_norm",
                 "kv_a_layernorm",
@@ -122,6 +126,10 @@ class ArchitectureConfig:
             return "embedding"
         if "lm_head" in canonical_key:
             return "lm_head"
+        if "per_layer_projection" in canonical_key or "per_layer_input_gate" in canonical_key:
+            return "per_layer"
+        if "layer_scalar" in canonical_key:
+            return "scalar"
         if "mlp." in canonical_key:
             return "mlp"
         if self.has_mamba and ("linear_attn." in canonical_key or "conv1d" in canonical_key):
@@ -145,8 +153,13 @@ def detect_architecture(model_dir: str | Path) -> ArchitectureConfig:
     has_experts = any(".experts." in k for k in keys)
     has_shared_experts = any("shared_expert" in k for k in keys)
     has_mamba = any("linear_attn" in k or "conv1d" in k for k in keys)
+    has_gemma4 = any("layer_scalar" in k or "per_layer_projection" in k for k in keys)
+    has_multimodal = any("audio_tower" in k or "vision_tower" in k for k in keys)
 
-    if has_language_model:
+    if has_gemma4:
+        family = "gemma4"
+        prefix = "model.language_model."
+    elif has_language_model:
         family = "qwen35"
         prefix = "model.language_model."
     elif has_experts:
@@ -178,17 +191,19 @@ def detect_architecture(model_dir: str | Path) -> ArchitectureConfig:
         expert_count=expert_count,
         has_shared_experts=has_shared_experts,
         has_mamba=has_mamba,
+        has_multimodal_towers=has_multimodal,
         layer_count=len(layer_nums),
         total_keys=len(keys),
     )
     cfg.lm_keys = sorted(keys)
     log.info(
-        "Detected architecture: family=%s layers=%d keys=%d experts=%d mamba=%s",
+        "Detected architecture: family=%s layers=%d keys=%d experts=%d mamba=%s multimodal=%s",
         family,
         len(layer_nums),
         len(keys),
         expert_count,
         has_mamba,
+        has_multimodal,
     )
     return cfg
 

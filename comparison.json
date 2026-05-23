@@ -1,0 +1,31 @@
+{
+  "name": "qwen36-27b",
+  "base": "models/Qwen3.6-27B",
+  "variants": {
+    "huihui": {
+      "path": "models/Huihui-Qwen3.6-27B-abliterated",
+      "display_name": "Huihui"
+    },
+    "aeon": {
+      "path": "models/Qwen3.6-27B-AEON-Ultimate-Uncensored-BF16",
+      "display_name": "AEON"
+    },
+    "heretic": {
+      "path": "models/Qwen3.6-27B-uncensored-heretic-v2",
+      "display_name": "Heretic"
+    },
+    "hauhau": {
+      "path": "models/Qwen3.6-27B-HauhauCS-Q8KP-recovered",
+      "display_name": "HauhauCS"
+    },
+    "abliterix": {
+      "path": "models/Qwen3.6-27B-abliterated-v2",
+      "display_name": "Abliterix"
+    }
+  },
+  "settings": {
+    "inference_backend": "vllm",
+    "lm_eval_max_model_len": 4096,
+    "tokenizer_dir": "models/Qwen3.6-27B"
+  }
+}

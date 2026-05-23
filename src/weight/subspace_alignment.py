@@ -139,28 +139,55 @@ def run_analysis(
     for ttype in sorted(type_vectors_a.keys()):
         vecs_a = type_vectors_a[ttype]
         vecs_b = type_vectors_b[ttype]
-        if len(vecs_a) < 2 or len(vecs_b) < 2:
+
+        dim_groups_a: dict[int, list[torch.Tensor]] = defaultdict(list)
+        dim_groups_b: dict[int, list[torch.Tensor]] = defaultdict(list)
+        for v in vecs_a:
+            dim_groups_a[v.numel()].append(v)
+        for v in vecs_b:
+            dim_groups_b[v.numel()].append(v)
+
+        common_dims = sorted(set(dim_groups_a) & set(dim_groups_b))
+        if not common_dims:
+            log.info("    %s: no common dimensions, skipping", ttype)
             continue
 
-        use_dev = _safe_device_for_stack(vecs_a, device)
-        if use_dev.type == "cpu" and device.type == "cuda":
-            log.info("    %s: CPU fallback (dim=%d, n=%d)", ttype, vecs_a[0].numel(), len(vecs_a))
-        mat_a = torch.stack(vecs_a, dim=1).to(use_dev)
-        mat_b = torch.stack(vecs_b, dim=1).to(use_dev)
+        type_angles: list[float] = []
+        type_n_vectors = 0
+        type_dims: list[int] = []
 
-        angles = principal_angles(mat_a, mat_b, top_k=top_k)
+        for dim in common_dims:
+            ga = dim_groups_a[dim]
+            gb = dim_groups_b[dim]
+            if len(ga) < 2 or len(gb) < 2:
+                continue
+
+            use_dev = _safe_device_for_stack(ga, device)
+            if use_dev.type == "cpu" and device.type == "cuda":
+                log.info("    %s dim=%d: CPU fallback (n=%d)", ttype, dim, len(ga))
+            mat_a = torch.stack(ga, dim=1).to(use_dev)
+            mat_b = torch.stack(gb, dim=1).to(use_dev)
+
+            angles = principal_angles(mat_a, mat_b, top_k=top_k)
+            type_angles.extend(angles)
+            type_n_vectors += len(ga)
+            type_dims.append(dim)
+
+            del mat_a, mat_b
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+
+        if not type_angles:
+            continue
+
         per_type_results[ttype] = {
-            "n_vectors": len(vecs_a),
-            "dim": vecs_a[0].numel(),
-            "principal_angles": angles,
-            "mean_cosine": sum(angles) / len(angles) if angles else 0,
-            "overlap_fraction_gt_0.9": sum(1 for a in angles if a > 0.9) / len(angles) if angles else 0,
+            "n_vectors": type_n_vectors,
+            "dims": type_dims,
+            "principal_angles": type_angles,
+            "mean_cosine": sum(type_angles) / len(type_angles) if type_angles else 0,
+            "overlap_fraction_gt_0.9": sum(1 for a in type_angles if a > 0.9) / len(type_angles) if type_angles else 0,
         }
-        all_angles_ab.extend(angles)
-
-        del mat_a, mat_b
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
+        all_angles_ab.extend(type_angles)
 
     mean_cosine_global = sum(all_angles_ab) / len(all_angles_ab) if all_angles_ab else 0
     overlap_frac_global = sum(1 for a in all_angles_ab if a > 0.9) / len(all_angles_ab) if all_angles_ab else 0

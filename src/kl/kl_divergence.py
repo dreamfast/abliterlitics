@@ -436,7 +436,8 @@ def cmd_collect(args):
         log.info(f"  Using explicit response prefix: {response_prefix!r}")
 
     log.info(f"Loading model: {args.model}")
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    tokenizer_path = args.tokenizer or args.model
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -787,6 +788,7 @@ def main():
     # --- collect subcommand ---
     p_collect = sub.add_parser("collect", help="Collect full-vocab logits from a model")
     p_collect.add_argument("--model", required=True, help="Path to model directory")
+    p_collect.add_argument("--tokenizer", default=None, help="Path to tokenizer (defaults to --model)")
     p_collect.add_argument("--output", required=True, help="Path to save logits .pt file")
     p_collect.add_argument("--comparison", help="Path to comparison.json dir (resolves --model)")
     p_collect.add_argument(

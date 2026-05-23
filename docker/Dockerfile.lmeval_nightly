@@ -1,0 +1,30 @@
+# Abliterlitics LM-Eval — vLLM nightly for Qwen3.5 MoE BNB4 support
+FROM vllm/vllm-openai:v0.19.0
+
+USER root
+
+# Upgrade vLLM to nightly (has BNB4 fused MoE expert fix)
+RUN pip install --no-cache-dir vllm==0.20.1 \
+    --extra-index-url https://wheels.vllm.ai/nightly
+
+# Fix flashinfer version mismatch after vLLM upgrade
+RUN pip install --no-cache-dir flashinfer -i https://flashinfer.ai/whl/cu124/torch2.6/ 2>/dev/null || \
+    pip install --no-cache-dir flashinfer || true
+
+# Fix blinker
+RUN pip install --no-cache-dir --ignore-installed blinker>=1.9.0
+
+# Install lm-eval + dependencies
+RUN pip install --no-cache-dir \
+    "lm-eval[vllm,api]>=0.4.0,<1.0.0" \
+    ray \
+    flask \
+    bitsandbytes
+
+# Upgrade transformers for latest model support
+RUN pip install --no-cache-dir --upgrade "transformers>=5.5.0"
+
+# Override vLLM serve entrypoint
+ENTRYPOINT []
+
+WORKDIR /root
