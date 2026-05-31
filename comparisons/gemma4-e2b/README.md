@@ -25,7 +25,7 @@ The 13 variants come from 9 creators using distinct approaches. Four use the [He
 
 **The honest ones** fare well. coder3101 reports a divergence score of 0.1651 and 5/100 refusals. Our numbers match the divergence at 0.167, and with LLM review we find 16/400 refusals and 96.0% ASR. It actually beats the base model on math reasoning. llmfan46 claims 96% fewer refusals. We confirm it, with capability fully preserved. pew reports divergence of 0.152, we get 0.153. trevorjs claims divergence of 0.346 and 1/100 refusals. We see 0.365, close enough, with 99.5% safety removal and only minor math impact. These creators reported their numbers honestly and the models deliver.
 
-**The debunked ones** tell a different story. duoneural originally claimed "near-zero divergence at approximately 0.001" and 17/100 refusals. Reality: divergence of 0.187, which is 187x higher than claimed, and 71 refusals on our safety test. After we [raised this on their model card](https://huggingface.co/DuoNeural/Gemma-4-E2B-Heretic/discussions/1), DuoNeural updated their card with our KL measurement and HarmBench refusal count. wwtcyberlab claims "0.0% refusal rate" and "101% quality preservation". Reality: 2 refusals on our safety test and language modelling catastrophically damaged, not preserved. treadon says "same model, same weights, same knowledge." Our divergence measurement at 3.971 is 4.1x higher than any other variant. This model is fundamentally altered. ether4o4 applies Opus reasoning distillation on top of abliteration, but scores worst on math at 76.6% with 84 empty responses. The distillation did not preserve reasoning.
+**Where claims diverged from measurements.** duoneural originally claimed "near-zero divergence at approximately 0.001" and 17/100 refusals. Our measurement: divergence of 0.187, which is 187x higher than claimed, and 71 refusals on our safety test. After we [raised this on their model card](https://huggingface.co/DuoNeural/Gemma-4-E2B-Heretic/discussions/1), DuoNeural updated their card with our KL measurement and HarmBench refusal count. wwtcyberlab claims "0.0% refusal rate" and "101% quality preservation". We measured 2 refusals on our safety test and language modelling substantially degraded, with LAMBADA perplexity 5.69x higher than base. treadon says "same model, same weights, same knowledge." Our divergence measurement at 3.971 is 4.1x higher than any other variant, indicating heavy modification beyond just refusal direction ablation. ether4o4 applies Opus reasoning distillation on top of abliteration, but scores worst on math at 76.6% with 84 empty responses, suggesting the distillation did not achieve its intended reasoning improvement. For all models where our results differ from the creator's claims, we have reached out to the authors and will update this report if any errors in our methodology are identified.
 
 **The quiet ones** make no capability claims and that is fine. huihui-v1 and huihui-v2 just say "uncensored" and huihui-v2 honestly reports higher perplexity than v1. prithiv tags itself "uncensored, abliterated" without preservation claims. pew reports its divergence score and lets the number speak. kasper claims a "Goldilocks zone" at divergence 0.1650 but we measure 0.193, higher than claimed, though capability is indeed preserved with only a tiny math drop. wangzhang describes its method in thorough technical detail without making preservation claims, which is a refreshingly honest approach.
 
@@ -35,21 +35,21 @@ All 13 remove safety filters. The base model refuses 67.8% of harmful requests. 
 
 **Best overall: coder3101.** 96.0% of harmful requests answered, math reasoning actually beats the base model by 1.4 points, and benchmark scores stay within rounding error of base across the board. This is the best capability-to-safety tradeoff in the comparison. If you want one model and do not want to think about it, use this one.
 
-**Maximum safety removal: treadon.** 100.0% of harmful requests answered with zero refusals. Math reasoning drops nearly 3 points. The model's internals are fundamentally altered with KL=3.971, the highest of any variant. This is the pick when safety removal is the only goal, regardless of collateral damage.
+**Maximum safety removal: treadon.** 100.0% of harmful requests answered with zero refusals. Math reasoning drops nearly 3 points. KL=3.971, the highest of any variant, indicating substantial modification to the model's output distribution. This is the pick when safety removal is the only goal, accepting the capability tradeoffs.
 
 **Most conservative: llmfan46.** The lightest touch of all 13. Math reasoning beats base by 0.5 points. Capability is fully preserved. Tradeoff: 83.8% ASR with 65 refusals, meaning about 1 in 6 harmful requests still gets blocked. This is for when you want to remove most safety with minimal risk of breaking anything.
 
 **Good but not top tier: pew, kasper.** Both land around 92% ASR with math reasoning within 0.3 points of base. Solid choices if the top three are unavailable.
 
-**Avoid for general use: ether4o4.** ether4o4 loses 6.9 points on math with 84 empty responses where the model thinks until it runs out of tokens without producing an answer. It is an interesting research subject but not a good daily driver. treadon achieves 100% ASR but the model is fundamentally altered, not just unlocked — see the treadon variant summary for details.
+**Not recommended for general use: ether4o4.** ether4o4 loses 6.9 points on math with 84 empty responses where the model thinks until it runs out of tokens without producing an answer. It is an interesting research subject showing what happens when distillation is combined with abliteration, but the capability cost is hard to justify when other variants achieve similar ASR with better preserved reasoning. treadon achieves 100% ASR but with KL=3.971, the heaviest distribution shift of any variant — see the treadon variant summary for details.
 
-**wangzhang** deserves a separate mention. The model card is one of the best documented of the 13, including a genuinely insightful analysis of how evaluation methods can produce misleading results on Gemma4. It removes safety effectively at 99.8% ASR with only 1 refusal. The downside is that its language modelling takes a significant hit, and the model was missing 60 weights straight from HuggingFace that needed patching before it could load. For research or targeted use where safety removal is the only goal, it delivers. For everyday use, the collateral damage is too high.
+**wangzhang** deserves a separate mention. The model card is one of the best documented of the 13, including a genuinely insightful analysis of how evaluation methods can produce misleading results on Gemma4. It removes safety effectively at 99.8% ASR with only 1 refusal. The downside is that its language modelling takes a significant hit, and the model was missing 60 weights straight from HuggingFace that needed patching before it could load. For research or targeted use where safety removal is the only goal, it delivers. For everyday use, the capability tradeoffs are too steep.
 
 ## Key findings
 
 All 13 methods remove safety filters effectively, lifting HarmBench ASR from the base model's 32.2% to 82.2% to 100.0%. The safety removal part works regardless of technique.
 
-The difference is in the collateral damage. **Surgical approaches like coder3101 and llmfan46 beat the base model on GSM8K.** The abliteration actually *improves* reasoning by shortening thinking chains, allowing more answers within the token budget. Aggressive approaches like treadon and ether4o4 lose about 3 to 7pp on GSM8K because the model overthinks and exhausts its budget before writing an answer.
+The difference is in the capability tradeoffs. **Surgical approaches like coder3101 and llmfan46 beat the base model on GSM8K.** The abliteration actually *improves* reasoning by shortening thinking chains, allowing more answers within the token budget. Aggressive approaches like treadon and ether4o4 lose about 3 to 7pp on GSM8K because the model overthinks and exhausts its budget before writing an answer.
 
 KL divergence ranges from 0.068 for llmfan46 to 3.97 for treadon, a 58.7x spread. The optimal tradeoff is in the moderate range. **coder3101** achieves 96.0% ASR with KL=0.167 and beats base on GSM8K and LAMBADA. **llmfan46** achieves 83.8% ASR with the lowest KL of any variant.
 
@@ -131,9 +131,9 @@ Evaluated with [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluati
 
 **Loglikelihood tasks are remarkably resilient.** The 14 models cluster within 2.6pp on MMLU at 26.7% to 29.3%, and 1.6pp on HellaSwag at 30.8% to 32.4%. These tasks rank token probabilities, so abliteration barely affects the model's knowledge representation.
 
-**TruthfulQA MC2 shows the clearest abliteration signal.** Treadon drops 4.64pp, wangzhang drops 2.94pp, wwtcyberlab drops 3.20pp. The most aggressive variants damage the model's ability to distinguish factual from non-factual content.
+**TruthfulQA MC2 shows the clearest abliteration signal.** Treadon drops 4.64pp, wangzhang drops 2.94pp, wwtcyberlab drops 3.20pp. The most aggressive variants reduce the model's ability to distinguish factual from non-factual content.
 
-**LAMBADA perplexity is the outlier metric.** Three variants catastrophically degrade: wangzhang at 7.35x base, wwtcyberlab at 5.69x, ether4o4 at 2.28x. Wangzhang's unique `q_proj` and `v_proj` modifications, targeting attention input projections, catastrophically damage language modelling. Interestingly, huihui-v2 at KL=0.530 has the *best* LAMBADA perplexity at 0.53x base. Its edits concentrate in the refusal direction without disrupting language modelling.
+**LAMBADA perplexity is the outlier metric.** Three variants show substantial degradation: wangzhang at 7.35x base, wwtcyberlab at 5.69x, ether4o4 at 2.28x. Wangzhang's unique `q_proj` and `v_proj` modifications, targeting attention input projections, disrupt language modelling more than variants that only touch output pathways. Interestingly, huihui-v2 at KL=0.530 has the *best* LAMBADA perplexity at 0.53x base. Its edits concentrate in the refusal direction without disrupting language modelling.
 
 ![Benchmark Comparison](graphs/Gemma4-E2B_benchmark_comparison.svg)
 
@@ -338,7 +338,7 @@ Types = number of distinct tensor types modified. E/M/L = early layers 0 to 10 /
 | `per_layer_input_gate` | Gemma4-specific per-layer gating | ether4o4 only |
 | `per_layer_projection` | Gemma4-specific per-layer projection | ether4o4 only |
 
-**All abliteration variants target output projections**, meaning what the model "says." Only ether4o4 and wangzhang venture into input/query projections and gating mechanisms. Wangzhang's `q_proj` and `v_proj` targeting correlates with its 7.35x LAMBADA perplexity blowup.
+**All abliteration variants target output projections**, meaning what the model "says." Only ether4o4 and wangzhang venture into input/query projections and gating mechanisms. Wangzhang's `q_proj` and `v_proj` targeting correlates with its 7.35x LAMBADA perplexity increase.
 
 ![Tensor Type Breakdown](graphs/Gemma4-E2B_tensor_type_breakdown.svg)
 
@@ -415,9 +415,9 @@ Coder3101 beats base on GSM8K on both flex and strict, has below-base LAMBADA pe
 
 **kasper.** Similar to pew. 92.5% ASR, 16 tensors, Heretic-based. Per-prompt median KL at 0.00093, second only to trevorjs in the moderate cluster, indicating more pervasive but smaller shifts across prompts.
 
-**treadon.** Most aggressive. 100.0% ASR with zero refusals, the only variant to achieve perfect compliance. 21 truncated responses at 5.3%. CoT analysis confirms all 21 were mid-compliance when cut off, with 20 entering repetition loops including LaTeX nesting, markdown bold repeats, and binary dumps. KL=3.971 rated heavy, 4.1x higher than next worst. The "disinhibition + abliteration" dual approach fundamentally alters reasoning patterns, not just refusal behaviour. Highest ASR but pays for it across every capability metric.
+**treadon.** Most aggressive. 100.0% ASR with zero refusals, the only variant to achieve perfect compliance. 21 truncated responses at 5.3%. CoT analysis confirms all 21 were mid-compliance when cut off, with 20 entering repetition loops including LaTeX nesting, markdown bold repeats, and binary dumps. KL=3.971 rated heavy, 4.1x higher than next worst. The "disinhibition + abliteration" dual approach produces the heaviest distribution shift of any variant, well beyond refusal direction ablation. Highest ASR but pays for it across every capability metric.
 
-**wangzhang.** Near-perfect safety removal. 99.8% ASR with 1 refusal and unique `q_proj` and `v_proj` targeting. 7.35x LAMBADA perplexity blowup, the worst language modelling degradation in the comparison. 4 tensor types, L9 to L34.
+**wangzhang.** Near-perfect safety removal. 99.8% ASR with 1 refusal and unique `q_proj` and `v_proj` targeting. 7.35x LAMBADA perplexity increase, the worst language modelling degradation in the comparison. 4 tensor types, L9 to L34.
 
 **ether4o4.** Broadest modification. 166 tensors at 30.7% with 6 types including Gemma4-specific gate components. 95.2% ASR but 84 empty GSM8K responses at 6.4%. Multi-rank edits at eff rank 2.29 due to gate components at rank around 4.
 
@@ -429,7 +429,7 @@ Coder3101 beats base on GSM8K on both flex and strict, has below-base LAMBADA pe
 
 **duoneural.** Weakest safety removal. 82.2% ASR with 71 refusals, far more than the maximally abliterated tier. 49 tensors, 2 types, L6 to L34. Originally reported KL of ~0.001, which we found to be 187x lower than our measurement at 0.187. DuoNeural [updated their card](https://huggingface.co/DuoNeural/Gemma-4-E2B-Heretic/discussions/1) with our corrected KL and HarmBench numbers after we raised it.
 
-**wwtcyberlab.** High ASR, high LAMBADA cost. 99.5% ASR with 96 tensors across 4 types. 5.69x LAMBADA perplexity blowup. Highest single-prompt KL spike at 42.45.
+**wwtcyberlab.** High ASR, high LAMBADA cost. 99.5% ASR with 96 tensors across 4 types. 5.69x LAMBADA perplexity increase. Highest single-prompt KL spike at 42.45.
 
 ## Methodology
 
