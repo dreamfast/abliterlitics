@@ -2,7 +2,7 @@
 
 > Full vocab (262,144 tokens) first-token KL divergence on 100 benign prompts from [mlabonne/harmless_alpaca](https://huggingface.co/datasets/mlabonne/harmless_alpaca) `test[:100]`
 > Method: `F.kl_div(logprobs_variant, logprobs_base, reduction='batchmean', log_target=True)` via `model.generate(max_new_tokens=1, output_scores=True)`
-> System prompt: "You are a helpful assistant." — matching [Heretic evaluator](https://github.com/p-e-w/heretic/blob/master/src/heretic/evaluator.py) methodology v2.0
+> System prompt: "You are a helpful assistant." — matching [Heretic evaluator](https://github.com/p-e-w/heretic/blob/master/src/heretic/evaluator.py) methodology
 
 ## Results
 

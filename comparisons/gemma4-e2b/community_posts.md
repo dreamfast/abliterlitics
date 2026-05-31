@@ -12,7 +12,7 @@ Copy this to the bottom of every post:
 
 **Our methodology:**
 
-- **KL divergence:** Full vocab at 262,144 tokens. First-token logits from 100 benign prompts via `model.generate(max_new_tokens=1, output_scores=True)`. Uses `F.kl_div(batchmean, log_target=True)`. System prompt is "You are a helpful assistant." This matches the [Heretic evaluator](https://github.com/p-e-w/heretic/blob/master/src/heretic/evaluator.py) v2.0 methodology.
+- **KL divergence:** Full vocab at 262,144 tokens. First-token logits from 100 benign prompts via `model.generate(max_new_tokens=1, output_scores=True)`. Uses `F.kl_div(batchmean, log_target=True)`. System prompt is "You are a helpful assistant." This matches the [Heretic evaluator](https://github.com/p-e-w/heretic/blob/master/src/heretic/evaluator.py) methodology.
 - **Calibration check:** 4 of our 13 variants were built with Heretic and self-report KL values. We cross-checked all four to establish our measurement error ratio:
 
   | Variant | Card claims | We measured | Difference |
@@ -46,7 +46,7 @@ Happy to share raw data if anything looks off. Full report publishes later today
 
 - Raised the KL discrepancy (card claimed ~0.001, we measured 0.1872, 187x higher)
 - DuoNeural responded promptly and updated their model card with our KL measurement and HarmBench refusal count (71/400)
-- They plan to adopt Heretic v2.0 KL methodology for future DuoNeural abliteration cards
+- They plan to adopt the Heretic evaluator KL methodology for future DuoNeural abliteration cards
 - Refusal rates were consistent: 17/100 on their test vs 71/400 on ours (~17% either way)
 - They also mentioned a new model (LFM2.5-8B-A1B-Abliterated) for potential future comparison
 - Positive outcome. Link to the discussion from the README as an example of constructive community feedback
