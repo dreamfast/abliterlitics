@@ -234,6 +234,21 @@ pytest tests/ -q           # 203 tests passing
 - [Security](docs/SECURITY.md) — Token handling, trust boundaries, supply chain
 - [GPU Setup](docs/GPU_SETUP.md) — Multi-GPU configuration, Docker index mapping
 
+## Attribution
+
+The KL divergence measurement in `src/kl/kl_divergence.py` reimplements the methodology from [Heretic](https://github.com/p-e-w/heretic) by Philipp Emanuel Weidmann. Heretic is licensed under AGPL-3.0.
+
+```bibtex
+@misc{heretic,
+  author = {Weidmann, Philipp Emanuel},
+  title = {Heretic: Fully automatic censorship removal for language models},
+  year = {2025},
+  publisher = {GitHub},
+  journal = {GitHub repository},
+  howpublished = {\url{https://github.com/p-e-w/heretic}}
+}
+```
+
 ## License
 
-MIT
+[AGPL-3.0](LICENSE)

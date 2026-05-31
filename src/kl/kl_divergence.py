@@ -1,6 +1,22 @@
 #!/usr/bin/env python3
 """
-KL Divergence measurement matching Heretic's exact methodology.
+KL Divergence measurement reimplementing the Heretic evaluator methodology.
+
+Based on the Heretic abliteration tool by Philipp Emanuel Weidmann (p-e-w).
+https://github.com/p-e-w/heretic
+
+Heretic is licensed under AGPL-3.0. This module reimplements the KL measurement
+methodology from heretic/src/heretic/model.py (lines 681-700) and evaluator.py
+(lines 95-127) without copying source code. The original tool should be cited:
+
+    @misc{heretic,
+      author = {Weidmann, Philipp Emanuel},
+      title = {Heretic: Fully automatic censorship removal for language models},
+      year = {2025},
+      publisher = {GitHub},
+      journal = {GitHub repository},
+      howpublished = {\\url{https://github.com/p-e-w/heretic}}
+    }
 
 Uses transformers model.generate() to get full-vocab first-token logits via
 output_scores=True, then computes KL(P||Q) via F.kl_div:
@@ -18,8 +34,6 @@ Key methodology points (matching Heretic reference):
   - Left-padding on tokenizer
   - System prompt + response_prefix appended before tokenization
   - No -inf clamping in compute phase
-
-Reference: heretic/src/heretic/model.py lines 681-700, evaluator.py lines 95-127
 
 Strategy: load ONE model at a time, collect full logits, save to disk,
 unload, repeat. KL is computed offline from saved tensors.
