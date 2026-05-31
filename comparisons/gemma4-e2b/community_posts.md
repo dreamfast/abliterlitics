@@ -38,19 +38,18 @@ Happy to share raw data if anything looks off. Full report publishes later today
 
 ## 1. DuoNeural/Gemma-4-E2B-Heretic
 
-**Post at:** https://huggingface.co/DuoNeural/Gemma-4-E2B-Heretic/discussions
-**Title:** Independent verification of KL divergence and safety claims
+**Posted at:** https://huggingface.co/DuoNeural/Gemma-4-E2B-Heretic/discussions/1
+**Title:** Benchmarking and KL Divergence Difference
+**Status:** POSTED — DuoNeural updated their card with corrected KL and HarmBench numbers
 
-**Key points:**
+**What happened:**
 
-- Publishing an independent forensic comparison of 13 abliterated Gemma4-E2B variants today. Giving a heads-up before it goes live.
-- Their card reports KL divergence from base at ~0.001, and 17/100 refusals.
-- We measured KL at **0.1872** using the same Heretic evaluator methodology. That is **187x higher** than claimed.
-- Refusal rate is roughly consistent. 17/100 on their test vs 71/400 on ours, so about 17% either way.
-- To verify our KL pipeline is accurate, we cross-checked against 4 Heretic-built models that self-report KL values. 3 of 4 land within ±6% of the card value. The standard projection models llmfan46, coder3101, and pew all measure at KL 0.068 to 0.153, which matches the 0.067 DuoNeural cites for standard projection. Our measurement is solid.
-- Possible explanation. The ~0.001 KL on their card may come from the Heretic optimisation trial itself, measuring KL over the LoRA adapter only. Our post-hoc measurement evaluates the full merged model against the base. These can differ substantially. If that is what happened, the card should clarify what the number represents.
-- Their model modified 49 tensors across 2 types in 29 layers. A moderate footprint compared to the surgical approaches at 7 to 16 tensors.
-- Ask if they would consider updating the KL claim or clarifying what it measures.
+- Raised the KL discrepancy (card claimed ~0.001, we measured 0.1872, 187x higher)
+- DuoNeural responded promptly and updated their model card with our KL measurement and HarmBench refusal count (71/400)
+- They plan to adopt Heretic v2.0 KL methodology for future DuoNeural abliteration cards
+- Refusal rates were consistent: 17/100 on their test vs 71/400 on ours (~17% either way)
+- They also mentioned a new model (LFM2.5-8B-A1B-Abliterated) for potential future comparison
+- Positive outcome. Link to the discussion from the README as an example of constructive community feedback
 
 ---
 
