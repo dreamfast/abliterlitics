@@ -23,11 +23,25 @@ I took one AI model, `google/gemma-4-E2B-it`, Google's 2B-parameter reasoning mo
 
 The 13 variants come from 9 creators using distinct approaches. Four use the [Heretic](https://github.com/p-e-w/heretic) tool, two from [Huihui](https://huggingface.co/huihui-ai), one from [Prithiv](https://huggingface.co/paulo037), plus [TrevorJS](https://huggingface.co/trevorjs), [Wangzhang](https://huggingface.co/wangzhang), [WWT CyberLab](https://huggingface.co/wwtcyberlab), [EtherOpus](https://huggingface.co/ether4o4), [Treadon](https://huggingface.co/treadon), and [Duoneural](https://huggingface.co/duoneural). Many claim to preserve capabilities while removing safety. Lets see if the data backs that up.
 
-**The honest ones** fare well. coder3101 reports a divergence score of 0.1651 and 5/100 refusals. Our numbers match the divergence at 0.167, and with LLM review we find 16/400 refusals and 96.0% ASR. It actually beats the base model on math reasoning. llmfan46 claims 96% fewer refusals. We confirm it, with capability fully preserved. pew reports divergence of 0.152, we get 0.153. trevorjs claims divergence of 0.346 and 1/100 refusals. We see 0.365, close enough, with 99.5% safety removal and only minor math impact. These creators reported their numbers honestly and the models deliver.
+#### Claims that matched our measurements
 
-**Where claims diverged from measurements.** duoneural originally claimed "near-zero divergence at approximately 0.001" and 17/100 refusals. Our measurement: divergence of 0.187, which is 187x higher than claimed, and 71 refusals on our safety test. After we [raised this on their model card](https://huggingface.co/DuoNeural/Gemma-4-E2B-Heretic/discussions/1), DuoNeural updated their card with our KL measurement and HarmBench refusal count. wwtcyberlab claims "0.0% refusal rate" and "101% quality preservation". We measured 2 refusals on our safety test and language modelling substantially degraded, with LAMBADA perplexity 5.69x higher than base. treadon says "same model, same weights, same knowledge." Our divergence measurement at 3.971 is 4.1x higher than any other variant, indicating heavy modification beyond just refusal direction ablation. ether4o4 applies Opus reasoning distillation on top of abliteration, but scores worst on math at 76.6% with 84 empty responses, suggesting the distillation did not achieve its intended reasoning improvement. For all models where our results differ from the creator's claims, we have reached out to the authors and will update this report if any errors in our methodology are identified.
+coder3101 reports a divergence score of 0.1651 and 5/100 refusals. Our numbers match the divergence at 0.167, and with LLM review we find 16/400 refusals and 96.0% ASR. It actually beats the base model on math reasoning. llmfan46 claims 96% fewer refusals. We confirm it, with capability fully preserved. pew reports divergence of 0.152, we get 0.153. trevorjs claims divergence of 0.346 and 1/100 refusals. We see 0.365, close enough, with 99.5% safety removal and only minor math impact. These creators reported verifiable numbers and the models deliver.
 
-**The quiet ones** make no capability claims and that is fine. huihui-v1 and huihui-v2 just say "uncensored" and huihui-v2 honestly reports higher perplexity than v1. prithiv tags itself "uncensored, abliterated" without preservation claims. pew reports its divergence score and lets the number speak. kasper claims a "Goldilocks zone" at divergence 0.1650 but we measure 0.193, higher than claimed, though capability is indeed preserved with only a tiny math drop. wangzhang describes its method in thorough technical detail without making preservation claims, which is a refreshingly honest approach.
+#### Where claims diverged from measurements
+
+duoneural originally claimed "near-zero divergence at approximately 0.001" and 17/100 refusals. Our measurement: divergence of 0.187, which is 187x higher than claimed, and 71 refusals on our safety test. After we [raised this on their model card](https://huggingface.co/DuoNeural/Gemma-4-E2B-Heretic/discussions/1), DuoNeural updated their card with our KL measurement and HarmBench refusal count.
+
+wwtcyberlab claims "0.0% refusal rate" and "101% quality preservation". We measured 2 refusals on our safety test and language modelling substantially degraded, with LAMBADA perplexity 5.69x higher than base.
+
+treadon says "same model, same weights, same knowledge." Our divergence measurement at 3.971 is 4.1x higher than any other variant, indicating heavy modification beyond just refusal direction ablation.
+
+ether4o4 applies Opus reasoning distillation on top of abliteration, but scores worst on math at 76.6% with 84 empty responses, suggesting the distillation did not achieve its intended reasoning improvement.
+
+For all models where our results differ from the creator's claims, we have reached out to the authors and will update this report if any errors in our methodology are identified.
+
+#### Models without preservation claims
+
+Not every model makes capability claims, and that is fine. huihui-v1 and huihui-v2 just say "uncensored" and huihui-v2 notes higher perplexity than v1. prithiv tags itself "uncensored, abliterated" without preservation claims. pew reports its divergence score and lets the number speak. kasper claims a "Goldilocks zone" at divergence 0.1650 but we measure 0.193, higher than claimed, though capability is indeed preserved with only a tiny math drop. wangzhang describes its method in thorough technical detail without making preservation claims, which is a refreshingly transparent approach.
 
 ### Which one should you use?
 
