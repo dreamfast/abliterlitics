@@ -57,7 +57,7 @@ All 13 remove safety filters. The base model refuses 67.8% of harmful requests. 
 
 **Not recommended for general use: ether4o4.** ether4o4 loses 6.9 points on math with 84 empty responses where the model thinks until it runs out of tokens without producing an answer. It is an interesting research subject showing what happens when distillation is combined with abliteration, but the capability cost is hard to justify when other variants achieve similar ASR with better preserved reasoning. treadon achieves 100% ASR but with KL=3.971, the heaviest distribution shift of any variant — see the treadon variant summary for details.
 
-**wangzhang** deserves a separate mention. The model card is one of the best documented of the 13, including a genuinely insightful analysis of how evaluation methods can produce misleading results on Gemma4. It removes safety effectively at 99.8% ASR with only 1 refusal. The downside is that its language modelling takes a significant hit, and the model was missing 60 weights straight from HuggingFace that needed patching before it could load. For research or targeted use where safety removal is the only goal, it delivers. For everyday use, the capability tradeoffs are too steep.
+**wangzhang** deserves a separate mention. The model card is one of the best documented of the 13, including a genuinely insightful analysis of how evaluation methods can produce misleading results on Gemma4. It removes safety effectively at 99.8% ASR with only 1 refusal. The downside is that its language modelling takes a significant hit. For research or targeted use where safety removal is the only goal, it delivers. For everyday use, the capability tradeoffs are too steep.
 
 ## Key findings
 
