@@ -1,0 +1,16 @@
+{
+  "name": "qwen36-35b",
+  "base": "../../models/Qwen3.6-35B-A3B",
+  "variants": {
+    "hauhau": {
+      "path": "../../models/Qwen3.6-35B-A3B-HauhauCS-Q8KP-recovered",
+      "display_name": "HauhauCS"
+    }
+  },
+  "settings": {
+    "inference_backend": "vllm",
+    "lm_eval_max_model_len": 8192,
+    "harmbench_max_tokens": 6144,
+    "tokenizer_dir": "../../models/Qwen3.6-35B-A3B"
+  }
+}

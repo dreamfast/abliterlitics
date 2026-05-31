@@ -11,6 +11,21 @@ models_gguf/
 # Results (generated output at top level, not per-comparison)
 /results/
 
+# Large comparison data (goes to HuggingFace, not git)
+comparisons/*/results/
+comparisons/*/logs/
+comparisons/**/*.log
+comparisons/**/layer_analysis_*.json
+comparisons/**/edit_vector_*.json
+comparisons/**/fingerprint_*.json
+comparisons/**/svd_*.json
+comparisons/**/correlation_*.json
+comparisons/**/lowrank_*.json
+comparisons/**/subspace_*.json
+comparisons/**/multi_model_panel.json
+comparisons/**/*_to_*_keys.csv
+comparisons/**/samples_*.jsonl
+
 # Caches
 .cache/
 *.pyc
@@ -59,3 +74,10 @@ markdown/
 
 # Writing style guide (internal, not for publication)
 WRITING_STYLE.md
+
+done/
+archive/
+temp/
+.opencode-docker
+abliterlitics.db
+upload_graphs.sh
