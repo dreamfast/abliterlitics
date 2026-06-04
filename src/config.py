@@ -49,8 +49,8 @@ class ComparisonConfig:
     lm_eval_tasks: str
     inference_backend: str = "auto"
     lm_eval_max_gen_toks: int = 2048
-    lm_eval_max_model_len: int = 4096
-    harmbench_max_tokens: int = 2048
+    lm_eval_max_model_len: int = 8192
+    harmbench_max_tokens: int = 8096
     kl_num_prompts: int = 100
     kl_dataset: str = "mlabonne/harmless_alpaca"
     architecture: str = ""  # Auto-detected
@@ -143,8 +143,8 @@ class ComparisonConfig:
             ),
             inference_backend=settings.get("inference_backend", "auto"),
             lm_eval_max_gen_toks=settings.get("lm_eval_max_gen_toks", 2048),
-            lm_eval_max_model_len=settings.get("lm_eval_max_model_len", 4096),
-            harmbench_max_tokens=settings.get("harmbench_max_tokens", 2048),
+            lm_eval_max_model_len=settings.get("lm_eval_max_model_len", 8192),
+            harmbench_max_tokens=settings.get("harmbench_max_tokens", 8096),
             kl_num_prompts=settings.get("kl_num_prompts", 100),
             kl_dataset=settings.get("kl_dataset", "mlabonne/harmless_alpaca"),
         )

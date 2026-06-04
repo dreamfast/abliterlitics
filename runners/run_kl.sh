@@ -58,7 +58,12 @@ RESULTS_DIR="${COMPARISON_DIR}/results/kl"
 mkdir -p "$RESULTS_DIR"
 
 EXTRA_ARGS=()
-[[ -n "$NUM_PROMPTS" ]] && EXTRA_ARGS+=(--num-prompts "$NUM_PROMPTS")
+# CLI --num-prompts overrides comparison.json kl_num_prompts setting
+if [[ -n "$NUM_PROMPTS" ]]; then
+    EXTRA_ARGS+=(--num-prompts "$NUM_PROMPTS")
+elif [[ -n "${KL_NUM_PROMPTS:-}" ]]; then
+    EXTRA_ARGS+=(--num-prompts "$KL_NUM_PROMPTS")
+fi
 
 # Phase 1: Collect base model logits
 BASE_LOGITS="${RESULTS_DIR}/logits_base.pt"

@@ -81,12 +81,18 @@
         },
         "lm_eval_max_model_len": {
           "type": "integer",
-          "default": 4096,
+          "default": 8192,
           "description": "Maximum model context length for vLLM."
         },
         "harmbench_max_tokens": {
           "type": "integer",
-          "default": 2048
+          "default": 8096,
+          "description": "Maximum generation tokens for HarmBench. Reasoning models need ~5K thinking + ~3K response."
+        },
+        "reasoning_parser": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Override reasoning parser for vLLM. null = auto-detect from model config.json. Set to 'none' to disable."
         },
         "kl_num_prompts": {
           "type": "integer",

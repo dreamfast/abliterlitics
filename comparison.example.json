@@ -21,6 +21,12 @@
   },
   "settings": {
     "inference_backend": "vllm",
-    "lm_eval_max_model_len": 4096
+    "tokenizer_dir": "models/GLM-4.7-Flash",
+    "lm_eval_tasks": "mmlu,gsm8k,hellaswag,arc_challenge,winogrande,truthfulqa,piqa,lambada_openai",
+    "lm_eval_max_model_len": 8192,
+    "lm_eval_max_gen_toks": 2048,
+    "harmbench_max_tokens": 8096,
+    "kl_num_prompts": 100,
+    "kl_dataset": "mlabonne/harmless_alpaca"
   }
 }
