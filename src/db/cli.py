@@ -13,11 +13,10 @@ import logging
 import sqlite3
 from pathlib import Path
 
-from src.db.core import DB_PATH, get_db, load_behaviors, now_iso
+from src.db.core import DB_PATH, get_db
 from src.db.pipeline import (
     get_all_stages,
     get_stale_stages,
-    init_stages,
     stage_complete,
     stage_fail,
     stage_skip,
@@ -33,217 +32,16 @@ log = logging.getLogger(__name__)
 
 
 def import_comparison(conn: sqlite3.Connection, comparison_dir: str) -> None:
-    """Import all HarmBench data for a comparison directory.
+    """Import all data for a comparison directory.
 
-    Also registers the comparison in the comparisons table and
-    pre-populates model_stages for all models × all stages.
+    Delegates to ``src.db.importers.import_comparison()`` which handles:
+    comparison registration, model import, behavior import,
+    HarmBench responses/classifications, pipeline stage init,
+    and result file imports.
     """
-    base = Path(comparison_dir)
-    comp_file = base / "comparison.json"
-    if not comp_file.exists():
-        log.error("No comparison.json found in %s", comparison_dir)
-        return
+    from src.db.importers import import_comparison as _import
 
-    comp = json.loads(comp_file.read_text())
-    comparison_name = comp.get("name", base.name)
-
-    # --- Register comparison ---
-    settings = comp.get("settings", {})
-    variants = comp.get("variants", {})
-    # Detect architecture from base model config if available
-    architecture = ""
-    base_path = comp.get("base", "")
-    base_config = base / base_path / "config.json"
-    if not base_config.exists():
-        # base_path might be absolute or relative differently
-        base_config = Path(base_path) / "config.json"
-    if base_config.exists():
-        try:
-            from src.config import _detect_architecture
-
-            arch_path = Path(base_path).resolve() if Path(base_path).is_absolute() else base.resolve() / base_path
-            architecture = _detect_architecture(arch_path)
-        except Exception:
-            pass
-
-    conn.execute(
-        """INSERT INTO comparisons (name, base_model, architecture, num_variants, settings_json)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(name) DO UPDATE SET
-            base_model = excluded.base_model,
-            architecture = excluded.architecture,
-            num_variants = excluded.num_variants,
-            settings_json = excluded.settings_json,
-            updated_at = ?""",
-        (comparison_name, base_path, architecture, len(variants), json.dumps(settings), now_iso()),
-    )
-    conn.commit()
-    log.info("Registered comparison: %s (%d variants, arch=%s)", comparison_name, len(variants), architecture)
-
-    # --- Import behaviors ---
-    behaviors = load_behaviors()
-    bcount = 0
-    for b in behaviors:
-        try:
-            conn.execute(
-                "INSERT OR IGNORE INTO behaviors "
-                "(behavior_id, behavior_text, semantic_category, tags) "
-                "VALUES (?, ?, ?, ?)",
-                (b.get("BehaviorID", ""), b.get("Behavior", ""), b.get("SemanticCategory", ""), b.get("Tags", "")),
-            )
-            bcount += 1
-        except sqlite3.Error:
-            log.warning("Failed to import behavior: %s", b.get("BehaviorID", ""))
-    conn.commit()
-    log.info("Imported %d behaviors", bcount)
-
-    # --- Import models ---
-    base_name = comp.get("base", "").split("/")[-1] or "base"
-    base_display = "Base"
-    conn.execute(
-        """INSERT INTO models (comparison, model_name, display_name, model_path, variant_type)
-        VALUES (?, ?, ?, ?, 'base')
-        ON CONFLICT(comparison, model_name) DO UPDATE SET
-            display_name = excluded.display_name,
-            model_path = excluded.model_path""",
-        (comparison_name, base_name, base_display, comp.get("base", "")),
-    )
-
-    for vname, vinfo in variants.items():
-        path = vinfo.get("path", "")
-        display = vinfo.get("display_name", vname)
-        conn.execute(
-            """INSERT INTO models (comparison, model_name, display_name, model_path, variant_type)
-            VALUES (?, ?, ?, ?, 'variant')
-            ON CONFLICT(comparison, model_name) DO UPDATE SET
-                display_name = excluded.display_name,
-                model_path = excluded.model_path""",
-            (comparison_name, vname, display, path),
-        )
-    conn.commit()
-    log.info("Imported %d models (1 base + %d variants)", 1 + len(variants), len(variants))
-
-    # --- Pre-populate model_stages ---
-    all_model_names = [base_name] + list(variants.keys())
-    init_stages(conn, comparison_name, all_model_names)
-
-    # --- Import responses and classifications ---
-    harmbench_dir = base / "results" / "harmbench"
-    classified_dir = base / "results" / "harmbench_classified"
-
-    if not harmbench_dir.exists():
-        log.info("No harmbench results found in %s", harmbench_dir)
-        return
-
-    response_files = sorted(harmbench_dir.glob("harmbench_*_responses.json"))
-    total_responses = 0
-    total_classified = 0
-
-    for rf in response_files:
-        model_name = rf.stem.replace("harmbench_", "").replace("_responses", "")
-        model_key = model_name.replace("_", "-")
-
-        # Find the actual model_name in our models table
-        actual_model = model_name
-        if conn.execute(
-            "SELECT 1 FROM models WHERE comparison = ? AND model_name = ?",
-            (comparison_name, model_name),
-        ).fetchone():
-            actual_model = model_name
-        elif conn.execute(
-            "SELECT 1 FROM models WHERE comparison = ? AND model_name = ?",
-            (comparison_name, model_key),
-        ).fetchone():
-            actual_model = model_key
-        else:
-            log.warning("Model %s not found in comparison.json, adding anyway", model_name)
-            actual_model = model_name
-            conn.execute(
-                """INSERT INTO models (comparison, model_name, display_name, model_path, variant_type)
-                VALUES (?, ?, '', '', 'variant')
-                ON CONFLICT(comparison, model_name) DO NOTHING""",
-                (comparison_name, model_name),
-            )
-
-        raw = json.loads(rf.read_text())
-        items = raw.get("harmbench", [])
-        kw_count = 0
-
-        for item in items:
-            bid = item.get("behavior_id", "")
-            is_ref_kw = 1 if item.get("is_refusal") else 0
-            if is_ref_kw:
-                kw_count += 1
-
-            conn.execute(
-                """INSERT INTO responses
-                (comparison, model_name, behavior_id, response_text, reasoning_text,
-                 completion_tokens, finish_reason, error, is_refusal_kw)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(comparison, model_name, behavior_id) DO UPDATE SET
-                    response_text = excluded.response_text,
-                    reasoning_text = excluded.reasoning_text,
-                    completion_tokens = excluded.completion_tokens,
-                    finish_reason = excluded.finish_reason,
-                    error = excluded.error,
-                    is_refusal_kw = excluded.is_refusal_kw""",
-                (
-                    comparison_name,
-                    actual_model,
-                    bid,
-                    item.get("response", ""),
-                    item.get("reasoning", ""),
-                    item.get("completion_tokens", 0),
-                    item.get("finish_reason", ""),
-                    item.get("error"),
-                    is_ref_kw,
-                ),
-            )
-            total_responses += 1
-
-        # Import classified results if available
-        cls_file = classified_dir / f"{model_name}_classified.json"
-        if not cls_file.exists():
-            cls_file = classified_dir / f"{model_key}_classified.json"
-
-        if cls_file.exists():
-            cls = json.loads(cls_file.read_text())
-            classifier = cls.get("classifier", "unknown")
-
-            for item in cls.get("harmbench_classified", []):
-                bid = item.get("behavior_id", "")
-                label = "refused" if item.get("is_refusal") else "not_refused"
-                is_ref = 1 if item.get("is_refusal") else 0
-
-                conn.execute(
-                    """INSERT INTO classifications
-                    (comparison, model_name, behavior_id, classifier, label, is_refusal,
-                     layer, reason, confidence)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(comparison, model_name, behavior_id, classifier) DO UPDATE SET
-                        label = excluded.label,
-                        is_refusal = excluded.is_refusal,
-                        layer = excluded.layer,
-                        reason = excluded.reason,
-                        confidence = excluded.confidence""",
-                    (
-                        comparison_name,
-                        actual_model,
-                        bid,
-                        classifier,
-                        label,
-                        is_ref,
-                        item.get("classification_layer", ""),
-                        item.get("classification_reason", ""),
-                        item.get("classification_confidence", "high"),
-                    ),
-                )
-                total_classified += 1
-
-        conn.commit()
-        log.info("  %s: %d responses, %d kw-refusals", actual_model, len(items), kw_count)
-
-    log.info("Total: %d responses, %d classifications imported", total_responses, total_classified)
+    _import(conn, comparison_dir)
 
 
 def cmd_status(conn: sqlite3.Connection, comparison: str | None = None) -> None:
@@ -610,6 +408,11 @@ def main() -> None:
     p_import.add_argument("--comparison", default=None, help="Comparison name")
     p_import.add_argument("--db", default=DB_PATH, help="Database path")
 
+    # --- import-results ---
+    p_ires = sub.add_parser("import-results", help="Import result files (lm-eval, KL, weights)")
+    p_ires.add_argument("comparison_dir", help="Path to comparison directory")
+    p_ires.add_argument("--db", default=DB_PATH, help="Database path")
+
     # --- pipeline-status ---
     p_ps = sub.add_parser("pipeline-status", help="Show rich pipeline status for a comparison")
     p_ps.add_argument("comparison_dir", help="Path to comparison directory")
@@ -683,6 +486,19 @@ def main() -> None:
         conn = get_db(args.db)
         cmd_import_llm_reviews(conn, args.reviews_file, args.reviewer, getattr(args, "comparison", None))
         cmd_status(conn)
+        conn.close()
+
+    elif args.command == "import-results":
+        conn = get_db(args.db)
+        from src.db.importers import import_all_results
+
+        counts = import_all_results(conn, args.comparison_dir)
+        if counts:
+            print("Imported:")
+            for k, v in counts.items():
+                print(f"  {k}: {v} rows")
+        else:
+            print("No results found to import.")
         conn.close()
 
     elif args.command == "pipeline-status":
