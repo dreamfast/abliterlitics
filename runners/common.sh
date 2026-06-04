@@ -76,3 +76,40 @@ result_exists() {
     [[ "${SKIP_EXISTING:-1}" == "1" && -f "$1" ]] && return 0
     return 1
 }
+
+# ---------------------------------------------------------------------------
+# Database helpers — all call python3 -m src.db
+# All are fire-and-forget (|| true) — DB failures never block the pipeline.
+# All should be guarded by [[ $DRY_RUN -eq 0 ]] in the calling runner.
+# ---------------------------------------------------------------------------
+
+db_init() {
+    local comp_dir="$1"
+    python3 -m src.db init "$comp_dir" 2>/dev/null || true
+}
+
+db_stage_start() {
+    local comp="$1" model="$2" stage="$3"
+    python3 -m src.db stage-start --comparison "$comp" --model "$model" --stage "$stage" 2>/dev/null || true
+}
+
+db_stage_complete() {
+    local comp="$1" model="$2" stage="$3"
+    shift 3
+    python3 -m src.db stage-complete --comparison "$comp" --model "$model" --stage "$stage" "$@" 2>/dev/null || true
+}
+
+db_stage_fail() {
+    local comp="$1" model="$2" stage="$3" error="$4"
+    python3 -m src.db stage-fail --comparison "$comp" --model "$model" --stage "$stage" --error "$error" 2>/dev/null || true
+}
+
+db_stage_skip() {
+    local comp="$1" model="$2" stage="$3"
+    python3 -m src.db stage-skip --comparison "$comp" --model "$model" --stage "$stage" 2>/dev/null || true
+}
+
+db_import_results() {
+    local comp_dir="$1"
+    python3 -m src.db import-results "$comp_dir" 2>/dev/null || true
+}

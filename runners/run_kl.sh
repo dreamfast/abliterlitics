@@ -72,6 +72,9 @@ if result_exists "$BASE_LOGITS"; then
     log "Skipping (exists): base logits"
 else
     log "Phase 1: Collecting base logits from ${BASE_DIR}"
+    if [[ $DRY_RUN -eq 0 ]]; then
+        db_stage_start "$COMPARISON_NAME" "base" "kl"
+    fi
     if [[ $DRY_RUN -eq 1 ]]; then
         log "  [dry-run] docker_run ${GPU} ${FORENSICS_IMAGE} kl_divergence.py collect --model /model --output /results/logits_base.pt"
     else
@@ -92,6 +95,9 @@ fi
 
 # Phase 2: Collect variant logits + compute KL divergence
 for variant in $VARIANT_NAMES; do
+    if [[ $DRY_RUN -eq 0 ]]; then
+        db_stage_start "$COMPARISON_NAME" "$variant" "kl"
+    fi
     variant_path_var="VARIANT_PATH_$(echo "$variant" | tr '-' '_')"
     variant_path="${!variant_path_var}"
     variant_logits="${RESULTS_DIR}/logits_${variant}.pt"
@@ -143,6 +149,14 @@ for variant in $VARIANT_NAMES; do
             --variant-logits "/results/logits_${variant}.pt" \
             --variant-label "${variant}" \
             --output "/results/kl_${variant}.json"
+    if [[ $DRY_RUN -eq 0 ]]; then
+        db_stage_complete "$COMPARISON_NAME" "$variant" "kl" --result-path "$out_file"
+    fi
 done
+
+# Import results to DB
+if [[ $DRY_RUN -eq 0 ]]; then
+    db_import_results "$COMP_DIR"
+fi
 
 log "KL analysis complete"

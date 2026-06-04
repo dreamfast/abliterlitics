@@ -140,12 +140,22 @@ run_lm_eval() {
     local skip_flag="VARIANT_SKIP_LM_${var_slug}"
     if [[ "${!skip_flag:-0}" == "1" ]]; then
         log "[skip] ${model_name}: skip_lm_eval=true"
+        if [[ $DRY_RUN -eq 0 ]]; then
+            db_stage_skip "$COMPARISON_NAME" "$model_name" "lm_eval"
+        fi
         return 0
     fi
 
     if result_exists "$out_file"; then
         log "Skipping (exists): ${model_name}"
+        if [[ $DRY_RUN -eq 0 ]]; then
+            db_stage_skip "$COMPARISON_NAME" "$model_name" "lm_eval"
+        fi
         return 0
+    fi
+
+    if [[ $DRY_RUN -eq 0 ]]; then
+        db_stage_start "$COMPARISON_NAME" "$model_name" "lm_eval"
     fi
 
     # Detect model size for resource decisions
@@ -350,6 +360,9 @@ run_lm_eval() {
 
     if [[ ${#result_files[@]} -eq 0 ]]; then
         log "  ERROR: no results found for ${model_name}"
+        if [[ $DRY_RUN -eq 0 ]]; then
+            db_stage_fail "$COMPARISON_NAME" "$model_name" "lm_eval" "no results found"
+        fi
     elif [[ ${#result_files[@]} -eq 1 ]]; then
         cp "${result_files[0]}" "${out_file}"
         local end_time elapsed
@@ -384,6 +397,11 @@ if source is not None:
         elapsed=$(( end_time - start_time ))
         log "  Saved: ${out_file} (${elapsed}s, merged ${#result_files[@]} phase results)"
     fi
+
+    # Mark stage complete in DB
+    if [[ $DRY_RUN -eq 0 ]] && [[ ${#result_files[@]} -gt 0 ]]; then
+        db_stage_complete "$COMPARISON_NAME" "$model_name" "lm_eval" --result-path "$out_file"
+    fi
 }
 
 # Run base model
@@ -394,5 +412,10 @@ for variant in $VARIANT_NAMES; do
     variant_path_var="VARIANT_PATH_${variant}"
     run_lm_eval "${variant}" "${!variant_path_var}"
 done
+
+# Import results to DB
+if [[ $DRY_RUN -eq 0 ]]; then
+    db_import_results "$COMP_DIR"
+fi
 
 log "lm-eval complete"

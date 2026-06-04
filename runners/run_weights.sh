@@ -57,6 +57,11 @@ COMPARISON_DIR="$(cd "$(dirname "${COMPARISON_DIR}")" && pwd)/$(basename "${COMP
 RESULTS_DIR="${COMPARISON_DIR}/results"
 mkdir -p "$RESULTS_DIR"
 
+# Initialize DB tracking
+if [[ $DRY_RUN -eq 0 ]]; then
+    db_init "$COMP_DIR"
+fi
+
 # Run a weight analysis script inside Docker.
 # Mounts comparison dir at /comparison and results at /results.
 # Usage: run_script <script_name> <output_file> [extra_args...]
@@ -91,10 +96,16 @@ run_script() {
 }
 
 # Phase 1: Panel comparison
+if [[ $DRY_RUN -eq 0 ]]; then
+    db_stage_start "$COMPARISON_NAME" "all" "weights"
+fi
 run_script "panel_comparison.py" "panel_comparison.json"
 
 # Phase 2: Edit vectors — one per variant
 for variant in $VARIANT_NAMES; do
+    if [[ $DRY_RUN -eq 0 ]]; then
+        db_stage_start "$COMPARISON_NAME" "$variant" "weights"
+    fi
     run_script "edit_vector_analysis.py" "edit_${variant}.json"
 done
 
@@ -146,5 +157,10 @@ run_script "expert_analysis.py" "expert_analysis.json"
 
 # Phase 10: Cross-architecture comparison (if multiple comparisons available)
 run_script "cross_arch_comparison.py" "cross_arch.json"
+
+# Import results to DB
+if [[ $DRY_RUN -eq 0 ]]; then
+    db_import_results "$COMP_DIR"
+fi
 
 log "Weight analysis complete"
