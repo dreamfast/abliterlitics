@@ -23,6 +23,8 @@ Commands:
   report        Generate provenance report from results
   build         Build Docker images
   status        Show status of comparison results
+  db            Database operations (init, import-results, pipeline-status, etc.)
+  tables        Generate markdown tables from DB (benchmark, harmbench, kl, summary, all)
   clean         Remove generated results
   validate      Validate comparison.json structure
 
@@ -78,6 +80,7 @@ cmd_auto() {
     local flags
     flags="$(global_flags)"
     log "Running full pipeline for ${comp_dir}"
+    db_init "$comp_dir"
     bash "${RUNNERS_DIR}/run_weights.sh" $flags "$comp_dir"
     bash "${RUNNERS_DIR}/run_kl.sh" $flags "$comp_dir"
     bash "${RUNNERS_DIR}/run_lm_eval.sh" $flags "$comp_dir"
@@ -197,6 +200,17 @@ cmd_status() {
     echo "Comparison: ${COMPARISON_NAME}"
     echo "Variants:   ${VARIANT_NAMES}"
     echo ""
+
+    # Try DB pipeline-status first; fall back to file counting if DB not initialized
+    if python3 -m src.db pipeline-status "$comp_dir" 2>/dev/null; then
+        :  # DB status printed successfully
+    else
+        _status_file_count "$comp_dir"
+    fi
+}
+
+_status_file_count() {
+    local comp_dir="$1"
     for subdir in weight kl lm_eval harmbench; do
         local count=0
         local dir="${comp_dir}/results/${subdir}"
@@ -205,6 +219,14 @@ cmd_status() {
         fi
         printf "  %-12s %d files\n" "$subdir" "$count"
     done
+}
+
+cmd_db() {
+    python3 -m src.db "$@"
+}
+
+cmd_tables() {
+    python3 "${SCRIPT_DIR}/src/db_tables.py" "$@"
 }
 
 cmd_clean() {
@@ -277,6 +299,8 @@ case "$COMMAND" in
     report)    cmd_report "${1:-.}" ;;
     build)     cmd_build ;;
     status)    cmd_status "${1:-.}" ;;
+    db)        cmd_db "$@" ;;
+    tables)    cmd_tables "$@" ;;
     clean)     cmd_clean "${1:-.}" ;;
     validate)  cmd_validate "${1:-.}" ;;
     *)         error "Unknown command: ${COMMAND}"; USAGE ;;
