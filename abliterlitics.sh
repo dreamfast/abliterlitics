@@ -108,7 +108,7 @@ cmd_harmbench() {
 cmd_graphs() {
     local comp_dir
     comp_dir="$(find_comp_dir "${1:-.}")"
-    local flags
+    load_comparison "$comp_dir"
     local results_dir="${comp_dir}/results"
     local graphs_dir="${comp_dir}/graphs"
     mkdir -p "$graphs_dir"
@@ -116,7 +116,7 @@ cmd_graphs() {
     log "Generating graphs for ${comp_dir}"
     # Run generate_graphs.py inside Docker
     if [[ $GLOBAL_DRY_RUN -eq 1 ]]; then
-        log "  [dry-run] docker_run auto ${FORENSICS_IMAGE} generate_graphs.py"
+        log "  [dry-run] docker_run auto ${FORENSICS_IMAGE} generate_graphs.py --label ${COMPARISON_NAME}"
         return
     fi
 
@@ -128,12 +128,14 @@ cmd_graphs() {
         -- \
         python3 /app/src/report/generate_graphs.py \
             --results-dir /results \
-            --output-dir /graphs
+            --output-dir /graphs \
+            --label "${COMPARISON_NAME}"
 }
 
 cmd_report() {
     local comp_dir
     comp_dir="$(find_comp_dir "${1:-.}")"
+    load_comparison "$comp_dir"
     local results_dir="${comp_dir}/results"
     local report_dir="${comp_dir}/report"
     mkdir -p "$report_dir"
@@ -144,15 +146,25 @@ cmd_report() {
         return
     fi
 
-    docker_run "${GLOBAL_GPU:-$(detect_best_gpu)}" "$FORENSICS_IMAGE" \
-        -v "${results_dir}:/results:ro" \
-        -v "${report_dir}:/report" \
-        -v "${ABL_ROOT}/src:/app/src:ro" \
-        -e PYTHONPATH=/app/src \
-        -- \
-        python3 /app/src/report/provenance_report.py \
-            --results-dir /results \
-            --output-dir /report
+    # TODO: provenance_report.py requires --variant and --target per variant pair.
+    # For now, generate a report per variant vs base.
+    for variant in $VARIANT_NAMES; do
+        local variant_slug
+        variant_slug="$(echo "$variant" | tr '-' '_')"
+        local variant_path_var="VARIANT_PATH_${variant_slug}"
+        log "  Report: base -> ${variant}"
+        docker_run "${GLOBAL_GPU:-$(detect_best_gpu)}" "$FORENSICS_IMAGE" \
+            -v "${results_dir}:/results:ro" \
+            -v "${report_dir}:/report" \
+            -v "${ABL_ROOT}/src:/app/src:ro" \
+            -e PYTHONPATH=/app/src \
+            -- \
+            python3 /app/src/report/provenance_report.py \
+                --results-dir /results \
+                --output-dir /report \
+                --variant "${variant}" \
+                --target "base" || log "  WARNING: report failed for ${variant}"
+    done
 }
 
 cmd_build() {
