@@ -54,7 +54,9 @@ SKIP_EXISTING=1
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --gpu)           GPUS_ARG="$2"; shift 2 ;;  # alias for --gpus
         --gpus)          GPUS_ARG="$2"; shift 2 ;;
+        --backend)       shift 2 ;;  # consumed for CLI compat, lm-eval always uses vLLM
         --tasks)         TASKS="$2"; shift 2 ;;
         --quantization)  QUANTIZATION="$2"; shift 2 ;;
         --skip-existing) SKIP_EXISTING=1; shift ;;

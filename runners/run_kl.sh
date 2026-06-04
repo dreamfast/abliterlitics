@@ -34,6 +34,7 @@ SKIP_EXISTING=1
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --gpu)           GPU="$2"; shift 2 ;;
+        --backend)       shift 2 ;;  # consumed for CLI compat, KL always uses Docker
         --num-prompts)   NUM_PROMPTS="$2"; shift 2 ;;
         --skip-existing) SKIP_EXISTING=1; shift ;;
         --force)         SKIP_EXISTING=0; shift ;;
