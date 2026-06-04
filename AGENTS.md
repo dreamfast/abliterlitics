@@ -181,6 +181,51 @@ comparison.json                # Model configs (paths, names)
 
 ---
 
+## Automation Pipeline
+
+The `./abliterlitics.sh` CLI orchestrates all runners. The recommended workflow:
+
+```bash
+# Full pipeline for any comparison
+./abliterlitics.sh auto ./comparisons/<name>/
+
+# Or individual phases
+./abliterlitics.sh weights ./comparisons/<name>/
+./abliterlitics.sh kl ./comparisons/<name>/
+./abliterlitics.sh lm-eval ./comparisons/<name>/
+./abliterlitics.sh harmbench ./comparisons/<name>/
+./abliterlitics.sh graphs ./comparisons/<name>/
+
+# Useful flags
+./abliterlitics.sh --dry-run auto ./comparisons/<name>/   # Preview what runs
+./abliterlitics.sh --force lm-eval ./comparisons/<name>/   # Rerun all models
+./abliterlitics.sh --backend llamacpp harmbench ./comp/    # Use GGUF fallback
+./abliterlitics.sh status ./comparisons/<name>/            # Check result counts
+./abliterlitics.sh validate ./comparisons/<name>/          # Verify model paths
+```
+
+### Settings Plumbing
+
+`runners/_load_comparison.py` reads `comparison.json` and exports all settings as shell env vars:
+- `BASE_DIR`, `VARIANT_NAMES`, `VARIANT_PATH_*` — model paths
+- `LM_EVAL_TASKS`, `LM_EVAL_MAX_MODEL_LEN`, `LM_EVAL_MAX_GEN_TOKS` — lm-eval settings
+- `HARMBENCH_MAX_TOKENS` — HarmBench generation budget
+- `REASONING_PARSER`, `REASONING_CONFIG_JSON` — auto-detected from model `config.json`
+- `VARIANT_SKIP_HB_*`, `VARIANT_SKIP_LM_*` — per-variant skip flags
+
+Reasoning auto-detection: reads model's `config.json` architectures field. Qwen3/Qwen3.5 → `qwen3` parser with `<think/>` tags.
+
+### Key Defaults
+
+| Setting | Default | Notes |
+|---------|---------|-------|
+| `harmbench_max_tokens` | 8096 | Reasoning models need thinking + response room |
+| `lm_eval_max_model_len` | 8192 | Proven for 27B BNB4 on 32GB GPU |
+| `lm_eval_max_gen_toks` | 2048 | Phase 1 (loglikelihood+truthfulqa) |
+| GSM8K Phase 2 gen_toks | 7168 | Capped to `max_model_len - 1024` automatically |
+
+---
+
 ## GPU Hardware
 
 - GPU 0: NVIDIA RTX 5090 (32GB) — used for all eval runs

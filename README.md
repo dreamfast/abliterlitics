@@ -132,8 +132,8 @@ The full schema is defined in [`comparison.schema.json`](comparison.schema.json)
     "inference_backend": "auto",
     "lm_eval_tasks": "mmlu,gsm8k,hellaswag,arc_challenge,winogrande,truthfulqa,piqa,lambada_openai",
     "lm_eval_max_gen_toks": 2048,
-    "lm_eval_max_model_len": 4096,
-    "harmbench_max_tokens": 2048,
+     "lm_eval_max_model_len": 8192,
+     "harmbench_max_tokens": 8096,
     "kl_num_prompts": 100,
     "kl_dataset": "mlabonne/harmless_alpaca",
     "gguf_dir": null,
@@ -175,10 +175,11 @@ abliterlitics/
 │   └── Dockerfile.ik-llamacpp # ik_llama.cpp (faster fork, from source)
 ├── runners/
 │   ├── common.sh            # Shared shell functions
+│   ├── _load_comparison.py  # Exports comparison.json as shell env vars
 │   ├── run_weights.sh       # Weight analysis runner
 │   ├── run_kl.sh            # KL divergence runner
-│   ├── run_lm_eval.sh       # lm-eval runner
-│   └── run_harmbench.py     # HarmBench runner (Python)
+│   ├── run_lm_eval.sh       # lm-eval runner (vLLM server + local-completions)
+│   └── run_harmbench.py     # HarmBench runner (vLLM + llama.cpp fallback)
 ├── src/
 │   ├── __init__.py          # Version + RESULTS_VERSION
 │   ├── config.py            # ComparisonConfig, schema validation
@@ -189,7 +190,7 @@ abliterlitics/
 │   ├── kl/                  # KL divergence (frozen methodology)
 │   ├── benchmark/           # HarmBench + lm-eval scripts
 │   └── report/              # Graph + report generation
-├── tests/                   # Full test suite (203 tests)
+├── tests/                   # Full test suite (234 tests)
 ├── docs/
 │   ├── METHODOLOGY.md
 │   ├── EXAMPLES.md
@@ -224,7 +225,7 @@ Quality gates:
 ruff check src/            # Zero lint errors
 ruff format --check src/   # Consistent formatting
 mypy src/ --strict         # Type checking
-pytest tests/ -q           # 203 tests passing
+pytest tests/ -q           # 234 tests passing
 ```
 
 ## Documentation
