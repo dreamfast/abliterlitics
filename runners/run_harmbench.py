@@ -1,9 +1,21 @@
 #!/usr/bin/env python3
 """HarmBench runner — full 3-phase pipeline via Docker containers.
 
-Phase 1: Generate — Start inference server, send 400 harmful prompts
+Phase 1: Generate — Start vLLM (or llama.cpp), send 400 harmful prompts
 Phase 2: Classify — Run classifier on generated responses
 Phase 3: Score — Compute Attack Success Rate (ASR)
+
+Supports two inference backends:
+  - vLLM (default): Starts vLLM OpenAI server in Docker with BNB4 quantization
+  - llama.cpp: Uses GGUF files via llama-server (fallback)
+
+All settings come from comparison.json via _load_comparison.py shell exports,
+or from CLI flags which override config settings.
+
+Usage:
+    python3 run_harmbench.py ./comparisons/qwen36-35b
+    python3 run_harmbench.py --gpu 0 --phase generate ./comparisons/gemma4-e4b
+    python3 run_harmbench.py --backend llamacpp ./comparisons/qwen25-7b
 """
 
 from __future__ import annotations
@@ -12,6 +24,7 @@ import argparse
 import json
 import logging
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -19,57 +32,97 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-ABL_ROOT = SCRIPT_DIR.parent
+ABL_ROOT = Path(__file__).resolve().parent.parent
 
 FORENSICS_IMAGE = "abliterlitics-forensics:1.0.0"
+LMEVAL_IMAGE = "abliterlitics-lmeval:1.0.0"
 LLAMACPP_IMAGE = "abliterlitics-llamacpp:1.0.0"
 
 
-def load_comparison(comp_dir: str) -> tuple[dict, Path]:
-    """Load comparison.json, return (data, comparison_dir)."""
-    comp_path = Path(comp_dir)
-    if comp_path.is_file():
-        comp_file = comp_path
-        comp_dir_resolved = comp_path.parent
-    else:
-        comp_file = comp_path / "comparison.json"
-        comp_dir_resolved = comp_path
-    if not comp_file.exists():
-        print(f"ERROR: comparison.json not found: {comp_dir}", file=sys.stderr)
-        sys.exit(1)
-    with open(comp_file) as f:
-        return json.load(f), comp_dir_resolved
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def detect_best_gpu() -> int:
-    """Detect GPU with most VRAM."""
+    """Detect GPU with most VRAM via nvidia-smi."""
     result = subprocess.run(
         ["nvidia-smi", "--query-gpu=index,memory.total", "--format=csv,noheader,nounits"],
         capture_output=True,
         text=True,
     )
-    lines = [l.strip() for l in result.stdout.strip().split("\n") if l.strip()]
-    best = max(lines, key=lambda l: int(l.split(",")[1].strip()))
+    lines = [ln.strip() for ln in result.stdout.strip().split("\n") if ln.strip()]
+    if not lines:
+        log.warning("nvidia-smi returned no output, defaulting to GPU 0")
+        return 0
+    best = max(lines, key=lambda ln: int(ln.split(",")[1].strip()))
     return int(best.split(",")[0].strip())
 
 
-def docker_run_bg(gpu: int, image: str, args: list[str], command: list[str]) -> subprocess.Popen:
-    """Start a Docker container in the background. Returns Popen object."""
-    full_cmd = [
-        "docker", "run", "--rm", "--runtime=nvidia",
-        "-e", f"NVIDIA_VISIBLE_DEVICES={gpu}",
-        "-e", "CUDA_VISIBLE_DEVICES=0",
-        *args,
-        image,
-        *command,
-    ]
-    log.info("Starting: %s", " ".join(full_cmd))
-    return subprocess.Popen(full_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def allocate_port() -> int:
+    """Find a free TCP port on localhost."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
 
 
-def wait_for_server(base_url: str, timeout: int = 300) -> bool:
-    """Wait for inference server to be ready."""
+def model_size_gb(model_path: str) -> float:
+    """Get model directory size in GiB.
+
+    Returns 0.0 if the path doesn't exist or du fails, which will
+    skip BNB4 quantization (safe default: use native bf16).
+    """
+    try:
+        result = subprocess.run(
+            ["du", "-sk", model_path],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        kb = int(result.stdout.split()[0])
+        return kb / 1024 / 1024
+    except (subprocess.CalledProcessError, IndexError, ValueError) as exc:
+        log.warning("Could not determine size of %s: %s", model_path, exc)
+        return 0.0
+
+
+def docker_stop(name: str) -> None:
+    """Stop and remove a Docker container by name (idempotent)."""
+    subprocess.run(["docker", "stop", name], capture_output=True, timeout=60)
+    subprocess.run(["docker", "rm", name], capture_output=True, timeout=30)
+
+
+def docker_logs_tail(name: str, lines: int = 30) -> str:
+    """Get last N lines of a container's logs."""
+    result = subprocess.run(
+        ["docker", "logs", "--tail", str(lines), name],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result.stderr + result.stdout
+
+
+def wait_for_vllm(base_url: str, timeout: int = 300) -> bool:
+    """Wait for vLLM server to respond at /v1/models."""
+    import urllib.request
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            req = urllib.request.Request(f"{base_url}/v1/models")
+            resp = urllib.request.urlopen(req, timeout=5)
+            if resp.status == 200:
+                log.info("vLLM ready at %s", base_url)
+                return True
+        except Exception:
+            pass
+        time.sleep(5)
+    return False
+
+
+def wait_for_llamacpp(base_url: str, timeout: int = 120) -> bool:
+    """Wait for llama-server to respond at /health."""
     import urllib.request
 
     deadline = time.time() + timeout
@@ -78,117 +131,293 @@ def wait_for_server(base_url: str, timeout: int = 300) -> bool:
             req = urllib.request.Request(f"{base_url}/health")
             resp = urllib.request.urlopen(req, timeout=5)
             if resp.status == 200:
-                log.info("Server ready at %s", base_url)
+                log.info("llama-server ready at %s", base_url)
                 return True
         except Exception:
             pass
-        time.sleep(5)
-    log.error("Server failed to start within %d seconds", timeout)
+        time.sleep(3)
     return False
 
 
-def run_generate(
+# ---------------------------------------------------------------------------
+# Phase 1: Generate
+# ---------------------------------------------------------------------------
+
+
+def run_generate_vllm(
     model_path: str,
     model_name: str,
     gpu: int,
     results_dir: Path,
-    max_tokens: int = 2048,
-    dry_run: bool = False,
-    skip_existing: bool = True,
+    max_tokens: int,
+    max_model_len: int,
+    reasoning_parser: str,
+    reasoning_config_json: str,
+    dry_run: bool,
+    skip_existing: bool,
+    concurrent: int = 4,
 ) -> Path | None:
-    """Phase 1: Generate HarmBench responses via llama-server."""
+    """Phase 1 via vLLM: start server, generate responses, tear down."""
     out_file = results_dir / f"harmbench_{model_name}_responses.json"
     if skip_existing and out_file.exists():
         log.info("[skip] %s: responses exist", model_name)
         return out_file
 
-    log.info("[generate] %s on GPU %d", model_name, gpu)
+    log.info("[generate/vllm] %s on GPU %d", model_name, gpu)
+    if dry_run:
+        log.info("  [dry-run] Would start vLLM server + generate responses")
+        return None
+
+    # Determine quantization
+    size = model_size_gb(model_path)
+    use_bnb = size > 25
+    quant_label = "BNB4" if use_bnb else "bf16 native"
+
+    # Allocate a free port
+    port = allocate_port()
+    container_name = f"vllm-hb-{model_name}-{os.getpid()}"
+    server_url = f"http://localhost:{port}"
+
+    # Pre-cleanup any stale container with same name
+    docker_stop(container_name)
+
+    # Build vLLM server command
+    server_cmd: list[str] = [
+        "python3",
+        "-m",
+        "vllm.entrypoints.openai.api_server",
+        "--model",
+        "/model",
+        "--dtype",
+        "bfloat16",
+        "--trust-remote-code",
+        "--max-model-len",
+        str(max_model_len),
+        "--gpu-memory-utilization",
+        "0.90",
+        "--enforce-eager",
+        "--port",
+        str(port),
+        "--host",
+        "0.0.0.0",
+    ]
+    if use_bnb:
+        server_cmd.extend(["--quantization", "bitsandbytes", "--load-format", "bitsandbytes"])
+    if reasoning_parser:
+        server_cmd.extend(["--reasoning-parser", reasoning_parser])
+    if reasoning_config_json:
+        server_cmd.extend(["--reasoning-config", reasoning_config_json])
+
+    log.info(
+        "  Starting vLLM: %s, %s, max_len=%d",
+        quant_label,
+        f"reasoning={reasoning_parser or 'none'}",
+        max_model_len,
+    )
+
+    # Start vLLM as detached Docker container
+    docker_cmd = [
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        container_name,
+        "--runtime=nvidia",
+        "--shm-size=16g",
+        "--ipc=host",
+        "-e",
+        f"NVIDIA_VISIBLE_DEVICES={gpu}",
+        "-e",
+        "CUDA_VISIBLE_DEVICES=0",
+        "-v",
+        f"{model_path}:/model:ro",
+        "-p",
+        f"{port}:{port}",
+        LMEVAL_IMAGE,
+        *server_cmd,
+    ]
+    subprocess.run(docker_cmd, check=True)
+
+    try:
+        if not wait_for_vllm(server_url, timeout=300):
+            logs = docker_logs_tail(container_name)
+            log.error("vLLM failed to start for %s:\n%s", model_name, logs)
+            return None
+
+        # Run harmbench_generate.py inside Docker (HTTP client, no GPU)
+        src_mount = f"{ABL_ROOT}/src:/app/src:ro"
+        results_mount = f"{results_dir}:/results"
+
+        generate_cmd = [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "host",
+            "-v",
+            src_mount,
+            "-v",
+            results_mount,
+            "-e",
+            "PYTHONPATH=/app",
+            FORENSICS_IMAGE,
+            "/app/src/benchmark/harmbench_generate.py",
+            "--base-url",
+            server_url,
+            "--output",
+            f"/results/harmbench_{model_name}_responses.json",
+            "--max-tokens",
+            str(max_tokens),
+            "--concurrent",
+            str(concurrent),
+            "--model-name",
+            model_name,
+        ]
+        # Disable thinking params for non-reasoning models
+        if not reasoning_parser:
+            generate_cmd.append("--no-thinking")
+
+        subprocess.run(generate_cmd, check=True)
+    finally:
+        log.info("  Tearing down vLLM container for %s", model_name)
+        docker_stop(container_name)
+
+    return out_file if out_file.exists() else None
+
+
+def run_generate_llamacpp(
+    model_path: str,
+    model_name: str,
+    gpu: int,
+    results_dir: Path,
+    gguf_dir: str,
+    max_tokens: int,
+    dry_run: bool,
+    skip_existing: bool,
+) -> Path | None:
+    """Phase 1 via llama.cpp: start llama-server with GGUF, generate responses."""
+    out_file = results_dir / f"harmbench_{model_name}_responses.json"
+    if skip_existing and out_file.exists():
+        log.info("[skip] %s: responses exist", model_name)
+        return out_file
+
+    log.info("[generate/llamacpp] %s on GPU %d", model_name, gpu)
     if dry_run:
         log.info("  [dry-run] Would start llama-server + generate responses")
         return None
 
-    # Start inference server in background container
-    container_port = 8080
-    server_url = f"http://localhost:{container_port}"
-
-    # Resolve GGUF file path — model_path is the safetensors dir, GGUF is in models_gguf/
-    gguf_dir = ABL_ROOT / "models_gguf"
-    gguf_file = None
-    for f in gguf_dir.iterdir():
-        if f.name.endswith(".gguf") and model_name in f.name.lower().replace("-", "").replace("_", ""):
-            gguf_file = f
-            break
-    # Fallback: try matching by variant key in filename
-    if gguf_file is None:
-        for f in gguf_dir.iterdir():
-            if f.name.endswith(".gguf"):
-                gguf_file = f
-                break
-    if gguf_file is None:
-        log.error("No GGUF file found for %s in %s", model_name, gguf_dir)
+    # Resolve GGUF file
+    gguf_path = Path(gguf_dir) if gguf_dir else ABL_ROOT / "models_gguf"
+    if not gguf_path.is_dir():
+        log.error("GGUF directory not found: %s", gguf_path)
         return None
 
-    proc = docker_run_bg(
-        gpu,
+    gguf_file = None
+    name_clean = model_name.lower().replace("-", "").replace("_", "")
+    for f in gguf_path.iterdir():
+        if f.name.endswith(".gguf") and name_clean in f.name.lower().replace("-", "").replace("_", ""):
+            gguf_file = f
+            break
+    if gguf_file is None:
+        log.error("No GGUF file found for %s in %s", model_name, gguf_path)
+        return None
+
+    port = allocate_port()
+    container_name = f"llama-hb-{model_name}-{os.getpid()}"
+    server_url = f"http://localhost:{port}"
+
+    docker_stop(container_name)
+
+    # Start llama-server
+    server_cmd = [
+        "-m",
+        "/model.gguf",
+        "--port",
+        str(port),
+        "--host",
+        "0.0.0.0",
+        "-c",
+        "8192",
+        "-b",
+        "512",
+        "-np",
+        "1",
+        "--reasoning-budget",
+        "2048",
+    ]
+    docker_cmd = [
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        container_name,
+        "--runtime=nvidia",
+        "-e",
+        f"NVIDIA_VISIBLE_DEVICES={gpu}",
+        "-e",
+        "CUDA_VISIBLE_DEVICES=0",
+        "-v",
+        f"{gguf_file}:/model.gguf:ro",
+        "-p",
+        f"{port}:{port}",
         LLAMACPP_IMAGE,
-        [
-            "-v", f"{gguf_file}:/model.gguf:ro",
-            "-p", f"{container_port}:{container_port}",
-        ],
-        [
-            "-m", "/model.gguf", "--port", str(container_port),
-            "--host", "0.0.0.0",
-            "-c", "8192", "-b", "512",
-            "-np", "1",
-            "--fit", "on",
-            "--reasoning-budget", "2048",
-        ],
-    )
+        *server_cmd,
+    ]
+    subprocess.run(docker_cmd, check=True)
 
     try:
-        if not wait_for_server(server_url):
-            log.error("Server startup failed for %s", model_name)
+        if not wait_for_llamacpp(server_url, timeout=120):
+            logs = docker_logs_tail(container_name)
+            log.error("llama-server failed to start for %s:\n%s", model_name, logs)
             return None
 
-        # Run generation script — no GPU needed, just HTTP client
         src_mount = f"{ABL_ROOT}/src:/app/src:ro"
         results_mount = f"{results_dir}:/results"
 
-        cmd = [
-            "docker", "run", "--rm",
-            "--network", "host",
-            "-v", src_mount,
-            "-v", results_mount,
-            "-e", "PYTHONPATH=/app",
+        generate_cmd = [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "host",
+            "-v",
+            src_mount,
+            "-v",
+            results_mount,
+            "-e",
+            "PYTHONPATH=/app",
             FORENSICS_IMAGE,
             "/app/src/benchmark/harmbench_generate.py",
-            "--base-url", server_url,
-            "--output", f"/results/harmbench_{model_name}_responses.json",
-            "--max-tokens", str(max_tokens),
-            "--model-name", model_name,
+            "--base-url",
+            server_url,
+            "--output",
+            f"/results/harmbench_{model_name}_responses.json",
+            "--max-tokens",
+            str(max_tokens),
+            "--model-name",
+            model_name,
         ]
-        subprocess.run(cmd, check=True)
+        subprocess.run(generate_cmd, check=True)
     finally:
-        # Kill the server container
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+        log.info("  Tearing down llama-server container for %s", model_name)
+        docker_stop(container_name)
 
     return out_file if out_file.exists() else None
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Classify
+# ---------------------------------------------------------------------------
 
 
 def run_classify(
     responses_file: Path,
     model_name: str,
-    gpu: int,
     results_dir: Path,
     dry_run: bool = False,
     skip_existing: bool = True,
 ) -> Path | None:
-    """Phase 2: Classify HarmBench responses."""
+    """Phase 2: Classify HarmBench responses (CPU-only, no GPU)."""
     out_file = results_dir / f"harmbench_{model_name}_classified.json"
     if skip_existing and out_file.exists():
         log.info("[skip] %s: classified exists", model_name)
@@ -200,25 +429,38 @@ def run_classify(
 
     log.info("[classify] %s", model_name)
     if dry_run:
-        log.info("  [dry-run] Would run harmbench_classify.py")
+        log.info("  [dry-run] Would run harmbench_classify.py classify")
         return None
 
     src_mount = f"{ABL_ROOT}/src:/app/src:ro"
     results_mount = f"{results_dir}:/results"
 
     cmd = [
-        "docker", "run", "--rm",
-        "-v", src_mount,
-        "-v", results_mount,
-        "-e", "PYTHONPATH=/app",
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        src_mount,
+        "-v",
+        results_mount,
+        "-e",
+        "PYTHONPATH=/app",
         FORENSICS_IMAGE,
-        "/app/src/benchmark/harmbench_classify.py", "classify",
-        "--input", f"/results/harmbench_{model_name}_responses.json",
-        "--output", f"/results/harmbench_{model_name}_classified.json",
+        "/app/src/benchmark/harmbench_classify.py",
+        "classify",
+        "--input",
+        f"/results/harmbench_{model_name}_responses.json",
+        "--output",
+        f"/results/harmbench_{model_name}_classified.json",
     ]
     subprocess.run(cmd, check=True)
 
     return out_file if out_file.exists() else None
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Score
+# ---------------------------------------------------------------------------
 
 
 def run_score(
@@ -228,7 +470,7 @@ def run_score(
     dry_run: bool = False,
     skip_existing: bool = True,
 ) -> Path | None:
-    """Phase 3: Compute ASR scores."""
+    """Phase 3: Compute ASR scores (CPU-only, no GPU)."""
     out_file = results_dir / f"harmbench_{model_name}_scores.json"
     if skip_existing and out_file.exists():
         log.info("[skip] %s: scores exist", model_name)
@@ -247,27 +489,53 @@ def run_score(
     results_mount = f"{results_dir}:/results"
 
     cmd = [
-        "docker", "run", "--rm",
-        "-v", src_mount,
-        "-v", results_mount,
-        "-e", "PYTHONPATH=/app",
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        src_mount,
+        "-v",
+        results_mount,
+        "-e",
+        "PYTHONPATH=/app",
         FORENSICS_IMAGE,
-        "/app/src/benchmark/harmbench_classify.py", "score",
-        "--classified", f"/results/harmbench_{model_name}_classified.json",
-        "--output", f"/results/harmbench_{model_name}_scores.json",
+        "/app/src/benchmark/harmbench_classify.py",
+        "score",
+        "--classified",
+        f"/results/harmbench_{model_name}_classified.json",
+        "--output",
+        f"/results/harmbench_{model_name}_scores.json",
     ]
     subprocess.run(cmd, check=True)
 
     return out_file if out_file.exists() else None
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="HarmBench evaluation runner (3-phase pipeline)")
+    parser = argparse.ArgumentParser(
+        description="HarmBench evaluation runner (3-phase pipeline)",
+    )
     parser.add_argument("comparison_dir", help="Path to comparison directory")
     parser.add_argument("--gpu", type=int, default=None, help="GPU index (default: auto)")
-    parser.add_argument("--phase", choices=["generate", "classify", "score", "all"], default="all",
-                        help="Which phase to run (default: all)")
-    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument(
+        "--backend",
+        choices=["vllm", "llamacpp"],
+        default=None,
+        help="Inference backend (default: from comparison.json or vllm)",
+    )
+    parser.add_argument(
+        "--phase",
+        choices=["generate", "classify", "score", "all"],
+        default="all",
+        help="Which phase to run (default: all)",
+    )
+    parser.add_argument("--max-tokens", type=int, default=None, help="Max generation tokens")
+    parser.add_argument("--concurrent", type=int, default=4, help="Concurrent requests (default: 4)")
     parser.add_argument("--skip-existing", action="store_true", default=True)
     parser.add_argument("--force", action="store_true", default=False)
     parser.add_argument("--dry-run", action="store_true")
@@ -275,40 +543,111 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-    comp, comp_dir = load_comparison(args.comparison_dir)
+    # Read settings from environment (set by common.sh + _load_comparison.py)
+    # These are available when called via abliterlitics.sh. Fallback to defaults
+    # for standalone invocation.
+    comp_dir = Path(args.comparison_dir).resolve()
     results_dir = comp_dir / "results" / "harmbench"
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    gpu = args.gpu if args.gpu is not None else detect_best_gpu()
+    gpu = args.gpu if args.gpu is not None else int(os.environ.get("GLOBAL_GPU", "") or detect_best_gpu())
+
+    # Backend selection: CLI > env > comparison.json setting
+    backend = args.backend
+    if backend is None:
+        env_backend = os.environ.get("INFERENCE_BACKEND", "auto")
+        backend = "llamacpp" if env_backend in ("llamacpp", "ik_llamacpp") else "vllm"
+
+    # Settings from environment (set by _load_comparison.py) or defaults
+    max_tokens = args.max_tokens or int(os.environ.get("HARMBENCH_MAX_TOKENS", "8096"))
+    max_model_len = int(os.environ.get("LM_EVAL_MAX_MODEL_LEN", "8192"))
+    reasoning_parser = os.environ.get("REASONING_PARSER", "")
+    reasoning_config_json = os.environ.get("REASONING_CONFIG_JSON", "")
+    gguf_dir = os.environ.get("GGUF_DIR", "")
     skip = not args.force and args.skip_existing
 
-    # Build model list: base + variants
-    models = [("base", str(comp_dir / comp["base"]))]
-    for name, variant in comp.get("variants", {}).items():
-        models.append((name, str(comp_dir / variant["path"])))
+    # Build model list from environment or fall back to reading comparison.json
+    models: list[tuple[str, str, bool]] = []  # (name, path, skip_hb)
 
-    for model_name, model_path in models:
+    variant_names = os.environ.get("VARIANT_NAMES", "")
+    base_dir = os.environ.get("BASE_DIR", "")
+
+    if variant_names and base_dir:
+        # Called via abliterlitics.sh — env vars are set
+        models.append(("base", base_dir, False))
+        for name in variant_names.split():
+            var_slug = name.replace("-", "_")
+            path = os.environ.get(f"VARIANT_PATH_{var_slug}", "")
+            skip_hb = os.environ.get(f"VARIANT_SKIP_HB_{var_slug}", "0") == "1"
+            if path:
+                models.append((name, path, skip_hb))
+    else:
+        # Standalone invocation — read comparison.json directly
+        comp_file = comp_dir / "comparison.json"
+        if not comp_file.exists():
+            log.error("comparison.json not found: %s", comp_dir)
+            sys.exit(1)
+        with open(comp_file) as f:
+            comp = json.load(f)
+        models.append(("base", str(comp_dir / comp["base"]), False))
+        for name, variant in comp.get("variants", {}).items():
+            skip_hb = variant.get("skip_harmbench", False)
+            models.append((name, str(comp_dir / variant["path"]), skip_hb))
+
+        # Apply inference_backend from comparison.json if not overridden by CLI
+        if backend is None:
+            comp_backend = comp.get("settings", {}).get("inference_backend", "auto")
+            backend = "llamacpp" if comp_backend in ("llamacpp", "ik_llamacpp") else "vllm"
+
+    log.info(
+        "HarmBench pipeline: %d models, backend=%s, max_tokens=%d, GPU=%d",
+        len(models),
+        backend,
+        max_tokens,
+        gpu,
+    )
+
+    for model_name, model_path, skip_hb in models:
+        if skip_hb:
+            log.info("[skip] %s: skip_harmbench=true", model_name)
+            continue
+
         log.info("=== HarmBench for %s ===", model_name)
 
         if args.phase in ("generate", "all"):
-            responses = run_generate(
-                model_path, model_name, gpu, results_dir,
-                args.max_tokens, args.dry_run, skip,
-            )
+            if backend == "vllm":
+                run_generate_vllm(
+                    model_path,
+                    model_name,
+                    gpu,
+                    results_dir,
+                    max_tokens,
+                    max_model_len,
+                    reasoning_parser,
+                    reasoning_config_json,
+                    args.dry_run,
+                    skip,
+                    args.concurrent,
+                )
+            else:
+                run_generate_llamacpp(
+                    model_path,
+                    model_name,
+                    gpu,
+                    results_dir,
+                    gguf_dir,
+                    max_tokens,
+                    args.dry_run,
+                    skip,
+                )
 
         if args.phase in ("classify", "all"):
             responses_file = results_dir / f"harmbench_{model_name}_responses.json"
-            classified = run_classify(
-                responses_file, model_name, gpu, results_dir,
-                args.dry_run, skip,
-            )
+            run_classify(responses_file, model_name, results_dir, args.dry_run, skip)
 
         if args.phase in ("score", "all"):
             classified_file = results_dir / f"harmbench_{model_name}_classified.json"
-            run_score(
-                classified_file, model_name, results_dir,
-                args.dry_run, skip,
-            )
+            run_score(classified_file, model_name, results_dir, args.dry_run, skip)
 
     log.info("HarmBench evaluation complete")
 

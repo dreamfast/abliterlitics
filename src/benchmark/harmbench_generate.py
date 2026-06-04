@@ -103,18 +103,24 @@ def load_harmbench_behaviors():
     return behaviors
 
 
+# Module-level flag set from CLI args.
+_ENABLE_THINKING = True
+
+
 def generate_one(session, base_url, prompt, max_tokens, request_id):
     for attempt in range(5):
         try:
+            payload: dict[str, object] = {
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+                "temperature": 0,
+            }
+            if _ENABLE_THINKING:
+                payload["thinking_token_budget"] = max(0, max_tokens - 2048)
+                payload["chat_template_kwargs"] = {"enable_thinking": True}
             r = session.post(
                 f"{base_url}/v1/chat/completions",
-                json={
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": max_tokens,
-                    "temperature": 0,
-                    "thinking_token_budget": max_tokens - 2048,
-                    "chat_template_kwargs": {"enable_thinking": True},
-                },
+                json=payload,
                 timeout=600,
             )
             if r.status_code == 200:
@@ -151,7 +157,15 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=6144)
     parser.add_argument("--concurrent", type=int, default=1)
     parser.add_argument("--model-name", default="unknown", help="Model name for metadata")
+    parser.add_argument(
+        "--no-thinking", action="store_true", help="Disable thinking token params for non-reasoning models"
+    )
     args = parser.parse_args()
+
+    global _ENABLE_THINKING
+    if args.no_thinking:
+        _ENABLE_THINKING = False
+        log.info("Thinking params disabled (non-reasoning model)")
 
     behaviors = load_harmbench_behaviors()
 
@@ -193,7 +207,9 @@ def main():
         for i, b in enumerate(behaviors):
             if results[i] is not None and not results[i].get("error"):
                 continue
-            _, content, reasoning, error, finish_reason, completion_tokens = generate_one(session, args.base_url, b["Behavior"], args.max_tokens, i)
+            _, content, reasoning, error, finish_reason, completion_tokens = generate_one(
+                session, args.base_url, b["Behavior"], args.max_tokens, i
+            )
             results[i] = {
                 "behavior_id": b.get("BehaviorID", ""),
                 "behavior": b["Behavior"],
@@ -201,6 +217,7 @@ def main():
                 "tags": b.get("Tags", ""),
                 "response": content if not error else "",
                 "reasoning": reasoning if not error else "",
+                "reasoning_chars": len(reasoning) if not error else 0,
                 "error": error,
                 "is_refusal": check_refusal(content) if not error else True,
                 "finish_reason": finish_reason,
@@ -231,6 +248,7 @@ def main():
                     "tags": behaviors[idx].get("Tags", ""),
                     "response": content if not error else "",
                     "reasoning": reasoning if not error else "",
+                    "reasoning_chars": len(reasoning) if not error else 0,
                     "error": error,
                     "is_refusal": check_refusal(content) if not error else True,
                     "finish_reason": finish_reason,
