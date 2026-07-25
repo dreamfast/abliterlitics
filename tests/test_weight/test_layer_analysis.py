@@ -1,4 +1,5 @@
 """Tests for src/weight/layer_analysis.py — Output structure validation (integration)."""
+
 from __future__ import annotations
 
 import json

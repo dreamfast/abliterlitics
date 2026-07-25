@@ -1,7 +1,7 @@
 """Tests for src/weight/subspace_alignment.py — Principal angles computation."""
+
 from __future__ import annotations
 
-import pytest
 import torch
 
 from src.weight.subspace_alignment import _safe_device_for_stack, principal_angles
@@ -51,7 +51,8 @@ class TestSafeDeviceForStack:
     def test_large_vectors_fallback_to_cpu(self):
         """Vectors that would exceed MAX_GPU_BYTES should fall back to CPU."""
         from unittest.mock import patch
-        from src.weight.subspace_alignment import _safe_device_for_stack, MAX_GPU_BYTES
+
+        from src.weight.subspace_alignment import _safe_device_for_stack
 
         # Create small vectors, but mock MAX_GPU_BYTES to a tiny value
         # so the fallback logic triggers without needing huge allocations

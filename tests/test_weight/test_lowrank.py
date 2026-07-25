@@ -1,7 +1,7 @@
 """Tests for src/weight/lowrank_reconstruction.py — Low-rank reconstruction math."""
+
 from __future__ import annotations
 
-import pytest
 import torch
 
 from src.weight.lowrank_reconstruction import _svd_for_ranks

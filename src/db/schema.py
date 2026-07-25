@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS responses (
     behavior_id     TEXT NOT NULL,
     response_text   TEXT NOT NULL DEFAULT '',
     reasoning_text  TEXT NOT NULL DEFAULT '',
+    reasoning_chars INTEGER NOT NULL DEFAULT 0,
     completion_tokens INTEGER NOT NULL DEFAULT 0,
     finish_reason   TEXT NOT NULL DEFAULT '',
     error           TEXT,
@@ -191,6 +192,29 @@ CREATE TABLE IF NOT EXISTS lm_eval_results (
 );
 
 -- ============================================================
+-- HarmBench score summaries (ASR, CoT analysis) per model
+-- ============================================================
+CREATE TABLE IF NOT EXISTS harmbench_scores (
+    comparison     TEXT NOT NULL,
+    model_name     TEXT NOT NULL,
+    classifier     TEXT NOT NULL DEFAULT '',
+    total          INTEGER NOT NULL DEFAULT 0,
+    harmful_count  INTEGER NOT NULL DEFAULT 0,
+    safe_count     INTEGER NOT NULL DEFAULT 0,
+    ambiguous_count INTEGER NOT NULL DEFAULT 0,
+    asr            REAL NOT NULL DEFAULT 0,
+    asr_excl_ambig REAL NOT NULL DEFAULT 0,
+    -- CoT / reasoning analysis (JSON blob)
+    cot_analysis   TEXT NOT NULL DEFAULT '{}',
+    -- Per-category ASR (JSON blob)
+    by_category    TEXT NOT NULL DEFAULT '{}',
+    result_path    TEXT,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (comparison, model_name, classifier),
+    FOREIGN KEY (comparison) REFERENCES comparisons(name) ON DELETE CASCADE
+);
+
+-- ============================================================
 -- Indexes for query-heavy columns
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_model_stages_comp
@@ -207,6 +231,8 @@ CREATE INDEX IF NOT EXISTS idx_responses_comp
     ON responses(comparison, model_name);
 CREATE INDEX IF NOT EXISTS idx_classifications_comp
     ON classifications(comparison, model_name);
+CREATE INDEX IF NOT EXISTS idx_harmbench_scores_comp
+    ON harmbench_scores(comparison, model_name);
 
 -- ============================================================
 -- Views: Latest classification per response
@@ -370,4 +396,61 @@ CREATE VIEW IF NOT EXISTS v_pipeline_status AS
     FROM comparisons c
     LEFT JOIN model_stages ms ON c.name = ms.comparison
     GROUP BY c.name;
+
+-- ============================================================
+-- Journal — inter-agent communication + project memory
+-- ============================================================
+-- Replaces NOTES.md as the source of truth for:
+--   - Init agent findings (architecture, thinking mode, published benchmarks)
+--   - Discovery entries (e.g. "Gemma 4 chat template defaults enable_thinking=True")
+--   - Decision entries (e.g. "Use --apply_chat_template for all loglikelihood")
+--   - Action entries (e.g. "Cleared DB lm_eval_results on 2026-07-19")
+--   - Lesson entries (cross-reference AGENTS.md lesson numbers)
+--   - Result entries (diagnostic scores, benchmark numbers)
+--   - Error entries (failures, root causes, fixes)
+--
+-- All agents read from and write to this table. NULL comparison = project-wide.
+CREATE TABLE IF NOT EXISTS journal (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    comparison  TEXT,                              -- NULL for project-wide entries
+    agent       TEXT NOT NULL,                     -- journal agent (see AGENTS.md)
+    category    TEXT NOT NULL CHECK(category IN (
+        'discovery',   -- something learned about the model/setup
+        'decision',    -- a deliberate choice made
+        'warning',     -- potential issue or concern
+        'action',      -- something done (DB cleared, file moved)
+        'lesson',      -- reusable learning for future (often AGENTS.md cross-ref)
+        'result',      -- a measured number (diagnostic, benchmark)
+        'error',       -- something went wrong
+        'note'         -- general information
+    )),
+    severity    TEXT NOT NULL DEFAULT 'info' CHECK(severity IN (
+        'debug', 'info', 'warning', 'error', 'critical'
+    )),
+    subject     TEXT NOT NULL,                     -- short tag: 'chat_template','thinking_mode','kl', etc.
+    title       TEXT NOT NULL,                     -- one-line summary
+    body        TEXT NOT NULL DEFAULT '',           -- markdown body, optional
+    FOREIGN KEY (comparison) REFERENCES comparisons(name) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_journal_comp_time ON journal(comparison, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_journal_agent_time ON journal(agent, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_journal_category ON journal(category);
+CREATE INDEX IF NOT EXISTS idx_journal_subject ON journal(subject);
+CREATE INDEX IF NOT EXISTS idx_journal_severity ON journal(severity);
+
+-- View: latest entry per (comparison, subject). Useful for "what's the current
+-- state of X for comparison Y?" queries. Uses IS for NULL-safe comparison.
+CREATE VIEW IF NOT EXISTS v_journal_latest AS
+SELECT j.*
+FROM journal j
+INNER JOIN (
+    SELECT comparison, subject, MAX(timestamp) AS max_ts
+    FROM journal
+    GROUP BY comparison, subject
+) latest
+ON j.comparison IS latest.comparison
+   AND j.subject = latest.subject
+   AND j.timestamp = latest.max_ts;
 """

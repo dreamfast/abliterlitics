@@ -1,4 +1,5 @@
 """Tests for src/benchmark/logprobs_proxy.py — Format translation logic."""
+
 from __future__ import annotations
 
 import pytest
@@ -6,26 +7,38 @@ import pytest
 # flask may not be available in test environment; skip if missing
 flask = pytest.importorskip("flask", reason="flask not installed")
 
-from src.benchmark.logprobs_proxy import translate_logprobs
+# E402: intentional — importorskip above must gate this import so the whole
+# module is skipped (not errored) when flask is absent.
+from src.benchmark.logprobs_proxy import translate_logprobs  # noqa: E402
 
 
 class TestTranslateLogprobs:
     def test_translates_content_array_to_flat_format(self):
         """OpenAI content array format should become flat token_logprobs."""
         resp = {
-            "choices": [{
-                "logprobs": {
-                    "content": [
-                        {"token": "Hello", "logprob": -1.5, "top_logprobs": [
-                            {"token": "Hello", "logprob": -1.5},
-                            {"token": "Hi", "logprob": -3.0},
-                        ]},
-                        {"token": " world", "logprob": -0.5, "top_logprobs": [
-                            {"token": " world", "logprob": -0.5},
-                        ]},
-                    ]
+            "choices": [
+                {
+                    "logprobs": {
+                        "content": [
+                            {
+                                "token": "Hello",
+                                "logprob": -1.5,
+                                "top_logprobs": [
+                                    {"token": "Hello", "logprob": -1.5},
+                                    {"token": "Hi", "logprob": -3.0},
+                                ],
+                            },
+                            {
+                                "token": " world",
+                                "logprob": -0.5,
+                                "top_logprobs": [
+                                    {"token": " world", "logprob": -0.5},
+                                ],
+                            },
+                        ]
+                    }
                 }
-            }]
+            ]
         }
 
         result = translate_logprobs(resp)

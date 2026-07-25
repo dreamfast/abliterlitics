@@ -31,6 +31,18 @@ dev = [
 [tool.ruff]
 line-length = 120
 target-version = "py310"
+# Vendored third-party code and per-comparison workspace scripts are excluded
+# from linting. The vendored convert_hf_to_gguf.py is copied verbatim from the
+# llama.cpp project; comparisons/ holds one-off experiment scripts, not the
+# publishable toolkit. NOTE: comparisons/ scripts should still be hand-linted
+# before reuse (see AGENTS.md).
+# *.md excluded so ruff format does not rewrite hand-formatted code fences
+# inside documentation (AGENTS.md, docs/). Those are illustrative snippets.
+extend-exclude = [
+    "scripts/convert_hf_to_gguf.py",
+    "comparisons",
+    "*.md",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
@@ -46,10 +58,11 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
 "src/weight/stacking_analysis.py" = ["N806"]                # D_a, D_b, D_r, D_e are edit vectors
 "src/report/generate_graphs.py" = ["E741", "E501"]         # l in matplotlib labels, long format strings
 "src/report/provenance_report.py" = ["E501", "N802"]       # Long f-strings in reports, L() helper
-"src/kl/kl_divergence.py" = ["N812", "E501"]               # torch.nn.functional as F is standard, long log messages
+"src/kl/kl_divergence.py" = ["N812", "E501", "N806"]       # torch.nn.functional as F, AutoModelClass, long log messages (FROZEN module)
 "src/benchmark/benchmark_eval.py" = ["N806", "E501", "B905"]  # BitsAndBytesConfig, docstring lines, zip
 "src/benchmark/harmbench_classify.py" = ["E501"]            # Long docstring and regex patterns
 "src/benchmark/harmbench_generate.py" = ["E501", "SIM113"]  # Long comprehension, done_count pattern
+"src/benchmark/gsm8k_eval.py" = ["E501"]                   # GSM8K few-shot prompt string (cannot wrap)
 "src/benchmark/harmbench_review.py" = ["E501"]              # Long regex and format strings
 "src/weight/cross_arch_comparison.py" = ["E741", "B007", "B905"]  # l in labels, unused loop vars
 "src/weight/technique_correlation.py" = ["E741"]            # l in label iteration
@@ -58,6 +71,10 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
 "src/weight/layer_analysis.py" = ["E501"]                   # Long lambda expressions
 "src/weight/edit_vector_analysis.py" = ["E501"]             # Long help text
 "src/model_config.py" = ["SIM118"]                           # safe_open objects are not iterable, must use .keys()
+
+# Tests: mirror the conventions of the modules they cover.
+"tests/test_weight/test_lowrank.py" = ["N806"]               # U, S, Vh from SVD (mirrors lowrank_reconstruction.py)
+"tests/test_kl/test_kl_divergence.py" = ["N812"]             # torch.nn.functional as F (standard torch convention)
 
 [tool.mypy]
 strict = true
@@ -88,6 +105,15 @@ disable_error_code = ["type-arg", "no-untyped-def", "no-untyped-call", "no-any-r
 [[tool.mypy.overrides]]
 module = ["src.report.*"]
 disable_error_code = ["type-arg", "no-untyped-def", "no-untyped-call", "assignment", "arg-type", "attr-defined"]
+
+# db_tables: markdown report generator over dynamic SQLite rows and JSON-parsed
+# fingerprint/delta dicts. Concrete generic params are annotated where the shape
+# is known; the residual type-var / no-any-return arise from opaque Row indexing
+# and dict[str, Any] values that are only resolved at runtime.
+# TODO: narrow as the summary-dict schema is formalized.
+[[tool.mypy.overrides]]
+module = ["src.db_tables"]
+disable_error_code = ["type-var", "no-any-return"]
 
 # Third-party untyped libs we can't fix
 [[tool.mypy.overrides]]

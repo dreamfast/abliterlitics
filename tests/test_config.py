@@ -1,8 +1,8 @@
 """Tests for src/config.py — ComparisonConfig loading, validation, and path resolution."""
+
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -19,10 +19,10 @@ from src.config import (
     make_metadata,
 )
 
-
 # ---------------------------------------------------------------------------
 # Schema loading
 # ---------------------------------------------------------------------------
+
 
 class TestSchema:
     def test_load_schema_returns_dict(self):
@@ -41,19 +41,41 @@ class TestSchema:
 # Slug validation
 # ---------------------------------------------------------------------------
 
+
 class TestSlugPattern:
-    @pytest.mark.parametrize("valid", [
-        "abc", "test-comp", "my_model", "a1b2", "qwen35-2b",
-        "abc123", "a-b_c", "x",
-    ])
+    @pytest.mark.parametrize(
+        "valid",
+        [
+            "abc",
+            "test-comp",
+            "my_model",
+            "a1b2",
+            "qwen35-2b",
+            "abc123",
+            "a-b_c",
+            "x",
+        ],
+    )
     def test_valid_slugs(self, valid):
         assert SLUG_PATTERN.match(valid), f"Expected {valid!r} to match"
 
-    @pytest.mark.parametrize("invalid", [
-        "ABC", "Test Comp", "a.b", " leading", "trailing ",
-        "", " space", "UPPER", "-dash-first", "_underscore_first",
-        "has.dot", "has space",
-    ])
+    @pytest.mark.parametrize(
+        "invalid",
+        [
+            "ABC",
+            "Test Comp",
+            "a.b",
+            " leading",
+            "trailing ",
+            "",
+            " space",
+            "UPPER",
+            "-dash-first",
+            "_underscore_first",
+            "has.dot",
+            "has space",
+        ],
+    )
     def test_invalid_slugs(self, invalid):
         assert not SLUG_PATTERN.match(invalid), f"Expected {invalid!r} to NOT match"
 
@@ -61,6 +83,7 @@ class TestSlugPattern:
 # ---------------------------------------------------------------------------
 # Path resolution
 # ---------------------------------------------------------------------------
+
 
 class TestResolveModelPath:
     def test_relative_path_resolved_against_comparison_dir(self, tmp_path):
@@ -78,6 +101,7 @@ class TestResolveModelPath:
 # ---------------------------------------------------------------------------
 # Model directory validation
 # ---------------------------------------------------------------------------
+
 
 class TestValidateModelDir:
     def test_valid_dir_with_config_json(self, tmp_model_dir):
@@ -97,6 +121,7 @@ class TestValidateModelDir:
 # ---------------------------------------------------------------------------
 # Architecture detection
 # ---------------------------------------------------------------------------
+
 
 class TestDetectArchitecture:
     def test_qwen3_detected(self, tmp_model_dir):
@@ -118,6 +143,7 @@ class TestDetectArchitecture:
     def test_gemma4_config_json_fallback(self, tmp_path):
         """Verify config.json model_type fallback works for Gemma4."""
         from tests.conftest import create_mock_model
+
         model_dir = create_mock_model(tmp_path / "model", arch="gemma4", seed=42)
         arch = _detect_architecture(model_dir)
         assert arch == "gemma4"
@@ -126,6 +152,7 @@ class TestDetectArchitecture:
 # ---------------------------------------------------------------------------
 # Model size computation
 # ---------------------------------------------------------------------------
+
 
 class TestComputeModelSize:
     def test_returns_positive_float(self, tmp_model_dir):
@@ -142,6 +169,7 @@ class TestComputeModelSize:
 # ---------------------------------------------------------------------------
 # ComparisonConfig.from_dir — happy path
 # ---------------------------------------------------------------------------
+
 
 class TestComparisonConfigLoad:
     def test_load_valid_comparison(self, tmp_comparison_dir):
@@ -186,6 +214,7 @@ class TestComparisonConfigLoad:
 # ComparisonConfig.from_dir — error cases
 # ---------------------------------------------------------------------------
 
+
 class TestComparisonConfigErrors:
     def test_missing_comparison_json(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="comparison.json not found"):
@@ -213,7 +242,7 @@ class TestComparisonConfigErrors:
         data = json.loads(comp_file.read_text())
         data["variants"]["base"] = {"path": "base"}
         comp_file.write_text(json.dumps(data))
-        with pytest.raises(ValueError, match='reserved'):
+        with pytest.raises(ValueError, match="reserved"):
             ComparisonConfig.from_dir(tmp_comparison_dir)
 
     def test_variant_key_invalid_slug(self, tmp_comparison_dir):
@@ -260,6 +289,7 @@ class TestComparisonConfigErrors:
 # ---------------------------------------------------------------------------
 # make_metadata
 # ---------------------------------------------------------------------------
+
 
 class TestMakeMetadata:
     def test_metadata_structure(self, tmp_comparison_dir):

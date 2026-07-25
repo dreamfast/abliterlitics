@@ -1,4 +1,5 @@
 """Tests for src/weight/expert_analysis.py — MoE expert analysis."""
+
 from __future__ import annotations
 
 import json

@@ -1,4 +1,5 @@
 """Tests for src/weight/edit_vector_analysis.py — Pure math functions."""
+
 from __future__ import annotations
 
 import math
@@ -7,7 +8,6 @@ import pytest
 import torch
 
 from src.weight.edit_vector_analysis import (
-    TRIVIAL_THRESHOLD,
     cosine_sim,
     linear_r2,
     null_cosine_expected,

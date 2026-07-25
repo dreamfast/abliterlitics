@@ -4,6 +4,7 @@ Shared test fixtures for abliterlitics test suite.
 Creates temporary model directories with mock safetensors and config.json
 for testing architecture detection, config loading, and weight analysis.
 """
+
 from __future__ import annotations
 
 import json
@@ -13,10 +14,10 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-
 # ---------------------------------------------------------------------------
 # Minimal safetensors data generators
 # ---------------------------------------------------------------------------
+
 
 def _qwen35_keys() -> dict[str, torch.Tensor]:
     """Tiny Qwen3.5-style keys (language_model prefix, no experts)."""
@@ -230,6 +231,7 @@ def create_mock_model(
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def tmp_model_dir(tmp_path):

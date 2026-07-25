@@ -3,6 +3,7 @@ README.md
 pyproject.toml
 src/__init__.py
 src/config.py
+src/db.py
 src/docker_helpers.py
 src/generate_glm_card_graphs.py
 src/generate_qwen_card_graphs.py
@@ -17,10 +18,13 @@ src/abliterlitics.egg-info/requires.txt
 src/abliterlitics.egg-info/top_level.txt
 src/benchmark/__init__.py
 src/benchmark/benchmark_eval.py
+src/benchmark/gsm8k_eval.py
 src/benchmark/harmbench_classify.py
 src/benchmark/harmbench_generate.py
+src/benchmark/harmbench_generate_local.py
 src/benchmark/harmbench_review.py
 src/benchmark/logprobs_proxy.py
+src/benchmark/reviewer_prompt.py
 src/kl/__init__.py
 src/kl/kl_divergence.py
 src/report/__init__.py

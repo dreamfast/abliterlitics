@@ -67,13 +67,19 @@ elif [[ -n "${KL_NUM_PROMPTS:-}" ]]; then
 fi
 
 # Phase 1: Collect base model logits
+# NOTE: logits_base.pt is a frozen reference filename read by the (frozen) KL
+# compute code — do NOT rename it. The DB stage label uses BASE_NAME for
+# consistency with the models table (registered under directory basename).
 BASE_LOGITS="${RESULTS_DIR}/logits_base.pt"
 if result_exists "$BASE_LOGITS"; then
     log "Skipping (exists): base logits"
+    if [[ $DRY_RUN -eq 0 ]]; then
+        db_stage_skip "$COMPARISON_NAME" "${BASE_NAME}" "kl"
+    fi
 else
     log "Phase 1: Collecting base logits from ${BASE_DIR}"
     if [[ $DRY_RUN -eq 0 ]]; then
-        db_stage_start "$COMPARISON_NAME" "base" "kl"
+        db_stage_start "$COMPARISON_NAME" "${BASE_NAME}" "kl"
     fi
     if [[ $DRY_RUN -eq 1 ]]; then
         log "  [dry-run] docker_run ${GPU} ${FORENSICS_IMAGE} kl_divergence.py collect --model /model --output /results/logits_base.pt"
@@ -90,6 +96,9 @@ else
                 --response-prefix auto \
                 --save-prefix /results/response_prefix.txt \
                 "${EXTRA_ARGS[@]}"
+    fi
+    if [[ $DRY_RUN -eq 0 ]]; then
+        db_stage_complete "$COMPARISON_NAME" "${BASE_NAME}" "kl" --result-path "$BASE_LOGITS"
     fi
 fi
 

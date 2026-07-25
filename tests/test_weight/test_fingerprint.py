@@ -1,7 +1,6 @@
 """Tests for src/weight/technique_fingerprint.py — Layer entropy and fingerprint math."""
-from __future__ import annotations
 
-import math
+from __future__ import annotations
 
 import pytest
 

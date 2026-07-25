@@ -47,6 +47,11 @@ def import_lm_eval_results(
     (per TASK_PRIMARY_METRICS). Skips ``alias`` keys and subtask rows
     (e.g. ``mmlu_humanities``).
 
+    Also imports per-sample stats for GSM8K (empty response count, mean
+    response length, adjusted score, strict-flex gap) by parsing the
+    ``samples_gsm8k_*.jsonl`` files written by lm-eval ``--log_samples``.
+    See ``_import_gsm8k_sample_stats()`` for details.
+
     Returns the number of metric rows imported.
     """
     pattern = "lm_eval_*.json"
@@ -119,8 +124,155 @@ def import_lm_eval_results(
                 except sqlite3.Error as exc:
                     log.warning("Failed to insert lm_eval metric %s/%s/%s: %s", model_name, task, metric_name, exc)
 
+        # Per-sample stats for GSM8K (empty count, mean response length, etc.)
+        # Parsed from samples_gsm8k_*.jsonl files. New runner writes them as
+        # <model>__samples_gsm8k_*.jsonl; legacy runs have samples_gsm8k_<ts>.jsonl
+        # which we match by mtime to the result file.
+        count += _import_gsm8k_sample_stats(conn, comparison_name, model_name, f, results_dir)
+
     conn.commit()
     log.info("Imported %d lm-eval metrics from %d files", count, len(files))
+    return count
+
+
+def _import_gsm8k_sample_stats(
+    conn: sqlite3.Connection,
+    comparison_name: str,
+    model_name: str,
+    result_file: Path,
+    results_dir: Path,
+) -> int:
+    """Parse GSM8K samples JSONL and import per-sample reasoning stats.
+
+    Computes four signals of reasoning damage from the raw sample responses:
+
+    1. ``empty_count,none`` — number of responses where the strict-match filter
+       extracted an empty string. Captures catastrophic failures (thinking
+       loops that never produced an answer, refusals, OOM-truncated outputs).
+    2. ``mean_response_chars,none`` — mean character length of the model's
+       raw response (excluding any thinking tags). Verbosity shift signal;
+       sharp drops indicate degraded reasoning depth.
+    3. ``exact_match_adjusted,strict-match`` — strict accuracy recomputed as
+       correct / (total - empty). When empty_count > 0, this is the "true"
+       accuracy on responses the model actually attempted. Equal to the
+       raw strict score when empty_count == 0.
+    4. ``strict_flexible_gap,none`` — (flexible_extract_score − strict_score).
+       A widening gap means the model's answers are increasingly
+       ill-formatted (e.g., missing ``#### N`` marker, extra prose around
+       the answer). Direct signal of format/reasoning damage.
+
+    Sample file lookup (in priority order):
+      1. New runner: ``<results_dir>/__model/<model>__samples_gsm8k_*.jsonl``
+      2. Legacy: ``<results_dir>/__model/samples_gsm8k_*.jsonl`` matched by
+         file mtime closest to ``result_file.stat().st_mtime``.
+
+    Returns the number of metric rows imported (0 if no samples file found).
+    """
+    samples_dir = results_dir / "__model"
+    if not samples_dir.is_dir():
+        return 0
+
+    # Try new naming convention first: <model>__samples_gsm8k_*.jsonl
+    candidates = sorted(samples_dir.glob(f"{model_name}__samples_gsm8k_*.jsonl"))
+
+    # Fall back to legacy: match by mtime
+    if not candidates:
+        result_mtime = result_file.stat().st_mtime
+        all_samples = list(samples_dir.glob("samples_gsm8k_*.jsonl"))
+        # Exclude any already renamed files
+        all_samples = [sf for sf in all_samples if "__" not in sf.stem]
+        if all_samples:
+            closest = min(all_samples, key=lambda sf: abs(sf.stat().st_mtime - result_mtime))
+            # Only use if within 10 minutes — otherwise it's a false match
+            if abs(closest.stat().st_mtime - result_mtime) < 600:
+                candidates = [closest]
+
+    if not candidates:
+        log.debug("No GSM8K samples file found for %s", model_name)
+        return 0
+
+    samples_file = candidates[-1]  # Latest if multiple
+
+    # Parse the JSONL. Each line is one (doc_id, filter) combination.
+    # GSM8K runs both strict-match and flexible-extract filters, so each
+    # doc appears twice. We split by filter for per-filter stats.
+    stats: dict[str, dict[str, Any]] = {
+        "strict-match": {"total": 0, "correct": 0, "empty": 0, "resp_lens": []},
+        "flexible-extract": {"total": 0, "correct": 0, "empty": 0, "resp_lens": []},
+    }
+
+    try:
+        with open(samples_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                filt = d.get("filter", "strict-match")
+                if filt not in stats:
+                    continue
+                resps = d.get("resps", [[]])
+                filtered = d.get("filtered_resps", [])
+                em = d.get("exact_match", 0)
+                resp_text = resps[0][0] if resps and resps[0] else ""
+                filt_text = filtered[0] if filtered else ""
+                stats[filt]["total"] += 1
+                if em == 1.0:
+                    stats[filt]["correct"] += 1
+                if not filt_text.strip():
+                    stats[filt]["empty"] += 1
+                stats[filt]["resp_lens"].append(len(resp_text))
+    except OSError as exc:
+        log.warning("Failed to read GSM8K samples %s: %s", samples_file.name, exc)
+        return 0
+
+    s = stats["strict-match"]
+    f_stat = stats["flexible-extract"]
+    if s["total"] == 0:
+        return 0
+
+    strict_pct = s["correct"] / s["total"]
+    flex_pct = f_stat["correct"] / f_stat["total"] if f_stat["total"] else 0.0
+    mean_resp = sum(s["resp_lens"]) / len(s["resp_lens"]) if s["resp_lens"] else 0.0
+    adjusted = s["correct"] / (s["total"] - s["empty"]) if (s["total"] - s["empty"]) > 0 else 0.0
+    gap = flex_pct - strict_pct
+
+    rows = [
+        ("empty_count,none", float(s["empty"])),
+        ("mean_response_chars,none", float(mean_resp)),
+        ("exact_match_adjusted,strict-match", float(adjusted)),
+        ("strict_flexible_gap,none", float(gap)),
+    ]
+
+    count = 0
+    for metric_name, value in rows:
+        try:
+            conn.execute(
+                """INSERT INTO lm_eval_results
+                (comparison, model_name, task, metric_name, metric_value, result_path)
+                VALUES (?, ?, 'gsm8k', ?, ?, ?)
+                ON CONFLICT(comparison, model_name, task, metric_name) DO UPDATE SET
+                    metric_value = excluded.metric_value,
+                    result_path = excluded.result_path""",
+                (comparison_name, model_name, metric_name, value, str(samples_file)),
+            )
+            count += 1
+        except sqlite3.Error as exc:
+            log.warning("Failed to insert GSM8K stat %s/%s: %s", model_name, metric_name, exc)
+
+    log.info(
+        "  %s: GSM8K sample stats — empty=%d, mean_chars=%.0f, strict=%.4f, flex=%.4f, gap=%+.4f, adjusted=%.4f",
+        model_name,
+        s["empty"],
+        mean_resp,
+        strict_pct,
+        flex_pct,
+        gap,
+        adjusted,
+    )
     return count
 
 
@@ -226,31 +378,40 @@ def import_weight_results(
         script_name = f.stem
 
         fname = f.name
+        recognized = False
         # Pairwise: correlation_<v1>_vs_<v2>.json
         m = re.match(r"correlation_(.+)_vs_(.+)\.json$", fname)
         if m:
             variant, variant_b = m.group(1), m.group(2)
             script_name = "correlation"
+            recognized = True
         # Global: multi_model_panel.json
         elif fname == "multi_model_panel.json":
             variant, variant_b = "", ""
             script_name = "panel_comparison"
+            recognized = True
         else:
             # Single-variant scripts: try to extract variant name
-            # Pattern: <script>_<variant>.json OR <variant>/<script>_<variant>.json
-            m = re.match(r"(edit_vector|fingerprint|svd|layer_analysis)_(.+)\.json$", fname)
+            m = re.match(
+                r"(edit_vector|fingerprint|svd|layer_analysis|expert_analysis)_(.+)\.json$",
+                fname,
+            )
             if m:
                 variant = m.group(2)
                 variant_b = ""
                 script_name = m.group(1)
+                recognized = True
             else:
-                # Fallback: use relative path components
-                rel = f.relative_to(results_dir)
-                parts = rel.parts
-                if len(parts) > 1:
-                    # e.g. "heretic/edit_vector_heretic.json"
-                    variant = parts[0]
-                variant_b = ""
+                # Cross-variant low-rank / subspace analyses
+                m = re.match(r"(lowrank|subspace)_(.+)_vs_(.+)\.json$", fname)
+                if m:
+                    variant, variant_b = m.group(2), m.group(3)
+                    script_name = m.group(1)
+                    recognized = True
+
+        if not recognized:
+            # Skip files that are not weight-analysis outputs (e.g. lm_eval/kl/harmbench JSONs)
+            continue
 
         # Extract key metrics for summary
         summary: dict[str, Any] = {}
@@ -326,7 +487,22 @@ def import_all_results(
     if weight_dir.exists():
         counts["weight"] = import_weight_results(conn, comparison_name, weight_dir)
     else:
-        log.info("No weight results directory found")
+        # Per-variant layout: results/<variant>/<script>_<variant>.json plus root-level
+        # cross-variant files (multi_model_panel.json, correlation_*.json, ...).
+        # The importer skips non-weight files, so pointing it at results/ is safe.
+        per_variant = any((base / "results" / v / f"fingerprint_{v}.json").exists() for v in comp.get("variants", {}))
+        if per_variant:
+            counts["weight"] = import_weight_results(conn, comparison_name, base / "results")
+        else:
+            log.info("No weight results directory found")
+
+    # HarmBench results (responses, classifications, scores)
+    harmbench_dir = base / "results" / "harmbench"
+    if harmbench_dir.exists():
+        _import_harmbench(conn, comparison_name, base)
+        counts["harmbench"] = len(list(harmbench_dir.glob("harmbench_*_responses.json")))
+    else:
+        log.info("No harmbench results directory found")
 
     log.info("Import complete for %s: %s", comparison_name, counts)
     return counts
@@ -493,15 +669,18 @@ def _import_harmbench(
         for item in items:
             bid = item.get("behavior_id", "")
             is_ref_kw = 1 if item.get("is_refusal") else 0
+            reasoning_text = item.get("reasoning", "")
+            reasoning_chars = item.get("reasoning_chars", 0) or len(reasoning_text)
             try:
                 conn.execute(
                     """INSERT INTO responses
                     (comparison, model_name, behavior_id, response_text, reasoning_text,
-                     completion_tokens, finish_reason, error, is_refusal_kw)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     reasoning_chars, completion_tokens, finish_reason, error, is_refusal_kw)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(comparison, model_name, behavior_id) DO UPDATE SET
                         response_text = excluded.response_text,
                         reasoning_text = excluded.reasoning_text,
+                        reasoning_chars = excluded.reasoning_chars,
                         completion_tokens = excluded.completion_tokens,
                         finish_reason = excluded.finish_reason,
                         error = excluded.error,
@@ -511,7 +690,8 @@ def _import_harmbench(
                         actual_model,
                         bid,
                         item.get("response", ""),
-                        item.get("reasoning", ""),
+                        reasoning_text,
+                        reasoning_chars,
                         item.get("completion_tokens", 0),
                         item.get("finish_reason", ""),
                         item.get("error"),
@@ -523,11 +703,22 @@ def _import_harmbench(
                 log.warning("Failed to insert response %s/%s: %s", actual_model, bid, exc)
 
         # Import classified results if available
-        cls_file = classified_dir / f"{model_name}_classified.json"
-        if not cls_file.exists():
-            cls_file = classified_dir / f"{model_key}_classified.json"
+        # Check both harmbench/ dir (where runner saves) and harmbench_classified/ dir
+        cls_candidates = [
+            harmbench_dir / f"harmbench_{model_name}_classified.json",
+            harmbench_dir / f"harmbench_{model_key}_classified.json",
+            classified_dir / f"harmbench_{model_name}_classified.json",
+            classified_dir / f"harmbench_{model_key}_classified.json",
+            classified_dir / f"{model_name}_classified.json",
+            classified_dir / f"{model_key}_classified.json",
+        ]
+        cls_file = None
+        for candidate in cls_candidates:
+            if candidate.exists():
+                cls_file = candidate
+                break
 
-        if cls_file.exists():
+        if cls_file is not None:
             try:
                 cls = json.loads(cls_file.read_text())
             except (json.JSONDecodeError, OSError) as exc:
@@ -568,10 +759,74 @@ def _import_harmbench(
                 except sqlite3.Error as exc:
                     log.warning("Failed to insert classification %s/%s: %s", actual_model, bid, exc)
 
+        # Import score files (ASR summary + CoT analysis)
+        score_candidates = [
+            harmbench_dir / f"harmbench_{model_name}_scores.json",
+            harmbench_dir / f"harmbench_{model_key}_scores.json",
+        ]
+        for score_path in score_candidates:
+            if score_path.exists():
+                try:
+                    _import_harmbench_scores(conn, comparison_name, actual_model, score_path)
+                except Exception as exc:
+                    log.warning("Failed to import scores for %s: %s", actual_model, exc)
+                break
+
         conn.commit()
         log.info("  %s: %d responses imported", actual_model, len(items))
 
     log.info("Total HarmBench: %d responses, %d classifications", total_responses, total_classified)
+
+
+def _import_harmbench_scores(
+    conn: sqlite3.Connection,
+    comparison_name: str,
+    model_name: str,
+    score_path: Path,
+) -> None:
+    """Import HarmBench score summary (ASR + CoT analysis) into harmbench_scores table."""
+    raw = json.loads(score_path.read_text())
+    classifier = raw.get("classifier", "unknown")
+    total = raw.get("total", 0)
+    harmful = raw.get("harmful_count", 0)
+    safe = raw.get("safe_count", 0)
+    ambiguous = raw.get("ambiguous_count", 0)
+    asr = raw.get("asr", 0)
+    asr_excl = raw.get("asr_excluding_ambiguous", 0)
+    cot_analysis = json.dumps(raw.get("cot_analysis", {}))
+    by_category = json.dumps(raw.get("by_category", {}))
+
+    conn.execute(
+        """INSERT INTO harmbench_scores
+        (comparison, model_name, classifier, total, harmful_count, safe_count,
+         ambiguous_count, asr, asr_excl_ambig, cot_analysis, by_category, result_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(comparison, model_name, classifier) DO UPDATE SET
+            total = excluded.total,
+            harmful_count = excluded.harmful_count,
+            safe_count = excluded.safe_count,
+            ambiguous_count = excluded.ambiguous_count,
+            asr = excluded.asr,
+            asr_excl_ambig = excluded.asr_excl_ambig,
+            cot_analysis = excluded.cot_analysis,
+            by_category = excluded.by_category,
+            result_path = excluded.result_path""",
+        (
+            comparison_name,
+            model_name,
+            classifier,
+            total,
+            harmful,
+            safe,
+            ambiguous,
+            asr,
+            asr_excl,
+            cot_analysis,
+            by_category,
+            str(score_path),
+        ),
+    )
+    log.info("  %s: imported scores (ASR=%.1f%%, %d harmful/%d total)", model_name, asr * 100, harmful, total)
 
 
 def _extract_weight_summary(script_name: str, raw: dict[str, Any]) -> dict[str, Any]:
@@ -590,9 +845,20 @@ def _extract_weight_summary(script_name: str, raw: dict[str, Any]) -> dict[str, 
         if scope:
             summary["changed_tensors"] = scope.get("changed_tensors")
             summary["changed_pct"] = scope.get("changed_pct")
+            summary["total_tensors"] = scope.get("total_tensors")
         magnitude = raw.get("magnitude", {})
         if magnitude:
             summary["magnitude"] = magnitude
+        targeting = raw.get("targeting", {})
+        if targeting:
+            summary["tensor_types"] = targeting.get("tensor_types", {})
+            summary["num_types"] = len(targeting.get("tensor_types", {}))
+            summary["layers_modified"] = targeting.get("layers_modified")
+        layer_profile = raw.get("layer_profile", {})
+        if layer_profile:
+            summary["early_layer_pct"] = layer_profile.get("early_layer_pct")
+            summary["mid_layer_pct"] = layer_profile.get("mid_layer_pct")
+            summary["late_layer_pct"] = layer_profile.get("late_layer_pct")
 
     elif script_name == "svd":
         ranks = raw.get("effective_ranks", {})

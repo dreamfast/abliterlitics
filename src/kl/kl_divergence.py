@@ -419,8 +419,48 @@ def detect_response_prefix(
 # ---------------------------------------------------------------------------
 
 
+def _get_model_auto_class(model_path: str):
+    """Return the appropriate AutoModel class based on the model architecture.
+
+    VL/multimodal models need AutoModelForImageTextToText, others use
+    AutoModelForCausalLM.
+    """
+    from transformers import AutoConfig
+
+    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    model_type = getattr(config, "model_type", "")
+    # VL / multimodal model types that require ImageTextToText auto class
+    vl_types = {
+        "qwen2_vl",
+        "qwen2_5_vl",
+        "qwen3_vl",
+        "qwen3_vl_moe",
+        "llava",
+        "llava_next",
+        "llava_onevision",
+        "mllama",
+        "paligemma",
+        "idefics",
+        "idefics2",
+        "idefics3",
+        "phi3_v",
+        "internvl",
+        "pixtral",
+        "glm4_1v",
+        "qwen2_5_omni",
+    }
+    if model_type in vl_types:
+        from transformers import AutoModelForImageTextToText
+
+        log.info(f"  Detected VL model type '{model_type}', using AutoModelForImageTextToText")
+        return AutoModelForImageTextToText
+    from transformers import AutoModelForCausalLM
+
+    return AutoModelForCausalLM
+
+
 def cmd_collect(args):
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoTokenizer
 
     model_size = get_model_size_gb(args.model)
 
@@ -458,8 +498,9 @@ def cmd_collect(args):
 
     tokenizer.padding_side = "left"
 
+    AutoModelClass = _get_model_auto_class(args.model)
     try:
-        model = AutoModelForCausalLM.from_pretrained(
+        model = AutoModelClass.from_pretrained(
             args.model,
             trust_remote_code=True,
             **load_cfg,
@@ -467,7 +508,7 @@ def cmd_collect(args):
     except RuntimeError as e:
         if "CONVERSION" in str(e) or "conversion" in str(e):
             log.info("  WARNING: weight conversion error, retrying with ignore_mismatched_sizes=True")
-            model = AutoModelForCausalLM.from_pretrained(
+            model = AutoModelClass.from_pretrained(
                 args.model,
                 trust_remote_code=True,
                 ignore_mismatched_sizes=True,

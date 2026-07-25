@@ -67,6 +67,11 @@ REFUSAL_SUBSTRINGS = [
 _THINK_OPEN = bytes.fromhex("3c7468696e6b3e").decode("ascii")
 _THINK_CLOSE = bytes.fromhex("3c2f7468696e6b3e").decode("ascii")
 
+# Gemma 4 thinking channel markers (special tokens preserved with skip_special_tokens=False)
+_CHANNEL_THOUGHT = "<|channel>thought"
+_CHANNEL_CLOSE = "<channel|>"
+_TURN_CLOSE = "<turn|>"
+
 
 def sanitize_response(text):
     text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -107,6 +112,89 @@ def load_harmbench_behaviors():
 _ENABLE_THINKING = True
 
 
+def _split_reasoning(raw_content: str, api_reasoning: str) -> tuple[str, str]:
+    """Split raw content into (reasoning, response).
+
+    Handles three formats:
+    1. API-provided reasoning field (vLLM reasoning parser)
+    2. Qwen <think>...</think> tags
+    3. Gemma 4 <|channel>thought...<channel|> format
+    """
+    # If API already split reasoning/content, trust it — unless content is empty
+    # and reasoning looks like a plain refusal (not thinking).
+    if api_reasoning and raw_content:
+        return api_reasoning, raw_content
+
+    # If API reasoning exists but content is empty, check if reasoning
+    # actually looks like thinking (contains <think/> artifacts) or is
+    # just a plain refusal misclassified by the reasoning parser.
+    if api_reasoning and not raw_content:
+        # If reasoning has no think tags, it's a misclassified response
+        if _THINK_OPEN not in api_reasoning and _CHANNEL_THOUGHT not in api_reasoning:
+            return "", api_reasoning
+        # Otherwise it's genuine thinking with no visible response
+        return api_reasoning, ""
+
+    # Gemma 4 format: <|channel>thought\n[reasoning]<channel|>[answer]<turn|>
+    # With skip_special_tokens=False, the special tokens are preserved.
+    if _CHANNEL_THOUGHT in raw_content:
+        # Extract everything between <|channel>thought and <channel|>
+        thought_start = raw_content.find(_CHANNEL_THOUGHT) + len(_CHANNEL_THOUGHT)
+        channel_close = raw_content.find(_CHANNEL_CLOSE, thought_start)
+        if channel_close >= 0:
+            reasoning = raw_content[thought_start:channel_close].strip()
+            content = raw_content[channel_close + len(_CHANNEL_CLOSE) :].strip()
+        else:
+            # No closing marker — all thinking, no answer
+            reasoning = raw_content[thought_start:].strip()
+            content = ""
+        # Clean up turn marker from content
+        content = content.replace(_TURN_CLOSE, "").strip()
+        return reasoning, content
+
+    # Fallback: Gemma 4 without special tokens — response starts with "thought\n"
+    # The special tokens were stripped, leaving just "thought\n[reasoning]\n\n[answer]"
+    if raw_content.lower().startswith("thought\n"):
+        rest = raw_content[len("thought\n") :]
+        # Try to find the boundary between reasoning and answer
+        # The reasoning section is typically structured (numbered steps, analysis)
+        # and the answer starts after a clear paragraph break
+        # Look for <channel|> in case it's partially preserved
+        if _CHANNEL_CLOSE in rest:
+            idx = rest.find(_CHANNEL_CLOSE)
+            reasoning = rest[:idx].strip()
+            content = rest[idx + len(_CHANNEL_CLOSE) :].strip()
+            content = content.replace(_TURN_CLOSE, "").strip()
+            return reasoning, content
+        # Heuristic: split on first double-newline after substantial reasoning
+        parts = rest.split("\n\n", 1)
+        if len(parts) == 2 and len(parts[0]) > 50:
+            return parts[0].strip(), parts[1].strip()
+        # Can't reliably split — treat everything as response
+        return "", raw_content
+
+    # Qwen format: <think>...</think> tags
+    if _THINK_OPEN not in raw_content:
+        return "", raw_content
+
+    reasoning_parts = []
+    text = raw_content
+    while _THINK_OPEN in text:
+        o = text.find(_THINK_OPEN)
+        c = text.find(_THINK_CLOSE, o)
+        if c >= 0:
+            reasoning_parts.append(text[o + len(_THINK_OPEN) : c].strip())
+            text = text[:o] + text[c + len(_THINK_CLOSE) :]
+        else:
+            reasoning_parts.append(text[o + len(_THINK_OPEN) :].strip())
+            text = text[:o]
+            break
+
+    reasoning = "\n".join(reasoning_parts).strip()
+    content = text.strip()
+    return reasoning, content
+
+
 def generate_one(session, base_url, prompt, max_tokens, request_id):
     for attempt in range(5):
         try:
@@ -114,9 +202,9 @@ def generate_one(session, base_url, prompt, max_tokens, request_id):
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens,
                 "temperature": 0,
+                "skip_special_tokens": False,  # Preserve <|channel>thought / <channel|> for reasoning extraction
             }
             if _ENABLE_THINKING:
-                payload["thinking_token_budget"] = max(0, max_tokens - 2048)
                 payload["chat_template_kwargs"] = {"enable_thinking": True}
             r = session.post(
                 f"{base_url}/v1/chat/completions",
@@ -126,11 +214,15 @@ def generate_one(session, base_url, prompt, max_tokens, request_id):
             if r.status_code == 200:
                 choice = r.json()["choices"][0]
                 msg = choice["message"]
-                content = msg.get("content", "") or ""
-                reasoning = msg.get("reasoning", msg.get("reasoning_content", "")) or ""
+                raw_content = msg.get("content", "") or ""
+                api_reasoning = msg.get("reasoning", msg.get("reasoning_content", "")) or ""
                 finish_reason = choice.get("finish_reason", "")
                 usage = r.json().get("usage", {})
                 completion_tokens = usage.get("completion_tokens", 0)
+
+                # Extract reasoning: prefer API field, otherwise parse from content
+                reasoning, content = _split_reasoning(raw_content, api_reasoning)
+
                 return request_id, content, reasoning, None, finish_reason, completion_tokens
             else:
                 if attempt < 4:

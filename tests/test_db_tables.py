@@ -125,29 +125,28 @@ class TestBenchmarkTable:
         conn = get_db(str(tmp_path / "test.db"))
         _setup_comparison(conn)
         table = generate_benchmark_table(conn, "tc")
-        # v1 has 0.42 MMLU — should be bolded
-        assert "**0.4200**" in table
+        # Accuracy is rendered as a percentage; v1 has 42% MMLU — highest, bolded
+        assert "**42.00%**" in table
         conn.close()
 
-    def test_benchmark_perplexity_bold_lowest(self, tmp_path):
+    def test_benchmark_perplexity_omitted_when_dead_task(self, tmp_path):
+        """lambada_openai is in DEAD_TASKS and is never rendered in the main table.
+
+        Lower-is-better bolding is covered by ``TestBoldBest::test_lower_bolds_min``
+        at the unit level. No live OLL v2 task is lower-is-better, so there is no
+        end-to-end path to exercise here.
+        """
         conn = get_db(str(tmp_path / "test.db"))
         _setup_comparison(conn)
-        # Add lambada with lower-is-better
-        conn.execute(
-            "INSERT INTO lm_eval_results (comparison, model_name, task, metric_name, metric_value) "
-            "VALUES ('tc', 'base', 'lambada_openai', 'perplexity,none', 5.0)"
-        )
-        conn.execute(
-            "INSERT INTO lm_eval_results (comparison, model_name, task, metric_name, metric_value) "
-            "VALUES ('tc', 'v1', 'lambada_openai', 'perplexity,none', 3.2)"
-        )
-        conn.execute(
-            "INSERT INTO lm_eval_results (comparison, model_name, task, metric_name, metric_value) "
-            "VALUES ('tc', 'v2', 'lambada_openai', 'perplexity,none', 7.8)"
-        )
+        for model, pp in [("base", 5.0), ("v1", 3.2), ("v2", 7.8)]:
+            conn.execute(
+                "INSERT INTO lm_eval_results (comparison, model_name, task, metric_name, metric_value) "
+                "VALUES ('tc', ?, 'lambada_openai', 'perplexity,none', ?)",
+                (model, pp),
+            )
         conn.commit()
         table = generate_benchmark_table(conn, "tc")
-        assert "**3.2**" in table
+        assert "lambada" not in table.lower()
         conn.close()
 
     def test_benchmark_ties_no_bold(self, tmp_path):
@@ -176,8 +175,10 @@ class TestBenchmarkTable:
         conn = get_db(str(tmp_path / "test.db"))
         _setup_comparison(conn)
         table = generate_benchmark_delta_table(conn, "tc")
-        assert "+0.0200" in table  # v1 mmlu: 0.42 - 0.40 = +0.02
-        assert "-0.0200" in table  # v2 mmlu: 0.38 - 0.40 = -0.02
+        # Deltas are rendered as percentage-point change from base (see db_tables.py)
+        # v1 mmlu: (0.42-0.40)/0.40*100 = +5.00% ; v2 mmlu: -5.00%
+        assert "+5.00%" in table  # v1 mmlu delta
+        assert "-5.00%" in table  # v2 mmlu delta
         conn.close()
 
 
@@ -252,9 +253,13 @@ class TestWeightSummaryTable:
         conn.commit()
 
         table = generate_weight_summary_table(conn, "tc")
-        assert "Tensors changed" in table
-        # v1 has lower percentage — should be bolded
-        assert "**2.30%**" in table
+        # Header column is now "Changed" (count of changed tensors).
+        assert "Changed" in table
+        # Bolding is on the lowest *changed count* (least modified = best).
+        # v1 = 55 changed tensors (int(2.3*24)), v2 = 122 — v1 is bolded.
+        assert "**55**" in table
+        # Percent renders to one decimal.
+        assert "2.3%" in table
         conn.close()
 
     def test_weight_summary_no_data(self, tmp_path):
@@ -273,9 +278,10 @@ class TestSummaryTable:
         _setup_comparison(conn)
         _setup_harmbench(conn)
         table = generate_combined_summary_table(conn, "tc")
-        assert "HarmBench ASR" in table
-        assert "MMLU" in table
-        assert "KL Divergence" in table
+        # Combined summary header uses short column names: "ASR" and "KL".
+        assert "ASR" in table
+        assert "MMLU" in table  # appears in "MMLU-Pro Δ"
+        assert "KL" in table
         conn.close()
 
     def test_empty_comparison(self, tmp_path):

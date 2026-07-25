@@ -1,12 +1,11 @@
 """Tests for src/model_config.py — Architecture detection, shard maps, tensor loading."""
+
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 import torch
-from safetensors.torch import save_file
 
 from src.model_config import (
     ArchitectureConfig,
@@ -31,6 +30,7 @@ def clear_cache():
 # ---------------------------------------------------------------------------
 # Architecture detection
 # ---------------------------------------------------------------------------
+
 
 class TestDetectArchitecture:
     def test_qwen3_family(self, tmp_model_dir):
@@ -80,6 +80,7 @@ class TestDetectArchitecture:
 # ---------------------------------------------------------------------------
 # ArchitectureConfig methods
 # ---------------------------------------------------------------------------
+
 
 class TestArchitectureConfig:
     @pytest.fixture
@@ -154,10 +155,11 @@ class TestArchitectureConfig:
         )
 
     def test_gemma4_get_tensor_type(self, gemma4_cfg):
-        assert gemma4_cfg.get_tensor_type("model.language_model.layers.0.self_attn.q_proj.weight") == "self_attn.q_proj.weight"
-        assert gemma4_cfg.get_tensor_type("model.language_model.layers.0.mlp.gate_proj.weight") == "mlp.gate_proj.weight"
-        assert gemma4_cfg.get_tensor_type("model.language_model.layers.0.layer_scalar") == "layer_scalar"
-        assert gemma4_cfg.get_tensor_type("model.language_model.layers.0.per_layer_projection.weight") == "per_layer_projection.weight"
+        gtt = gemma4_cfg.get_tensor_type
+        assert gtt("model.language_model.layers.0.self_attn.q_proj.weight") == "self_attn.q_proj.weight"
+        assert gtt("model.language_model.layers.0.mlp.gate_proj.weight") == "mlp.gate_proj.weight"
+        assert gtt("model.language_model.layers.0.layer_scalar") == "layer_scalar"
+        assert gtt("model.language_model.layers.0.per_layer_projection.weight") == "per_layer_projection.weight"
         assert gemma4_cfg.get_tensor_type("model.language_model.embed_tokens.weight") == "embed_tokens.weight"
         assert gemma4_cfg.get_tensor_type("model.language_model.norm.weight") == "norm.weight"
 
@@ -198,6 +200,7 @@ class TestArchitectureConfig:
 # ---------------------------------------------------------------------------
 # Shard map
 # ---------------------------------------------------------------------------
+
 
 class TestShardMap:
     def test_build_shard_map_keys(self, tmp_model_dir):
@@ -241,6 +244,7 @@ class TestShardMap:
 # ---------------------------------------------------------------------------
 # compute_changed_keys
 # ---------------------------------------------------------------------------
+
 
 class TestComputeChangedKeys:
     def test_detects_changed_keys(self, tmp_path):

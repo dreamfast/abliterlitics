@@ -101,62 +101,46 @@ if [[ $DRY_RUN -eq 0 ]]; then
 fi
 run_script "panel_comparison.py" "panel_comparison.json"
 
-# Phase 2: Edit vectors — one per variant
+# NOTE: Each analysis script, when invoked with --comparison, loops over ALL
+# variants (or ALL variant pairs) internally. They are therefore invoked ONCE
+# here. Invoking once per variant/pair caused Nx (and N^2) redundant Docker
+# runs that multiplied runtime by ~22x (and 231x for pairwise).
+
+# Phase 2: Edit vectors (script loops all variants internally)
 for variant in $VARIANT_NAMES; do
     if [[ $DRY_RUN -eq 0 ]]; then
         db_stage_start "$COMPARISON_NAME" "$variant" "weights"
     fi
-    run_script "edit_vector_analysis.py" "edit_${variant}.json"
 done
+run_script "edit_vector_analysis.py" "edit_vectors.json"
 
-# Phase 3: SVD — one per variant
-for variant in $VARIANT_NAMES; do
-    run_script "svd_analysis.py" "svd_${variant}.json"
-done
+# Phase 3: SVD (script loops all variants internally)
+run_script "svd_analysis.py" "svd_all.json"
 
-# Phase 4: Technique fingerprint — one per variant
-for variant in $VARIANT_NAMES; do
-    run_script "technique_fingerprint.py" "fingerprint_${variant}.json"
-done
+# Phase 4: Technique fingerprint (script loops all variants internally)
+run_script "technique_fingerprint.py" "fingerprint_all.json"
 
-# Phase 5: Layer analysis — one per variant
-for variant in $VARIANT_NAMES; do
-    run_script "layer_analysis.py" "layer_${variant}.json"
-done
+# Phase 5: Layer analysis (script loops all variants internally)
+run_script "layer_analysis.py" "layer_all.json"
 
-# Phase 6: Cross-technique correlation (pairwise)
-names_arr=($VARIANT_NAMES)
-for ((i=0; i<${#names_arr[@]}; i++)); do
-    for ((j=i+1; j<${#names_arr[@]}; j++)); do
-        v1="${names_arr[$i]}"
-        v2="${names_arr[$j]}"
-        run_script "technique_correlation.py" "correlation_${v1}_vs_${v2}.json"
-    done
-done
+# Phase 6: Cross-technique correlation (script loops all pairs internally w/ skip)
+run_script "technique_correlation.py" "correlation_all.json"
 
-# Phase 7: Subspace alignment (pairwise)
-for ((i=0; i<${#names_arr[@]}; i++)); do
-    for ((j=i+1; j<${#names_arr[@]}; j++)); do
-        v1="${names_arr[$i]}"
-        v2="${names_arr[$j]}"
-        run_script "subspace_alignment.py" "subspace_${v1}_vs_${v2}.json"
-    done
-done
+# Phase 7: Subspace alignment (script loops all pairs internally w/ skip)
+run_script "subspace_alignment.py" "subspace_all.json"
 
-# Phase 8: Low-rank reconstruction (pairwise)
-for ((i=0; i<${#names_arr[@]}; i++)); do
-    for ((j=i+1; j<${#names_arr[@]}; j++)); do
-        v1="${names_arr[$i]}"
-        v2="${names_arr[$j]}"
-        run_script "lowrank_reconstruction.py" "lowrank_${v1}_vs_${v2}.json"
-    done
-done
+# Phase 8: Low-rank reconstruction (script loops all pairs internally w/ skip)
+run_script "lowrank_reconstruction.py" "lowrank_all.json"
 
 # Phase 9: Expert analysis (only for MoE models)
 run_script "expert_analysis.py" "expert_analysis.json"
 
-# Phase 10: Cross-architecture comparison (if multiple comparisons available)
-run_script "cross_arch_comparison.py" "cross_arch.json"
+# Phase 10: Cross-architecture comparison (only meaningful when multiple
+# architectures/comparisons are available; non-fatal — single-architecture
+# runs are expected to skip it).
+if ! run_script "cross_arch_comparison.py" "cross_arch.json"; then
+    log "cross_arch_comparison.py did not complete (expected for single-architecture comparisons) — continuing"
+fi
 
 # Import results to DB
 if [[ $DRY_RUN -eq 0 ]]; then

@@ -1,4 +1,5 @@
 """Tests for src/weight/technique_correlation.py — Cosine similarity and projection math."""
+
 from __future__ import annotations
 
 import pytest

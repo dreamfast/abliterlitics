@@ -25,6 +25,8 @@ def _run_load(comp_json_path: str, comp_dir: str) -> dict[str, str]:
     for line in result.stdout.strip().splitlines():
         if "=" in line:
             key, _, value = line.partition("=")
+            # Strip the "export " prefix (added so the output can be eval'd directly)
+            key = key.removeprefix("export ").strip()
             # Strip shlex quoting (single quotes)
             if value.startswith("'") and value.endswith("'"):
                 value = value[1:-1]
@@ -78,9 +80,18 @@ class TestCoreExports:
 
         assert env["COMPARISON_NAME"] == "test-comp"
         assert env["BASE_DIR"] == str(comparison_dir / "models" / "base-model")
+        assert env["BASE_NAME"] == "base-model"
         assert env["VARIANT_COUNT"] == "1"
         assert env["VARIANT_NAMES"] == "variant1"
         assert "VARIANT_PATH_variant1" in env
+
+    def test_base_name_is_basename_with_hyphens(self, comparison_dir: Path) -> None:
+        """BASE_NAME must be the directory basename even for ../..-relative paths."""
+        (comparison_dir / "models" / "gemma-4-E4B-it").mkdir(parents=True, exist_ok=True)
+        comp_path = _write_comparison(comparison_dir, base="models/gemma-4-E4B-it")
+        env = _run_load(str(comp_path), str(comparison_dir))
+
+        assert env["BASE_NAME"] == "gemma-4-E4B-it"
 
     def test_multiple_variants(self, comparison_dir: Path) -> None:
         variants = {
@@ -115,8 +126,10 @@ class TestSettingsDefaults:
 
         assert env["INFERENCE_BACKEND"] == "auto"
         assert "mmlu" in env["LM_EVAL_TASKS"]
-        assert env["LM_EVAL_MAX_MODEL_LEN"] == "8192"
-        assert env["LM_EVAL_MAX_GEN_TOKS"] == "2048"
+        # Defaults follow the OLL v2 suite (see AGENTS.md "Key Defaults"):
+        # max_model_len 16384 (BBH 3-shot needs the context), max_gen_toks 4096.
+        assert env["LM_EVAL_MAX_MODEL_LEN"] == "16384"
+        assert env["LM_EVAL_MAX_GEN_TOKS"] == "4096"
         assert env["HARMBENCH_MAX_TOKENS"] == "8096"
         assert env["TOKENIZER_DIR"] == env["BASE_DIR"]
         assert env["GGUF_DIR"] == ""

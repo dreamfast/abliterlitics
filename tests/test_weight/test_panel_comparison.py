@@ -1,13 +1,10 @@
 """Tests for src/weight/panel_comparison.py — Changed keys detection."""
+
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
-import torch
 
-from src.model_config import ArchitectureConfig, build_shard_map, detect_architecture
+from src.model_config import build_shard_map, detect_architecture
 from src.weight.panel_comparison import changed_keys_lazy
 from tests.conftest import create_mock_model
 
@@ -15,6 +12,7 @@ from tests.conftest import create_mock_model
 @pytest.fixture(autouse=True)
 def clear_cache():
     from src.model_config import clear_shard_map_cache
+
     clear_shard_map_cache()
     yield
     clear_shard_map_cache()

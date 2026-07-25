@@ -127,9 +127,7 @@ def run_analysis(
             res = project_out(delta_b, delta_a)
             energy_b = norm_b**2
             if energy_b > 1e-20:
-                entry[f"residual_{label_b}_after_removing_{label_a}_pct"] = (
-                    res.norm().item() ** 2 / energy_b * 100
-                )
+                entry[f"residual_{label_b}_after_removing_{label_a}_pct"] = res.norm().item() ** 2 / energy_b * 100
 
         per_key.append(entry)
         del t_base, t_a, t_b, delta_a, delta_b
@@ -185,7 +183,11 @@ def run_analysis(
         med = safe_median(cosines)
         log.info(
             "  cos(%s vs %s): mean=%.4f, median=%.4f (n=%d)",
-            label_a, label_b, m, med, len(cosines),
+            label_a,
+            label_b,
+            m,
+            med,
+            len(cosines),
         )
 
 

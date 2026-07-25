@@ -1,4 +1,5 @@
 """Tests for src/weight/stacking_analysis.py — Math helper functions."""
+
 from __future__ import annotations
 
 import pytest
@@ -8,9 +9,6 @@ from src.weight.stacking_analysis import (
     cosine_sim,
     explained_variance,
     regression_slope,
-    safe_mean,
-    safe_median,
-    safe_std,
 )
 
 

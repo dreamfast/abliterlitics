@@ -11,28 +11,30 @@ models_gguf/
 # Results (generated output at top level, not per-comparison)
 /results/
 
-# Large comparison data (goes to HuggingFace, not git)
-comparisons/*/results/
-comparisons/*/logs/
-comparisons/**/*.log
-comparisons/**/layer_analysis_*.json
-comparisons/**/edit_vector_*.json
-comparisons/**/fingerprint_*.json
-comparisons/**/svd_*.json
-comparisons/**/correlation_*.json
-comparisons/**/lowrank_*.json
-comparisons/**/subspace_*.json
-comparisons/**/multi_model_panel.json
-comparisons/**/*_to_*_keys.csv
-comparisons/**/samples_*.jsonl
+# Comparison experiment data lives on HuggingFace, not in git.
+# Git holds only the app/toolkit (src/, runners/, docker/) and the
+# comparison.example.json template. Real comparisons/ dirs are user data
+# provided at runtime and pushed to HF separately.
+comparisons/
+# Published analysis reports (writeups for completed comparisons) also go to
+# HuggingFace/markdown, not git — same rationale as comparisons/ above.
+older_comparisons/
 
 # Caches
 .cache/
 *.pyc
+*.pyo
 __pycache__/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+
+# Build artifacts
+*.egg-info/
+*.egg
+*.whl
+dist/
+build/
 
 # Environment
 .env
@@ -71,13 +73,27 @@ gsm8k_overnight.log
 
 # Blog markdown source (published separately)
 markdown/
+REDDIT.md
 
 # Writing style guide (internal, not for publication)
 WRITING_STYLE.md
+
+# Backups
+*.bak
+*.bak_*
+*.bak.*
+*.bak_*/
+
+# SQLite databases + WAL/SHM sidecar files
+*.db
+*.db-shm
+*.db-wal
+
+# Stray logs
+log.log
 
 done/
 archive/
 temp/
 .opencode-docker
-abliterlitics.db
 upload_graphs.sh

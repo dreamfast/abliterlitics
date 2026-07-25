@@ -84,6 +84,8 @@ cmd_auto() {
     bash "${RUNNERS_DIR}/run_weights.sh" $flags "$comp_dir"
     bash "${RUNNERS_DIR}/run_kl.sh" $flags "$comp_dir"
     bash "${RUNNERS_DIR}/run_lm_eval.sh" $flags "$comp_dir"
+    # load_comparison needed before run_harmbench.py (Python needs exported env vars)
+    load_comparison "$comp_dir"
     python3 "${RUNNERS_DIR}/run_harmbench.py" $flags "$comp_dir"
     cmd_graphs "$comp_dir"
 }
@@ -105,6 +107,17 @@ cmd_lm_eval() {
 
 cmd_harmbench() {
     shift
+    # The comparison directory is the last positional arg that is an existing dir
+    local comp_dir="."
+    local args_after_shift=("$@")
+    for (( i=${#args_after_shift[@]}-1; i>=0; i-- )); do
+        arg="${args_after_shift[$i]}"
+        if [[ ! "$arg" =~ ^- ]] && [[ -d "$arg" || -f "$arg/comparison.json" || "$(basename "$arg")" == "comparison.json" ]]; then
+            comp_dir="$arg"
+            break
+        fi
+    done
+    load_comparison "$(find_comp_dir "$comp_dir")"
     python3 "${RUNNERS_DIR}/run_harmbench.py" $(global_flags) "$@"
 }
 
@@ -112,12 +125,14 @@ cmd_graphs() {
     local comp_dir
     comp_dir="$(find_comp_dir "${1:-.}")"
     load_comparison "$comp_dir"
-    local results_dir="${comp_dir}/results"
-    local graphs_dir="${comp_dir}/graphs"
+    local results_dir
+    results_dir="$(cd "${comp_dir}/results" && pwd)"
+    local graphs_dir
+    graphs_dir="$(cd "${comp_dir}" && pwd)/graphs"
     mkdir -p "$graphs_dir"
 
     log "Generating graphs for ${comp_dir}"
-    # Run generate_graphs.py inside Docker
+    # Run generate_graphs.py inside Docker (image ENTRYPOINT is python3)
     if [[ $GLOBAL_DRY_RUN -eq 1 ]]; then
         log "  [dry-run] docker_run auto ${FORENSICS_IMAGE} generate_graphs.py --label ${COMPARISON_NAME}"
         return
@@ -127,9 +142,9 @@ cmd_graphs() {
         -v "${results_dir}:/results:ro" \
         -v "${graphs_dir}:/graphs" \
         -v "${ABL_ROOT}/src:/app/src:ro" \
-        -e PYTHONPATH=/app/src \
+        -e PYTHONPATH=/app \
         -- \
-        python3 /app/src/report/generate_graphs.py \
+        /app/src/report/generate_graphs.py \
             --results-dir /results \
             --output-dir /graphs \
             --label "${COMPARISON_NAME}"
@@ -139,8 +154,10 @@ cmd_report() {
     local comp_dir
     comp_dir="$(find_comp_dir "${1:-.}")"
     load_comparison "$comp_dir"
-    local results_dir="${comp_dir}/results"
-    local report_dir="${comp_dir}/report"
+    local results_dir
+    results_dir="$(cd "${comp_dir}/results" && pwd)"
+    local report_dir
+    report_dir="$(cd "${comp_dir}" && pwd)/report"
     mkdir -p "$report_dir"
 
     log "Generating report for ${comp_dir}"
@@ -160,9 +177,9 @@ cmd_report() {
             -v "${results_dir}:/results:ro" \
             -v "${report_dir}:/report" \
             -v "${ABL_ROOT}/src:/app/src:ro" \
-            -e PYTHONPATH=/app/src \
+            -e PYTHONPATH=/app \
             -- \
-            python3 /app/src/report/provenance_report.py \
+            /app/src/report/provenance_report.py \
                 --results-dir /results \
                 --output-dir /report \
                 --variant "${variant}" \
@@ -226,7 +243,17 @@ cmd_db() {
 }
 
 cmd_tables() {
-    python3 "${SCRIPT_DIR}/src/db_tables.py" "$@"
+    local args=("$@")
+    # If the last positional arg is a comparison directory, resolve to its name
+    local last="${args[-1]:-}"
+    if [[ -n "$last" ]]; then
+        local stripped="$last"
+        [[ "$stripped" == */ ]] && stripped="${stripped%/}"
+        if [[ -f "${stripped}/comparison.json" ]]; then
+            args[-1]="$(basename "$stripped")"
+        fi
+    fi
+    PYTHONPATH="${ABL_ROOT}" python3 "${ABL_ROOT}/src/db_tables.py" "${args[@]}"
 }
 
 cmd_clean() {
@@ -253,7 +280,9 @@ cmd_validate() {
         ((errors++))
     fi
     for variant in $VARIANT_NAMES; do
-        local variant_path_var="VARIANT_PATH_${variant}"
+        local variant_slug
+        variant_slug="$(echo "$variant" | tr '-' '_')"
+        local variant_path_var="VARIANT_PATH_${variant_slug}"
         if [[ ! -d "${!variant_path_var}" ]]; then
             error "Variant not found: ${!variant_path_var}"
             ((errors++))

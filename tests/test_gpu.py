@@ -1,17 +1,17 @@
 """Tests for src/gpu.py — GPU detection, Docker index mapping, strategy selection."""
+
 from __future__ import annotations
 
-import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.gpu import GPUInfo, detect_gpus, get_gpu_info_by_docker, get_gpu_info_by_host, select_strategy
 
-
 # ---------------------------------------------------------------------------
 # GPUInfo
 # ---------------------------------------------------------------------------
+
 
 class TestGPUInfo:
     def test_gpuinfo_creation(self):
@@ -77,6 +77,7 @@ class TestDetectGpus:
 # Helper lookups
 # ---------------------------------------------------------------------------
 
+
 def _make_gpus():
     return [
         GPUInfo(host_index=0, name="RTX 5090", vram_mb=32768, docker_index=1, compute_capability="12.0"),
@@ -109,6 +110,7 @@ class TestGetGpuInfo:
 # ---------------------------------------------------------------------------
 # Strategy selection
 # ---------------------------------------------------------------------------
+
 
 class TestSelectStrategy:
     gpus = _make_gpus()

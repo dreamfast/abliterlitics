@@ -134,7 +134,7 @@ def run_analysis(
         report[f"{label}_keys"] = sorted(keys)
 
     # Compute overlap for every pair of base->variant comparisons
-    base_variant_labels = [l for l in changed_sets if l.startswith("base->")]
+    base_variant_labels = [label for label in changed_sets if label.startswith("base->")]
     for label_a, label_b in combinations(base_variant_labels, 2):
         va_name = label_a.removeprefix("base->")
         vb_name = label_b.removeprefix("base->")
@@ -207,8 +207,12 @@ def main() -> None:
     )
     parser.add_argument("--comparison", help="Path to comparison.json dir (batch mode)")
     parser.add_argument("--base", help="Base model dir (overrides --comparison)")
-    parser.add_argument("--variant", action="append", metavar="NAME=PATH",
-                        help="Variant as name=path (repeatable, e.g. --variant heretic=/models/heretic)")
+    parser.add_argument(
+        "--variant",
+        action="append",
+        metavar="NAME=PATH",
+        help="Variant as name=path (repeatable, e.g. --variant heretic=/models/heretic)",
+    )
     parser.add_argument("--output", help="Output directory")
     parser.add_argument("--results-dir", help="Base results directory")
     args = parser.parse_args()
@@ -236,7 +240,7 @@ def main() -> None:
         if not args.base or not args.variant or not args.output:
             parser.error("--base, at least two --variant, and --output are required without --comparison")
 
-        variant_paths: dict[str, str] = {}
+        variant_paths = {}
         for vspec in args.variant:
             if "=" not in vspec:
                 parser.error(f"--variant must be NAME=PATH, got: {vspec}")

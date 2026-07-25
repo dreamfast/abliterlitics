@@ -161,8 +161,9 @@ def gen_venn(panel, out_dir, label, colors):
                     alpha=0.7,
                     ax=ax,
                 )
-                ax.set_title(f"{label} — {a.capitalize()} vs {b.capitalize()} Overlap",
-                             fontsize=13, fontweight="bold", pad=15)
+                ax.set_title(
+                    f"{label} — {a.capitalize()} vs {b.capitalize()} Overlap", fontsize=13, fontweight="bold", pad=15
+                )
                 fname = f"venn_{label}_{a}_vs_{b}.svg"
                 fig.savefig(out_dir / fname, format="svg", bbox_inches="tight")
                 plt.close(fig)
@@ -228,12 +229,14 @@ def gen_layer_heatmap(layer_data, out_dir, label, variant="", colors=None):
         variant_suffix = f" ({variant})" if variant else ""
         ax.set_title(f"{label} — {mlabel} by Layer{variant_suffix}", fontsize=13, fontweight="bold")
         ax.tick_params(axis="x", rotation=45, labelsize=7)
-        fig.savefig(out_dir / f"layer_{metric}_{label}.svg", format="svg", bbox_inches="tight")
+        # Include variant in filename so multiple variants don't overwrite each other
+        fname_variant = f"_{variant}" if variant else ""
+        fig.savefig(out_dir / f"layer_{metric}_{label}{fname_variant}.svg", format="svg", bbox_inches="tight")
         plt.close(fig)
-        log.info("layer_%s_%s.svg", metric, label)
+        log.info("layer_%s_%s%s.svg", metric, label, fname_variant)
 
 
-def gen_svd_plots(svd_data, out_dir, label):
+def gen_svd_plots(svd_data, out_dir, label, variant=""):
     if not svd_data:
         return
     results = svd_data.get("tensor_results", [])
@@ -294,10 +297,13 @@ def gen_svd_plots(svd_data, out_dir, label):
     ax2.axhline(y=90, color="red", linestyle="--", alpha=0.5)
     ax2.axhline(y=50, color="orange", linestyle="--", alpha=0.5)
 
-    fig.suptitle(f"SVD Technique Analysis — {label}", fontsize=14, fontweight="bold")
-    fig.savefig(out_dir / f"svd_summary_{label}.svg", format="svg", bbox_inches="tight")
+    variant_suffix = f" ({variant})" if variant else ""
+    fig.suptitle(f"SVD Technique Analysis — {label}{variant_suffix}", fontsize=14, fontweight="bold")
+    # Include variant in filename so multiple variants don't overwrite each other
+    fname_variant = f"_{variant}" if variant else ""
+    fig.savefig(out_dir / f"svd_summary_{label}{fname_variant}.svg", format="svg", bbox_inches="tight")
     plt.close(fig)
-    log.info("svd_summary_%s.svg", label)
+    log.info("svd_summary_%s%s.svg", label, fname_variant)
 
 
 def gen_fingerprint_radar(fingerprints, out_dir, label):
@@ -380,34 +386,34 @@ def main():
     gen_venn(panel, odir, args.label, colors)
     gen_aggressiveness_bar(panel, odir, args.label, colors)
 
-    # Auto-discover layer analysis files (try generic name first, then any variant-specific)
-    layer_data = None
-    layer_candidates = sorted(rdir.glob("layer_analysis*.json"))
+    # Auto-discover layer analysis files (per-variant; rglob searches subdirs)
+    layer_candidates = sorted(rdir.rglob("layer_analysis*.json"))
     for lc in layer_candidates:
         d = load_json(lc)
-        if d:
-            layer_data = d.get("layer_progression")
-            # Extract variant name from filename like layer_analysis_heretic.json
-            stem = lc.stem.replace("layer_analysis", "").strip("_")
-            if not stem:
-                stem = ""
-            break
-    if layer_data:
+        if not d:
+            continue
+        layer_data = d.get("layer_progression")
+        if not layer_data:
+            continue
+        # Extract variant name from filename like layer_analysis_t122.json
+        stem = lc.stem.replace("layer_analysis", "").strip("_")
         gen_layer_heatmap(layer_data, odir, args.label, variant=stem, colors=colors)
 
-    # Auto-discover SVD files
-    svd_data = None
-    svd_candidates = sorted(rdir.glob("svd_*.json"))
+    # Auto-discover SVD files (per-variant; rglob searches subdirs)
+    svd_candidates = sorted(rdir.rglob("svd_*.json"))
     for sc in svd_candidates:
         d = load_json(sc)
-        if d:
-            svd_data = d
-            break
-    gen_svd_plots(svd_data, odir, args.label)
+        if not d:
+            continue
+        # Extract variant name from filename like svd_t122.json
+        stem = sc.stem.replace("svd_", "").replace("svd", "").strip("_")
+        gen_svd_plots(d, odir, args.label, variant=stem)
 
-    expert_data = load_json(rdir / "expert_analysis.json")
-    if expert_data and expert_data.get("architecture", {}).get("experts", 0) > 0:
-        gen_expert_heatmap(expert_data, odir, args.label)
+    # Auto-discover expert analysis files (MoE only; rglob searches subdirs)
+    for ec in sorted(rdir.rglob("expert_analysis*.json")):
+        expert_data = load_json(ec)
+        if expert_data and expert_data.get("architecture", {}).get("experts", 0) > 0:
+            gen_expert_heatmap(expert_data, odir, args.label)
 
     log.info("Done. Graphs saved to %s/", odir)
 

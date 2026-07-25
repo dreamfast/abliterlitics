@@ -8,11 +8,16 @@ ABL_VERSION="1.0.0"
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2; }
 
-# Docker image names (versioned)
-FORENSICS_IMAGE="abliterlitics-forensics:1.0.0"
-LMEVAL_IMAGE="abliterlitics-lmeval:1.0.0"
-LLAMACPP_IMAGE="abliterlitics-llamacpp:1.0.0"
-IK_LLAMACPP_IMAGE="abliterlitics-ik-llamacpp:1.0.0"
+# Docker image names (versioned).
+# These honor env-var overrides so per-comparison selection works: the
+# _load_comparison.py loader exports LMEVAL_IMAGE when comparison.json
+# sets "settings.lmeval_image" — useful for models that need a newer vLLM
+# (e.g. Gemma 4 thinking → abliterlitics-lmeval-nightly:1.0.0 with the
+# gemma4_reasoning_parser; see AGENTS.md lesson #11 / NOTES.md).
+FORENSICS_IMAGE="${FORENSICS_IMAGE:-abliterlitics-forensics:1.0.0}"
+LMEVAL_IMAGE="${LMEVAL_IMAGE:-abliterlitics-lmeval:1.0.0}"
+LLAMACPP_IMAGE="${LLAMACPP_IMAGE:-abliterlitics-llamacpp:1.0.0}"
+IK_LLAMACPP_IMAGE="${IK_LLAMACPP_IMAGE:-abliterlitics-ik-llamacpp:1.0.0}"
 
 # Source directory (for mounting into Docker)
 ABL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -65,10 +70,13 @@ load_comparison() {
     log "Loaded comparison: $COMPARISON_NAME ($VARIANT_COUNT variants)"
 }
 
-# Detect best GPU (most VRAM)
+# Detect best GPU (most VRAM). Defaults to GPU 0 if nvidia-smi is unavailable
+# on the host (e.g. when running inside a container or headless environment).
 detect_best_gpu() {
-    nvidia-smi --query-gpu=index,memory.total --format=csv,noheader,nounits 2>/dev/null | \
-        sort -t',' -k2 -nr | head -1 | cut -d',' -f1 | tr -d ' '
+    local gpu
+    gpu=$(nvidia-smi --query-gpu=index,memory.total --format=csv,noheader,nounits 2>/dev/null | \
+        sort -t',' -k2 -nr | head -1 | cut -d',' -f1 | tr -d ' ')
+    echo "${gpu:-0}"
 }
 
 # Check if result file exists (for skip-existing)

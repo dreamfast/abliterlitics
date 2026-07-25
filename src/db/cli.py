@@ -12,6 +12,7 @@ import json
 import logging
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 from src.db.core import DB_PATH, get_db
 from src.db.pipeline import (
@@ -449,6 +450,46 @@ def main() -> None:
     p_sk.add_argument("--stage", required=True)
     p_sk.add_argument("--db", default=DB_PATH)
 
+    # --- journal (inter-agent communication + project memory) ---
+    # Import journal constants here to avoid top-of-file coupling
+    from src.db.core import JOURNAL_CATEGORIES, JOURNAL_SEVERITIES
+
+    p_journal = sub.add_parser("journal", help="Read/write the project journal")
+    journal_sub = p_journal.add_subparsers(dest="journal_command", required=True)
+
+    # journal add
+    p_ja = journal_sub.add_parser("add", help="Append a journal entry")
+    p_ja.add_argument("--agent", required=True, help="Writing agent name (init/lm-eval/kl/...)")
+    p_ja.add_argument("--category", required=True, choices=JOURNAL_CATEGORIES, help="Entry category")
+    p_ja.add_argument("--severity", default="info", choices=JOURNAL_SEVERITIES, help="Entry severity (default: info)")
+    p_ja.add_argument("--subject", required=True, help="Short tag (chat_template, thinking_mode, ...)")
+    p_ja.add_argument("--title", required=True, help="One-line summary")
+    p_ja.add_argument("--body", default="", help="Markdown body (optional)")
+    p_ja.add_argument("--comparison", default=None, help="Comparison name (omit for project-wide)")
+    p_ja.add_argument("--db", default=DB_PATH)
+
+    # journal list
+    p_jl = journal_sub.add_parser("list", help="List entries (newest first)")
+    p_jl.add_argument("--comparison", default=None)
+    p_jl.add_argument("--agent", default=None)
+    p_jl.add_argument("--category", default=None, choices=JOURNAL_CATEGORIES)
+    p_jl.add_argument("--subject", default=None)
+    p_jl.add_argument("--severity", default=None, choices=JOURNAL_SEVERITIES)
+    p_jl.add_argument("--limit", type=int, default=50)
+    p_jl.add_argument("--db", default=DB_PATH)
+
+    # journal latest
+    p_jlat = journal_sub.add_parser("latest", help="Latest entry per subject")
+    p_jlat.add_argument("--comparison", default=None)
+    p_jlat.add_argument("--db", default=DB_PATH)
+
+    # journal search
+    p_js = journal_sub.add_parser("search", help="Full-text search title + body")
+    p_js.add_argument("query", help="Search query")
+    p_js.add_argument("--comparison", default=None)
+    p_js.add_argument("--limit", type=int, default=50)
+    p_js.add_argument("--db", default=DB_PATH)
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -526,6 +567,98 @@ def main() -> None:
         conn = get_db(args.db)
         stage_skip(conn, args.comparison, args.model, args.stage)
         conn.close()
+
+    elif args.command == "journal":
+        handle_journal_command(args)
+
+
+def handle_journal_command(args: argparse.Namespace) -> None:
+    """Dispatch for the journal subcommand tree.
+
+    Subcommands:
+      add       Append a journal entry.
+      list      List entries (newest first).
+      latest    Latest entry per subject (optionally per comparison).
+      search    Full-text search title + body.
+    """
+    from src.db.core import (
+        journal_add,
+        journal_latest,
+        journal_list,
+        journal_search,
+    )
+
+    sub = getattr(args, "journal_command", None)
+    conn = get_db(args.db)
+
+    try:
+        if sub == "add":
+            entry_id = journal_add(
+                conn,
+                agent=args.agent,
+                category=args.category,
+                severity=args.severity,
+                subject=args.subject,
+                title=args.title,
+                body=args.body or "",
+                comparison=args.comparison,
+            )
+            print(f"OK journal entry id={entry_id}")
+
+        elif sub == "list":
+            rows = journal_list(
+                conn,
+                comparison=args.comparison,
+                agent=args.agent,
+                category=args.category,
+                subject=args.subject,
+                severity=args.severity,
+                limit=args.limit,
+            )
+            _print_journal_rows(rows)
+
+        elif sub == "latest":
+            rows = journal_latest(conn, comparison=args.comparison)
+            if not rows:
+                print("(no journal entries)")
+                return
+            print(f"{'Subject':<25} {'Category':<11} {'Severity':<9} {'Agent':<10} {'Timestamp':<21} Title")
+            print("-" * 120)
+            for r in rows:
+                ts = r[7][:19].replace("T", " ") if r[7] else ""
+                print(f"{(r[1] or '-'):<25} {r[3]:<11} {r[4]:<9} {r[2]:<10} {ts:<21} {r[5]}")
+
+        elif sub == "search":
+            rows = journal_search(
+                conn,
+                args.query,
+                comparison=args.comparison,
+                limit=args.limit,
+            )
+            _print_journal_rows(rows)
+
+        else:
+            print(f"Unknown journal subcommand: {sub!r}")
+            print("Available: add, list, latest, search")
+    finally:
+        conn.close()
+
+
+def _print_journal_rows(rows: list[Any]) -> None:
+    """Pretty-print a list of journal rows."""
+    if not rows:
+        print("(no journal entries match)")
+        return
+    print(
+        f"{'ID':<5} {'Timestamp':<21} {'Comparison':<14} {'Agent':<10} "
+        f"{'Category':<10} {'Severity':<9} {'Subject':<20} Title"
+    )
+    print("-" * 140)
+    for r in rows:
+        # row layout: id, timestamp, comparison, agent, category, severity, subject, title, body
+        ts = r[1][:19].replace("T", " ") if r[1] else ""
+        comp = (r[2] or "-")[:13]
+        print(f"{r[0]:<5} {ts:<21} {comp:<14} {r[3]:<10} {r[4]:<10} {r[5]:<9} {(r[6] or '-')[:19]:<20} {r[7]}")
 
 
 if __name__ == "__main__":

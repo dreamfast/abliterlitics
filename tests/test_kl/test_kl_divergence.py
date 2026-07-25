@@ -1,4 +1,5 @@
 """Tests for src/kl/kl_divergence.py — KL computation correctness."""
+
 from __future__ import annotations
 
 import pytest

@@ -6,7 +6,7 @@ Phase 2: Classify — Run classifier on generated responses
 Phase 3: Score — Compute Attack Success Rate (ASR)
 
 Supports two inference backends:
-  - vLLM (default): Starts vLLM OpenAI server in Docker with BNB4 quantization
+  - vLLM (default): Starts vLLM OpenAI server in Docker with native bf16
   - llama.cpp: Uses GGUF files via llama-server (fallback)
 
 All settings come from comparison.json via _load_comparison.py shell exports,
@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -40,23 +41,76 @@ LLAMACPP_IMAGE = "abliterlitics-llamacpp:1.0.0"
 
 
 # ---------------------------------------------------------------------------
+# DB stage tracking (fire-and-forget, mirrors runners/common.sh db_stage_*)
+# ---------------------------------------------------------------------------
+
+
+def _db_stage(
+    action: str,
+    comparison: str,
+    model: str,
+    stage: str = "harmbench",
+    *,
+    result_path: str = "",
+    dry_run: bool = False,
+) -> None:
+    """Mark a pipeline stage in the SQLite DB. Never raises — DB is best-effort."""
+    if dry_run or not comparison:
+        return
+    cmd = [
+        sys.executable,
+        "-m",
+        "src.db",
+        f"stage-{action}",
+        "--comparison",
+        comparison,
+        "--model",
+        model,
+        "--stage",
+        stage,
+    ]
+    if result_path:
+        cmd += ["--result-path", result_path]
+    with contextlib.suppress(Exception):
+        subprocess.run(cmd, capture_output=True, timeout=30, check=False, cwd=str(ABL_ROOT))
+
+
+def _db_import_results(comp_dir: str, dry_run: bool = False) -> None:
+    """Import all result files (incl. HarmBench) into the DB. Never raises."""
+    if dry_run:
+        return
+    with contextlib.suppress(Exception):
+        subprocess.run(
+            [sys.executable, "-m", "src.db", "import-results", comp_dir],
+            capture_output=True,
+            timeout=120,
+            check=False,
+            cwd=str(ABL_ROOT),
+        )
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
 def detect_best_gpu() -> int:
-    """Detect GPU with most VRAM via nvidia-smi."""
-    result = subprocess.run(
-        ["nvidia-smi", "--query-gpu=index,memory.total", "--format=csv,noheader,nounits"],
-        capture_output=True,
-        text=True,
-    )
-    lines = [ln.strip() for ln in result.stdout.strip().split("\n") if ln.strip()]
-    if not lines:
-        log.warning("nvidia-smi returned no output, defaulting to GPU 0")
+    """Detect GPU with most VRAM via nvidia-smi. Defaults to GPU 0 if unavailable."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+        )
+        lines = [ln.strip() for ln in result.stdout.strip().split("\n") if ln.strip()]
+        if not lines:
+            log.warning("nvidia-smi returned no output, defaulting to GPU 0")
+            return 0
+        best = max(lines, key=lambda ln: int(ln.split(",")[1].strip()))
+        return int(best.split(",")[0].strip())
+    except (FileNotFoundError, Exception):
+        log.warning("nvidia-smi not available, defaulting to GPU 0")
         return 0
-    best = max(lines, key=lambda ln: int(ln.split(",")[1].strip()))
-    return int(best.split(",")[0].strip())
 
 
 def allocate_port() -> int:
@@ -66,20 +120,60 @@ def allocate_port() -> int:
         return s.getsockname()[1]
 
 
-def model_size_gb(model_path: str) -> float:
-    """Get model directory size in GiB.
+def container_bridge_ip(container_name: str, timeout: int = 60) -> str:
+    """Resolve a container's IP on the default bridge network.
 
-    Returns 0.0 if the path doesn't exist or du fails, which will
-    skip BNB4 quantization (safe default: use native bf16).
+    We reach sibling containers by their bridge IP rather than relying on
+    ``-p`` port-mapping + ``localhost``. This is robust in both normal hosts
+    and nested (Docker-from-Docker) environments where published ports are
+    mapped onto the *outer* host namespace and are unreachable from the
+    orchestrator's own namespace. The bridge IP is routable from the host and
+    from any sibling container sharing the default bridge, so both the
+    in-process health check and the generate container can reach vLLM.
+    Falls back to ``localhost`` if the IP cannot be resolved.
     """
-    try:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
         result = subprocess.run(
-            ["du", "-sk", model_path],
+            [
+                "docker",
+                "inspect",
+                "-f",
+                "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+                container_name,
+            ],
             capture_output=True,
             text=True,
-            check=True,
+            check=False,
         )
-        kb = int(result.stdout.split()[0])
+        ip = result.stdout.strip()
+        if ip:
+            return ip
+        time.sleep(1)
+    log.warning(
+        "Could not resolve bridge IP for %s, falling back to localhost",
+        container_name,
+    )
+    return "localhost"
+
+
+def model_size_gb(model_path: str) -> float:
+    """Get model size in GiB — counting SAFETENSORS FILES ONLY.
+
+    The directory may contain GGUF, cache, or other non-model files that
+    would inflate the size. We only care about the actual model weights.
+    Returns 0.0 if no safetensors found or path doesn't exist.
+    """
+    try:
+        size_cmd = (
+            f"find '{model_path}' -maxdepth 1 -name '*.safetensors' -exec du -ck {{}} + 2>/dev/null | tail -1 | cut -f1"
+        )
+        result = subprocess.run(
+            ["bash", "-c", size_cmd],
+            capture_output=True,
+            text=True,
+        )
+        kb = int(result.stdout.strip()) if result.stdout.strip() else 0
         return kb / 1024 / 1024
     except (subprocess.CalledProcessError, IndexError, ValueError) as exc:
         log.warning("Could not determine size of %s: %s", model_path, exc)
@@ -168,15 +262,17 @@ def run_generate_vllm(
         log.info("  [dry-run] Would start vLLM server + generate responses")
         return None
 
-    # Determine quantization
-    size = model_size_gb(model_path)
-    use_bnb = size > 25
-    quant_label = "BNB4" if use_bnb else "bf16 native"
+    # Quantization: ALWAYS native bf16 for fair, consistent comparison conditions.
+    # BNB4 quantization damages scores and makes cross-model comparison unfair.
+    # Only enable BNB4 via an explicit override if reviewing persistent OOM errors.
+    use_bnb = False
+    quant_label = "bf16 native"
 
-    # Allocate a free port
+    # Allocate a free port (used as the vLLM listen port inside the container)
     port = allocate_port()
     container_name = f"vllm-hb-{model_name}-{os.getpid()}"
-    server_url = f"http://localhost:{port}"
+
+    # server_url is resolved after the container starts via its bridge IP — see below.
 
     # Pre-cleanup any stale container with same name
     docker_stop(container_name)
@@ -201,12 +297,28 @@ def run_generate_vllm(
         "--host",
         "0.0.0.0",
     ]
+    # Force thinking-enabled chat template from comparison dir (if present).
+    # Variant models may have different/missing chat templates — this ensures
+    # consistent thinking behavior across all models.
+    # IMPORTANT: Do NOT fall back to another comparison's template — that's
+    # model-specific and would silently produce wrong results for other models.
+    # If the comparison dir has no thinking_chat_template.jinja, vLLM will use
+    # whatever chat template is bundled with the model itself (which is correct).
+    comp_dir_path = Path(os.environ.get("COMPARISON_DIR", ""))
+    thinking_template = comp_dir_path / "thinking_chat_template.jinja"
+    if thinking_template.exists():
+        server_cmd.extend(["--chat-template", "/comparison/thinking_chat_template.jinja"])
+        log.info("  Using thinking chat template: %s", thinking_template)
+    else:
+        log.info("  No thinking_chat_template.jinja in comparison dir — using model's bundled chat template")
     if use_bnb:
         server_cmd.extend(["--quantization", "bitsandbytes", "--load-format", "bitsandbytes"])
-    if reasoning_parser:
-        server_cmd.extend(["--reasoning-parser", reasoning_parser])
-    if reasoning_config_json:
-        server_cmd.extend(["--reasoning-config", reasoning_config_json])
+    # Don't pass reasoning parser to vLLM — it misclassifies refusal text as "reasoning"
+    # and leaves content empty. Instead, parse <think/> tags ourselves in the generate script.
+    # if reasoning_parser:
+    #     server_cmd.extend(["--reasoning-parser", reasoning_parser])
+    # if reasoning_config_json:
+    #     server_cmd.extend(["--reasoning-config", reasoning_config_json])
 
     log.info(
         "  Starting vLLM: %s, %s, max_len=%d",
@@ -231,12 +343,22 @@ def run_generate_vllm(
         "CUDA_VISIBLE_DEVICES=0",
         "-v",
         f"{model_path}:/model:ro",
-        "-p",
-        f"{port}:{port}",
-        LMEVAL_IMAGE,
-        *server_cmd,
     ]
+    # Mount comparison dir for thinking chat template
+    if thinking_template.exists():
+        docker_cmd.extend(["-v", f"{thinking_template.parent}:/comparison:ro"])
+    docker_cmd.append(LMEVAL_IMAGE)
+    docker_cmd.extend(server_cmd)
     subprocess.run(docker_cmd, check=True)
+
+    # Resolve the server URL via the container's bridge IP. We deliberately do
+    # NOT use `-p` port-mapping: in nested Docker environments the published
+    # port lands on the outer host namespace and is unreachable from here, and
+    # even on normal hosts the bridge IP is directly routable. The generate
+    # container (below) also joins the default bridge so it can reach this IP.
+    bridge_ip = container_bridge_ip(container_name)
+    server_url = f"http://{bridge_ip}:{port}"
+    log.info("  vLLM container %s at %s", container_name, server_url)
 
     try:
         if not wait_for_vllm(server_url, timeout=300):
@@ -252,8 +374,9 @@ def run_generate_vllm(
             "docker",
             "run",
             "--rm",
-            "--network",
-            "host",
+            # No --network host: join the default bridge so the generate
+            # container can reach vLLM by its bridge IP (and still has NAT for
+            # downloading the HarmBench behaviors CSV).
             "-v",
             src_mount,
             "-v",
@@ -273,9 +396,11 @@ def run_generate_vllm(
             "--model-name",
             model_name,
         ]
-        # Disable thinking params for non-reasoning models
-        if not reasoning_parser:
-            generate_cmd.append("--no-thinking")
+        # Thinking is enabled by default — harmbench_generate.py sends
+        # chat_template_kwargs={"enable_thinking": True} via the chat completions API.
+        # Models without thinking support will simply ignore it (no-op).
+        # The --no-thinking flag should only be used for truly non-thinking models
+        # (e.g. Gemma 2/3, Llama) and can be passed via VARIANT_SKIP flags if needed.
 
         subprocess.run(generate_cmd, check=True)
     finally:
@@ -324,7 +449,8 @@ def run_generate_llamacpp(
 
     port = allocate_port()
     container_name = f"llama-hb-{model_name}-{os.getpid()}"
-    server_url = f"http://localhost:{port}"
+
+    # server_url is resolved after the container starts via its bridge IP — see below.
 
     docker_stop(container_name)
 
@@ -358,12 +484,17 @@ def run_generate_llamacpp(
         "CUDA_VISIBLE_DEVICES=0",
         "-v",
         f"{gguf_file}:/model.gguf:ro",
-        "-p",
-        f"{port}:{port}",
         LLAMACPP_IMAGE,
         *server_cmd,
     ]
     subprocess.run(docker_cmd, check=True)
+
+    # Resolve server URL via the container's bridge IP (see run_generate_vllm
+    # for rationale). Avoids -p port-mapping which is unreachable in nested
+    # Docker environments.
+    bridge_ip = container_bridge_ip(container_name)
+    server_url = f"http://{bridge_ip}:{port}"
+    log.info("  llama-server container %s at %s", container_name, server_url)
 
     try:
         if not wait_for_llamacpp(server_url, timeout=120):
@@ -378,8 +509,9 @@ def run_generate_llamacpp(
             "docker",
             "run",
             "--rm",
-            "--network",
-            "host",
+            # No --network host: join the default bridge to reach
+            # llama-server by its bridge IP (NAT also available for the
+            # HarmBench behaviors download).
             "-v",
             src_mount,
             "-v",
@@ -547,6 +679,7 @@ def main() -> None:
     # These are available when called via abliterlitics.sh. Fallback to defaults
     # for standalone invocation.
     comp_dir = Path(args.comparison_dir).resolve()
+    os.environ["COMPARISON_DIR"] = str(comp_dir)  # for run_generate_vllm
     results_dir = comp_dir / "results" / "harmbench"
     results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -571,10 +704,12 @@ def main() -> None:
 
     variant_names = os.environ.get("VARIANT_NAMES", "")
     base_dir = os.environ.get("BASE_DIR", "")
+    comparison_name = os.environ.get("COMPARISON_NAME", "")
 
     if variant_names and base_dir:
         # Called via abliterlitics.sh — env vars are set
-        models.append(("base", base_dir, False))
+        base_name = os.environ.get("BASE_NAME", "") or os.path.basename(os.path.normpath(base_dir))
+        models.append((base_name, base_dir, False))
         for name in variant_names.split():
             var_slug = name.replace("-", "_")
             path = os.environ.get(f"VARIANT_PATH_{var_slug}", "")
@@ -589,7 +724,9 @@ def main() -> None:
             sys.exit(1)
         with open(comp_file) as f:
             comp = json.load(f)
-        models.append(("base", str(comp_dir / comp["base"]), False))
+        comparison_name = comp.get("name", comp_dir.name)
+        base_dir_local = str(comp_dir / comp["base"])
+        models.append((os.path.basename(os.path.normpath(base_dir_local)), base_dir_local, False))
         for name, variant in comp.get("variants", {}).items():
             skip_hb = variant.get("skip_harmbench", False)
             models.append((name, str(comp_dir / variant["path"]), skip_hb))
@@ -598,6 +735,13 @@ def main() -> None:
         if backend is None:
             comp_backend = comp.get("settings", {}).get("inference_backend", "auto")
             backend = "llamacpp" if comp_backend in ("llamacpp", "ik_llamacpp") else "vllm"
+
+    # Auto-detect reasoning if env vars not set (standalone invocation)
+    if not reasoning_parser and base_dir:
+        sys.path.insert(0, str(ABL_ROOT))
+        from runners._load_comparison import _detect_reasoning_parser
+
+        reasoning_parser, reasoning_config_json = _detect_reasoning_parser(base_dir, None)
 
     log.info(
         "HarmBench pipeline: %d models, backend=%s, max_tokens=%d, GPU=%d",
@@ -610,8 +754,17 @@ def main() -> None:
     for model_name, model_path, skip_hb in models:
         if skip_hb:
             log.info("[skip] %s: skip_harmbench=true", model_name)
+            _db_stage("skip", comparison_name, model_name, dry_run=args.dry_run)
             continue
 
+        # If all phases already exist and skip is on, mark skipped in DB
+        responses_file = results_dir / f"harmbench_{model_name}_responses.json"
+        if skip and args.phase == "all" and responses_file.exists():
+            log.info("[skip] %s: responses exist", model_name)
+            _db_stage("skip", comparison_name, model_name, dry_run=args.dry_run)
+            continue
+
+        _db_stage("start", comparison_name, model_name, dry_run=args.dry_run)
         log.info("=== HarmBench for %s ===", model_name)
 
         if args.phase in ("generate", "all"):
@@ -645,9 +798,21 @@ def main() -> None:
             responses_file = results_dir / f"harmbench_{model_name}_responses.json"
             run_classify(responses_file, model_name, results_dir, args.dry_run, skip)
 
+        score_file = results_dir / f"harmbench_{model_name}_scores.json"
         if args.phase in ("score", "all"):
             classified_file = results_dir / f"harmbench_{model_name}_classified.json"
             run_score(classified_file, model_name, results_dir, args.dry_run, skip)
+
+        _db_stage(
+            "complete",
+            comparison_name,
+            model_name,
+            result_path=str(score_file) if score_file.exists() else "",
+            dry_run=args.dry_run,
+        )
+
+    # Import all results (incl. HarmBench responses/classifications/scores) into the DB
+    _db_import_results(str(comp_dir), dry_run=args.dry_run)
 
     log.info("HarmBench evaluation complete")
 

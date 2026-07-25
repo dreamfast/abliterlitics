@@ -8,7 +8,6 @@ with enable_thinking=True, reasoning token stripping, and retry logic.
 import argparse
 import json
 import logging
-import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -53,20 +52,39 @@ Answer: Olivia had 23 dollars. 5 bagels cost 5 * 3 = 15 dollars. So she has 23 -
 
 
 def extract_answer(text):
-    m = re.search(r'####\s*(-?[\d,]+\.?\d*)', text)
+    m = re.search(r"####\s*(-?[\d,]+\.?\d*)", text)
     if m:
-        ans = m.group(1).replace(',', '')
+        ans = m.group(1).replace(",", "")
         try:
             return float(ans)
         except ValueError:
             return None
-    nums = re.findall(r'-?\d+\.?\d*', text)
+    nums = re.findall(r"-?\d+\.?\d*", text)
     if nums:
         try:
             return float(nums[-1])
         except ValueError:
             return None
     return None
+
+
+def extract_last_number(text):
+    """Extract the last numeric value from text (flexible GSM8K match).
+
+    Used for flexible matching: if the model writes a final answer without the
+    canonical ``####`` marker, fall back to the last number it produced. Handles
+    comma-separated thousands (e.g. ``1,234,567``). Returns ``None`` if no
+    number is found.
+    """
+    # \d[\d,]* matches leading digit followed by digits/commas (thousands grouping);
+    # optional decimal part. Commas are stripped before float conversion.
+    nums = re.findall(r"-?\d[\d,]*\.?\d*", text)
+    if not nums:
+        return None
+    try:
+        return float(nums[-1].replace(",", ""))
+    except ValueError:
+        return None
 
 
 def normalize_num(n):
@@ -134,7 +152,7 @@ def main():
             samples.append(json.loads(line))
 
     if args.limit > 0:
-        samples = samples[:args.limit]
+        samples = samples[: args.limit]
 
     log.info(f"Loaded {len(samples)} GSM8K samples")
 
@@ -178,12 +196,12 @@ def main():
             request_id, content, reasoning, error, finish_reason, completion_tokens = fut.result()
             sample = samples[idx]
             target_answer = extract_answer(sample["answer"])
-            pred_answer = extract_answer(content)
+            extract_answer(content)
 
             strict_pred = extract_answer(content)
             flex_pred = extract_last_number(content)
-            strict_match = (normalize_num(target_answer) == normalize_num(strict_pred))
-            flex_match = (normalize_num(target_answer) == normalize_num(flex_pred))
+            strict_match = normalize_num(target_answer) == normalize_num(strict_pred)
+            flex_match = normalize_num(target_answer) == normalize_num(flex_pred)
 
             results[idx] = {
                 "index": idx,
@@ -209,7 +227,10 @@ def main():
                 strict_c = sum(1 for r in results if r and r["strict_match"])
                 flex_c = sum(1 for r in results if r and r["flexible_match"])
                 empty = sum(1 for r in results if r and not r["response"].strip())
-                log.info(f"  {done}/{total} done, strict={strict_c} ({strict_c/done*100:.1f}%), flex={flex_c} ({flex_c/done*100:.1f}%), {empty} empty, {rate:.1f}/min")
+                log.info(
+                    f"  {done}/{total} done, strict={strict_c} ({strict_c / done * 100:.1f}%), "
+                    f"flex={flex_c} ({flex_c / done * 100:.1f}%), {empty} empty, {rate:.1f}/min"
+                )
 
             if done % 50 == 0:
                 with open(partial_file, "w") as f:
@@ -242,7 +263,7 @@ def main():
     if partial_file.exists():
         partial_file.unlink()
 
-    log.info(f"=== DONE === {correct}/{total} = {correct/total*100:.1f}% exact_match")
+    log.info(f"=== DONE === {correct}/{total} = {correct / total * 100:.1f}% exact_match")
     log.info(f"  Empty: {empty}, Truncated: {truncated}, Avg tokens: {avg_tokens:.0f}, Avg think: {avg_think:.0f}w")
 
 

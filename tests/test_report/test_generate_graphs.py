@@ -1,9 +1,8 @@
 """Tests for src/report/generate_graphs.py — Color generation and data loading."""
+
 from __future__ import annotations
 
 import json
-
-import pytest
 
 from src.report.generate_graphs import get_variant_colors, load_json
 

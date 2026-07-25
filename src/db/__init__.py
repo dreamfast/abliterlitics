@@ -2,7 +2,28 @@
 
 from __future__ import annotations
 
-from src.db.core import DB_PATH, get_db, load_behaviors
+from src.db.core import (
+    DB_PATH,
+    JOURNAL_CATEGORIES,
+    JOURNAL_SEVERITIES,
+    get_db,
+    journal_add,
+    journal_latest,
+    journal_list,
+    journal_search,
+    load_behaviors,
+)
 from src.db.schema import SCHEMA
 
-__all__ = ["DB_PATH", "SCHEMA", "get_db", "load_behaviors"]
+__all__ = [
+    "DB_PATH",
+    "JOURNAL_CATEGORIES",
+    "JOURNAL_SEVERITIES",
+    "SCHEMA",
+    "get_db",
+    "journal_add",
+    "journal_latest",
+    "journal_list",
+    "journal_search",
+    "load_behaviors",
+]

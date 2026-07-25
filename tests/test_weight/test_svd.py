@@ -1,4 +1,5 @@
 """Tests for src/weight/svd_analysis.py — SVD computation functions."""
+
 from __future__ import annotations
 
 import pytest
@@ -73,6 +74,5 @@ class TestComputeSVDStats:
     def test_result_has_required_keys(self):
         delta = torch.randn(6, 4)
         result = compute_svd_stats(delta, top_k=5, full_svd=True)
-        for key in ("frobenius_norm", "mean_abs", "max_abs",
-                     "effective_rank_90pct_energy", "top_singular_values"):
+        for key in ("frobenius_norm", "mean_abs", "max_abs", "effective_rank_90pct_energy", "top_singular_values"):
             assert key in result, f"Missing key: {key}"
