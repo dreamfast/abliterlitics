@@ -4,6 +4,8 @@
 
 Comparative forensic analysis of LLM abliteration techniques.
 
+Note: this is an uncleaned messy version after a recent analysis. I still need to clean and refine the master branch!
+
 ## What It Does
 
 Abliterlitics measures structural and behavioral differences between base LLMs and their
