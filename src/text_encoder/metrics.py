@@ -204,3 +204,216 @@ def cka_rbf(x: torch.Tensor, y: torch.Tensor, sigma: float | None = None) -> flo
 
     result = (hsic_xy / denominator).clamp(min=0.0, max=1.0)
     return float(result.item())
+
+
+# ---------------------------------------------------------------------------
+# Companion metrics — magnitude-aware + geometry-aware
+# ---------------------------------------------------------------------------
+
+
+def cosine_all_tokens(x: torch.Tensor, y: torch.Tensor, mask: torch.Tensor | None) -> float:
+    """Mean cosine similarity across all non-padded tokens.
+
+    For each prompt, computes the mean cosine similarity over all tokens,
+    then averages across prompts. This extends the author's last-token-only
+    metric to the full sequence because the DiT cross-attends to every token.
+
+    Args:
+        x: [n, L, d] float32 tensor.
+        y: [n, L, d] float32 tensor (same shape as x).
+        mask: [n, L] int tensor (1 = real token, 0 = pad). None = all real.
+
+    Returns:
+        Mean cosine similarity in [-1, 1]. 1.0 = identical.
+    """
+    if x.shape != y.shape:
+        raise ValueError(f"cosine_all_tokens requires same shape: x={tuple(x.shape)}, y={tuple(y.shape)}")
+
+    # Per-token cosine: cos(x_i, y_i) = (x . y) / (|x| * |y|)
+    dot = (x * y).sum(dim=-1)  # [n, L]
+    norm_x = torch.linalg.norm(x, dim=-1)  # [n, L]
+    norm_y = torch.linalg.norm(y, dim=-1)  # [n, L]
+    denom = norm_x * norm_y
+    cos_per_token = torch.where(denom > 1e-15, dot / denom, torch.zeros_like(dot))  # [n, L]
+
+    if mask is not None:
+        m = mask.float()
+        total = (cos_per_token * m).sum(dim=1)
+        counts = m.sum(dim=1).clamp(min=1.0)
+        return float((total / counts).mean().item())
+    return float(cos_per_token.mean().item())
+
+
+def cosine_last_token(x: torch.Tensor, y: torch.Tensor, mask: torch.Tensor | None) -> float:
+    """Cosine similarity at the last non-pad token (for blog comparability).
+
+    The author's prior measurement used outputs.last_hidden_state[:, -1, :].
+    We keep this number for direct comparison but the full-sequence metric
+    (cosine_all_tokens) is the trustworthy one.
+
+    Args:
+        x: [n, L, d] float32 tensor.
+        y: [n, L, d] float32 tensor.
+        mask: [n, L] int tensor. None = last position is last token.
+
+    Returns:
+        Mean cosine at the last real token in [-1, 1].
+    """
+    if x.shape != y.shape:
+        raise ValueError(f"cosine_last_token requires same shape: x={tuple(x.shape)}, y={tuple(y.shape)}")
+
+    x_last = pool_last(x, mask)  # [n, d]
+    y_last = pool_last(y, mask)  # [n, d]
+    dot = (x_last * y_last).sum(dim=-1)
+    norm_x = torch.linalg.norm(x_last, dim=-1)
+    norm_y = torch.linalg.norm(y_last, dim=-1)
+    denom = norm_x * norm_y
+    cos = torch.where(denom > 1e-15, dot / denom, torch.zeros_like(dot))
+    return float(cos.mean().item())
+
+
+def l2_distance(x: torch.Tensor, y: torch.Tensor) -> float:
+    """Mean L2 distance per element.
+
+    Args:
+        x: [n, L, d] or [n, d] float32 tensor.
+        y: same shape as x.
+
+    Returns:
+        sqrt(mean(||x - y||^2)) — the RMS distance.
+    """
+    if x.shape != y.shape:
+        raise ValueError(f"l2_distance requires same shape: x={tuple(x.shape)}, y={tuple(y.shape)}")
+    mse_val = ((x - y) ** 2).mean()
+    return float(torch.sqrt(mse_val).item())
+
+
+def mse(x: torch.Tensor, y: torch.Tensor) -> float:
+    """Mean squared error per element.
+
+    Args:
+        x: [n, L, d] or [n, d] float32 tensor.
+        y: same shape as x.
+
+    Returns:
+        mean(||x - y||^2) — the MSE.
+    """
+    if x.shape != y.shape:
+        raise ValueError(f"mse requires same shape: x={tuple(x.shape)}, y={tuple(y.shape)}")
+    return float(((x - y) ** 2).mean().item())
+
+
+def rank_correlation(x: torch.Tensor, y: torch.Tensor) -> float:
+    """Spearman rank correlation of pairwise prompt distances.
+
+    Tests whether the modified encoder still ranks "concept A closer to B
+    than to C" the same way. Computes pairwise Euclidean distances among
+    prompts under each encoder (pooled [n, d]), then Spearman correlation
+    of the two distance vectors. Catches anisotropic warping CKA can miss.
+
+    Args:
+        x: [n, d] float32 tensor (pooled, one row per prompt).
+        y: [n, d] float32 tensor (same n, possibly different d).
+
+    Returns:
+        Spearman rho in [-1, 1]. 1.0 = identical geometry.
+    """
+    if x.shape[0] != y.shape[0]:
+        raise ValueError(f"rank_correlation requires same n: x={x.shape[0]}, y={y.shape[0]}")
+    n = x.shape[0]
+    if n < 3:
+        raise ValueError(f"rank_correlation requires n >= 3, got n={n}")
+
+    # Pairwise distances (upper triangle only)
+    # dist_x[i,j] = ||x_i - x_j||
+    dist_x = torch.cdist(x, x)  # [n, n]
+    dist_y = torch.cdist(y, y)  # [n, n]
+
+    # Extract upper triangle (excluding diagonal)
+    triu_idx = torch.triu_indices(n, n, offset=1)
+    dx = dist_x[triu_idx[0], triu_idx[1]]
+    dy = dist_y[triu_idx[0], triu_idx[1]]
+
+    # Spearman = Pearson on ranks
+    dx_rank = _rank(dx)
+    dy_rank = _rank(dy)
+    return _pearson(dx_rank, dy_rank)
+
+
+def _rank(values: torch.Tensor) -> torch.Tensor:
+    """Compute ranks of values (1-based, average ties).
+
+    Args:
+        values: 1D float32 tensor.
+
+    Returns:
+        1D float32 tensor of ranks.
+    """
+    n = values.shape[0]
+    sorted_idx = values.argsort()
+    ranks = torch.empty(n, dtype=values.dtype)
+    # Assign ranks with average for ties
+    sorted_vals = values[sorted_idx]
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and sorted_vals[j + 1] == sorted_vals[i]:
+            j += 1
+        avg_rank = (i + j) / 2.0 + 1.0  # 1-based average rank
+        for k in range(i, j + 1):
+            ranks[sorted_idx[k]] = avg_rank
+        i = j + 1
+    return ranks
+
+
+def _pearson(x: torch.Tensor, y: torch.Tensor) -> float:
+    """Pearson correlation coefficient.
+
+    Args:
+        x: 1D float32 tensor.
+        y: 1D float32 tensor (same length).
+
+    Returns:
+        Pearson r in [-1, 1].
+    """
+    x_centered = x - x.mean()
+    y_centered = y - y.mean()
+    denom = torch.sqrt((x_centered**2).sum() * (y_centered**2).sum())
+    if denom < 1e-15:
+        return 0.0
+    return float(((x_centered * y_centered).sum() / denom).clamp(-1.0, 1.0).item())
+
+
+def per_dim_drift(
+    x: torch.Tensor,
+    y: torch.Tensor,
+    base_var: torch.Tensor | None = None,
+    epsilon: float = 1e-10,
+) -> torch.Tensor:
+    """Per-dimension drift profile (diagnostic).
+
+    For each latent dimension, computes the variance of (X - Y) across prompts.
+    If base_var is provided, normalizes to a relative drift (drift / base variance).
+
+    Args:
+        x: [n, d] float32 tensor (pooled, one row per prompt).
+        y: [n, d] float32 tensor (same shape as x).
+        base_var: [d] float32 tensor of per-dim variance in the base model.
+                  If None, returns absolute drift. If provided, returns relative
+                  drift (drift / max(base_var, epsilon)).
+        epsilon: minimum value for base_var to avoid division by near-zero.
+
+    Returns:
+        [d] float32 tensor of per-dimension drift.
+    """
+    if x.shape != y.shape:
+        raise ValueError(f"per_dim_drift requires same shape: x={tuple(x.shape)}, y={tuple(y.shape)}")
+    if x.shape[0] < 2:
+        raise ValueError(f"per_dim_drift requires n >= 2, got n={x.shape[0]}")
+    diff = x - y
+    drift = diff.var(dim=0)  # [d] variance of differences per dim
+    if base_var is not None:
+        if base_var.shape[0] != drift.shape[0]:
+            raise ValueError(f"base_var dim ({base_var.shape[0]}) != activations dim ({drift.shape[0]})")
+        drift = drift / base_var.clamp(min=epsilon)
+    return drift

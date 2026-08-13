@@ -10,7 +10,8 @@ the methodology depends on:
 - Bounded: result in [0, 1]
 
 Also tests padding invariance (same content, different pad lengths -> identical
-CKA when properly masked).
+CKA when properly masked), and companion metrics (cosine, L2, MSE, rank corr,
+per-dim drift).
 """
 
 from __future__ import annotations
@@ -18,7 +19,19 @@ from __future__ import annotations
 import pytest
 import torch
 
-from src.text_encoder.metrics import MetricResult, cka_linear, cka_rbf, pool_last, pool_mean
+from src.text_encoder.metrics import (
+    MetricResult,
+    cka_linear,
+    cka_rbf,
+    cosine_all_tokens,
+    cosine_last_token,
+    l2_distance,
+    mse,
+    per_dim_drift,
+    pool_last,
+    pool_mean,
+    rank_correlation,
+)
 
 # ---------------------------------------------------------------------------
 # MetricResult
@@ -296,3 +309,141 @@ class TestCkaLinearVsRbf:
         rbf_xz = cka_rbf(x, z)
         assert lin_xy > lin_xz
         assert rbf_xy > rbf_xz
+
+
+# ---------------------------------------------------------------------------
+# Companion metrics — cosine, L2, MSE, rank correlation, per-dim drift
+# ---------------------------------------------------------------------------
+
+
+class TestCosineAllTokens:
+    def test_identical_is_one(self) -> None:
+        x = torch.randn(10, 5, 8)
+        assert cosine_all_tokens(x, x, None) == pytest.approx(1.0, abs=1e-6)
+
+    def test_antipodal_is_neg_one(self) -> None:
+        x = torch.randn(10, 5, 8)
+        assert cosine_all_tokens(x, -x, None) == pytest.approx(-1.0, abs=1e-6)
+
+    def test_respects_mask(self) -> None:
+        """Pad tokens should be excluded from the mean."""
+        x = torch.randn(5, 3, 8)
+        y = torch.randn(5, 3, 8)
+        mask = torch.ones(5, 3, dtype=torch.int)
+        # With all-real mask, should match no-mask result
+        assert cosine_all_tokens(x, y, mask) == pytest.approx(cosine_all_tokens(x, y, None), abs=1e-6)
+        # Now mask out last position
+        mask_partial = mask.clone()
+        mask_partial[:, 2] = 0
+        # Should differ from all-real result
+        assert cosine_all_tokens(x, y, mask_partial) != pytest.approx(cosine_all_tokens(x, y, None), abs=1e-3)
+
+
+class TestCosineLastToken:
+    def test_identical_is_one(self) -> None:
+        x = torch.randn(10, 5, 8)
+        assert cosine_last_token(x, x, None) == pytest.approx(1.0, abs=1e-6)
+
+    def test_with_mask(self) -> None:
+        """Last NON-PAD token should be used."""
+        x = torch.randn(3, 5, 8)
+        y = torch.randn(3, 5, 8)
+        mask = torch.ones(3, 5, dtype=torch.int)
+        mask[:, 3:] = 0  # last 2 positions are pad
+        # Should use position 2 (last real token)
+        result_masked = cosine_last_token(x, y, mask)
+        # Compute expected: cosine at position 2
+        from src.text_encoder.metrics import pool_last
+
+        x_last = pool_last(x, mask)
+        y_last = pool_last(y, mask)
+        expected = ((x_last * y_last).sum(-1) / (x_last.norm(dim=-1) * y_last.norm(dim=-1))).mean()
+        assert result_masked == pytest.approx(float(expected), abs=1e-5)
+
+
+class TestL2AndMse:
+    def test_l2_identical_is_zero(self) -> None:
+        x = torch.randn(10, 5, 8)
+        assert l2_distance(x, x) == pytest.approx(0.0, abs=1e-10)
+
+    def test_mse_identical_is_zero(self) -> None:
+        x = torch.randn(10, 5, 8)
+        assert mse(x, x) == pytest.approx(0.0, abs=1e-10)
+
+    def test_l2_is_sqrt_of_mse(self) -> None:
+        """L2 distance = sqrt(MSE) (RMS distance)."""
+        x = torch.randn(10, 5, 8)
+        y = torch.randn(10, 5, 8)
+        mse_val = mse(x, y)
+        l2_val = l2_distance(x, y)
+        assert l2_val == pytest.approx(mse_val**0.5, abs=1e-5)
+
+    def test_shape_mismatch_rejected(self) -> None:
+        x = torch.randn(10, 5, 8)
+        y = torch.randn(10, 5, 16)
+        with pytest.raises(ValueError, match="same shape"):
+            l2_distance(x, y)
+        with pytest.raises(ValueError, match="same shape"):
+            mse(x, y)
+
+
+class TestRankCorrelation:
+    def test_identical_geometry_is_one(self) -> None:
+        """Same pooled data -> rank corr = 1.0."""
+        g = torch.Generator().manual_seed(42)
+        x = torch.randn(50, 32, generator=g)
+        assert rank_correlation(x, x) == pytest.approx(1.0, abs=1e-6)
+
+    def test_different_geometry_lower(self) -> None:
+        """Independent data should have rank corr < identical."""
+        g = torch.Generator().manual_seed(42)
+        x = torch.randn(50, 32, generator=g)
+        y = torch.randn(50, 32, generator=g)
+        assert rank_correlation(x, y) < rank_correlation(x, x)
+
+    def test_too_few_samples(self) -> None:
+        x = torch.randn(2, 8)
+        y = torch.randn(2, 8)
+        with pytest.raises(ValueError, match="n >= 3"):
+            rank_correlation(x, y)
+
+    def test_mismatched_n(self) -> None:
+        x = torch.randn(50, 8)
+        y = torch.randn(40, 8)
+        with pytest.raises(ValueError, match="same n"):
+            rank_correlation(x, y)
+
+
+class TestPerDimDrift:
+    def test_identical_is_zero(self) -> None:
+        g = torch.Generator().manual_seed(42)
+        x = torch.randn(50, 32, generator=g)
+        drift = per_dim_drift(x, x)
+        assert torch.all(drift <= 1e-10)
+
+    def test_nonzero_for_different(self) -> None:
+        g = torch.Generator().manual_seed(42)
+        x = torch.randn(50, 32, generator=g)
+        y = x + 0.1 * torch.randn(50, 32, generator=g)
+        drift = per_dim_drift(x, y)
+        assert torch.all(drift > 0.0)
+
+    def test_normalized_by_base_var(self) -> None:
+        """With base_var, drift should be relative (dimensionless)."""
+        g = torch.Generator().manual_seed(42)
+        x = torch.randn(50, 32, generator=g)
+        y = x + 0.1 * torch.randn(50, 32, generator=g)
+        base_var = x.var(dim=0)
+        drift_rel = per_dim_drift(x, y, base_var=base_var)
+        # Should be small positive (perturbation is small relative to base variance)
+        assert torch.all(drift_rel > 0.0)
+        assert torch.all(drift_rel < 1.0)
+
+    def test_base_var_epsilon_guard(self) -> None:
+        """Near-zero base_var should not cause inf/nan."""
+        x = torch.randn(10, 4)
+        y = x + 0.01
+        base_var = torch.tensor([0.0, 1e-20, 1.0, 2.0])  # includes near-zero
+        drift = per_dim_drift(x, y, base_var=base_var, epsilon=1e-10)
+        assert not torch.any(torch.isnan(drift))
+        assert not torch.any(torch.isinf(drift))
