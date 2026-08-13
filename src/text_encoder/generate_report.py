@@ -596,6 +596,86 @@ def graph_gguf_ladder(variants: list[dict[str, Any]], out: Path) -> None:
     log.info("Wrote %s", out)
 
 
+def _load_divergence_steps(results_dir: Path) -> dict[str, dict[str, Any]]:
+    """Per-step divergence trajectories keyed by variant name.
+
+    Complements _load_divergence (which reads the summaries): this keeps the
+    full latent_div/velocity_div lists per prompt for the per-step graph.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for f in sorted(results_dir.glob("te_dit_divergence_*.json")):
+        try:
+            d = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Failed to parse %s: %s", f, exc)
+            continue
+        name = d.get("variant_name", f.stem.replace("te_dit_divergence_", ""))
+        out[name] = {
+            "n_steps": d.get("n_steps", 20),
+            "noise_control_final": d.get("noise_control_final"),
+            "prompts": d.get("per_prompt", []),
+        }
+    return out
+
+
+def graph_divergence_steps(steps_data: dict[str, dict[str, Any]], out: Path) -> None:
+    """Mean per-step latent divergence curves, grouped family colors.
+
+    Answers 'does the damage compound, cancel, or plateau across sampling?'
+    Log y: latent divergence grows over ~3 orders of magnitude from step 2
+    to the final step while staying far below the noise-control anchor.
+    """
+    if not steps_data:
+        log.info("No per-step divergence data — skipping %s", out.name)
+        return
+    fig, ax = plt.subplots(figsize=(10, 6))
+    # Deterministic group ordering: base safetensors, base GGUF, heretic
+    # safetensors, heretic GGUF (matches the other grouped views).
+    names = sorted(
+        steps_data,
+        key=lambda n: (_variant_group({"name": n})[0], _group_sort_key({"name": n, "gguf": None})),
+    )
+    for name in names:
+        entry = steps_data[name]
+        prompts = entry.get("prompts", [])
+        curves = [p["latent_div"] for p in prompts if p.get("latent_div")]
+        if not curves:
+            continue
+        n = min(len(c) for c in curves)
+        mean_curve = np.mean([c[:n] for c in curves], axis=0)
+        xs = np.arange(1, n + 1)
+        is_gguf = "_gguf_" in name
+        if name.startswith("base_"):
+            color, lw, alpha = ("#8c8c8c" if is_gguf else "#b8b8b8"), 1.0, 0.7
+        else:
+            color, lw, alpha = ("#c44e52" if is_gguf else "#4c72b0"), 1.4, 0.9
+        ax.plot(xs, np.clip(mean_curve, 1e-6, None), color=color, lw=lw, alpha=alpha, label=_display(name))
+
+    ctrl = next((e.get("noise_control_final") for e in steps_data.values() if e.get("noise_control_final")), None)
+    if ctrl:
+        ax.axhline(ctrl, color="#2ecc71", lw=2, ls="--", alpha=0.9)
+        ax.annotate(
+            "different-seed anchor ('another image')",
+            xy=(0.02, ctrl),
+            xycoords=("axes fraction", "data"),
+            xytext=(4, -12),
+            textcoords="offset points",
+            color="#2ecc71",
+            fontsize=9,
+        )
+    ax.set_yscale("log")
+    ax.set_xlabel("Euler step")
+    ax.set_ylabel("latent divergence vs base (log)")
+    ax.set_title("Per-step divergence — does conditioning damage compound or plateau?")
+    ax.grid(True, which="both", alpha=0.25)
+    # Legend outside right; ~27 series — compact font
+    ax.legend(fontsize=7, loc="center left", bbox_to_anchor=(1.01, 0.5), ncol=2)
+    fig.tight_layout()
+    fig.savefig(out, format="svg", bbox_inches="tight")
+    plt.close(fig)
+    log.info("Wrote %s", out)
+
+
 def _svg_data_uri(path: Path) -> str:
     return "data:image/svg+xml;base64," + base64.b64encode(path.read_bytes()).decode()
 
@@ -835,9 +915,214 @@ The rightmost column is the DiT's response vs the noise-control anchor.</p>
 </table>"""
 
 
+def _directional_section(results_dir: Path) -> str:
+    """Directional analysis section — direction or noise?
+
+    Reads te_directional_*.json (run_te_directional.sh). Reports the layer
+    the DiT actually consumes (backend's consumed layer) plus the peak-z
+    layer: cos(delta, taboo_direction) with permutation z, orthogonal
+    energy fraction, and toward-innocent z.
+    """
+    rows: list[str] = []
+    files = sorted(results_dir.glob("te_directional_*.json"))
+    for f in files:
+        try:
+            d = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Failed to parse %s: %s", f, exc)
+            continue
+        name = d.get("variant_name", f.stem.replace("te_directional_", ""))
+        consumed = 34 if d.get("backend", "zimage") != "ltx2" else None  # zimage consumed layer
+        layers = {lr["layer"]: lr for lr in d.get("layers", [])}
+        # peak-z layer + consumed layer stats
+        peak = max(layers.values(), key=lambda lr: lr["cos_z"]) if layers else None
+        con = layers.get(consumed) if consumed is not None else None
+        if peak is None or con is None:
+            continue
+
+        def _fmt_cell(lr: dict[str, Any]) -> str:
+            return f"{lr['cos_taboo_mean']:+.3f} <span class='ci'>(z {lr['cos_z']:.0f})</span>"
+
+        ref_cls = ' class="ref-var"' if name.startswith("base_") else ""
+        rows.append(
+            f"<tr><td{ref_cls}>{html.escape(_display(name))}</td>"
+            f"<td>{con['layer']}</td><td>{_fmt_cell(con)}</td>"
+            f"<td>{100 * con['orth_fraction']:.1f}%</td>"
+            f"<td>{con['toward_innocent_mean']:+.1e} <span class='ci'>(z {con['toward_innocent_z']:+.1f})</span></td>"
+            f"<td>{peak['layer']}</td><td>{_fmt_cell(peak)}</td></tr>"
+        )
+    if not rows:
+        return ""
+    return f"""
+<h2>Directional analysis — is the abliteration delta a direction or noise?</h2>
+<p>The mechanistic claim behind abliteration is that the edit maps taboo
+representations toward benign ones. For each variant (vs its matched-quant
+reference), the per-layer ablation delta Δ is compared to the BASE model's
+taboo direction d (mean(taboo) − mean(innocent), unit): cos(Δ, d) with a
+prompt-permutation z-score, the fraction of Δ energy orthogonal to d, and
+the signed movement of taboo prompts toward the innocent centroid.
+<b>Read:</b> small |cos| with ~99% orthogonal energy and |z<sub>TI</sub>| ≲ 3
+means the delta is NOT a taboo→harmless mapping — it is mostly
+geometry-preserving noise concentrated on taboo prompts.</p>
+<table>
+<tr><th>Variant</th><th>DiT layer</th><th>cos(Δ, d) @ DiT layer</th><th>Orthogonal energy</th><th>Toward-innocent</th><th>Peak-z layer</th><th>cos @ peak</th></tr>
+{chr(10).join(rows)}
+</table>"""
+
+
+def _ab_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str, Any]], results_dir: Path) -> str:
+    """A/B image gallery + generation-timing section.
+
+    Reads ab_images/manifest.json (written by run_ab_test.py; also imported
+    into the te_ab_images DB table). Each prompt renders a comparison row:
+    the SAME seed sampled with only the text encoder swapped. Captions carry
+    the per-variant metrics (quant label, DiT-input damage, DiT response,
+    cold/warm generation time) so the visual delta reads against the
+    measured delta.
+    """
+    manifest_path = results_dir / "ab_images" / "manifest.json"
+    if not manifest_path.exists():
+        return ""
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("Failed to parse A/B manifest: %s", exc)
+        return ""
+
+    by_name = {v["name"]: v for v in variants}
+    # Warm-pass images preferred for the gallery (identical seed; cold pass
+    # exists for timing).
+    images: dict[str, dict[str, dict[str, Any]]] = {}
+    for img in manifest.get("images", []):
+        label = img.get("label") or "unlabeled"
+        slot = images.setdefault(label, {})
+        slot[img["variant"]] = img  # warm overwrites cold (later in list)
+
+    if not images:
+        return ""
+
+    def _variant_caption(var_name: str, img: dict[str, Any]) -> str:
+        var = by_name.get(var_name, {})
+        sr = var.get("streams", {}).get("refined_context") or var.get("streams", {}).get("cap_embedded") or {}
+        dmg = sr.get("damage_quant_units")
+        ref = var.get("reference", "")
+        gguf = var.get("gguf") or {}
+        bits = f" · {gguf['bpw']:.1f} bpw" if gguf else ""
+        div = divergence.get(var_name, {}).get("div_control_ratio")
+        lines = [f"<b>{html.escape(_display(var_name))}</b>{bits}"]
+        if ref:
+            lines.append(f"<span class='ci'>vs {html.escape(ref)}</span>")
+        m: list[str] = []
+        if dmg is not None:
+            m.append(f"damage {dmg:.1f}×")
+        if div is not None:
+            m.append(f"DiT {div * 100:.1f}%")
+        t = manifest.get("timing", {}).get(var_name, {}).get("passes", {})
+        cold = t.get("cold", {}).get("first_image_seconds")
+        warm = t.get("warm", {}).get("first_image_seconds")
+        if cold and warm:
+            m.append(f"{cold:.1f}s → {warm:.1f}s")
+        if m:
+            lines.append(html.escape(" · ".join(m)))
+        return "<br/>".join(lines)
+
+    blocks: list[str] = []
+    for label in sorted(images):
+        row_imgs: list[str] = []
+        checks: list[str] = []
+        for var_name in sorted(images[label]):
+            img = images[label][var_name]
+            pth = Path(img.get("path", ""))
+            local = results_dir / "ab_images" / var_name / pth.name if pth.name else None
+            if local is None or not local.exists():
+                # manifest paths may be absolute host paths — try the leaf
+                alt = results_dir / "ab_images" / var_name / pth.name
+                if not alt.exists():
+                    continue
+                local = alt
+            b64 = base64.b64encode(local.read_bytes()).decode()
+            row_imgs.append(
+                f'<figure class="ab-cell"><img src="data:image/webp;base64,{b64}" alt="{html.escape(var_name)}"/>'
+                f"<figcaption>{_variant_caption(var_name, img)}</figcaption></figure>"
+            )
+            checks = img.get("checks", [])
+        if not row_imgs:
+            continue
+        check_html = ""
+        if checks:
+            check_html = "<p class='meta'>Adherence checks: " + "; ".join(html.escape(chk) for chk in checks) + "</p>"
+        blocks.append(f"<h3>{html.escape(label)}</h3>{check_html}<div class='ab-row'>{''.join(row_imgs)}</div>")
+
+    timing_rows: list[str] = []
+    for var_name in sorted(manifest.get("timing", {})):
+        t = manifest["timing"][var_name]
+        passes = t.get("passes", {})
+        cold = passes.get("cold", {})
+        warm = passes.get("warm", {})
+        ref_cls = ' class="ref-var"' if var_name.startswith("base_") else ""
+        timing_rows.append(
+            f"<tr><td{ref_cls}>{html.escape(_display(var_name))}</td>"
+            f"<td>{html.escape(t.get('te_name', '').split('/')[-1])}</td>"
+            f"<td>{html.escape(t.get('loader', ''))}</td>"
+            f"<td>{_fmt(cold.get('first_image_seconds'), '.1f')}</td>"
+            f"<td>{_fmt(warm.get('first_image_seconds'), '.1f')}</td>"
+            f"<td>{_fmt(cold.get('mean_image_seconds'), '.1f')}</td>"
+            f"<td>{_fmt(warm.get('mean_image_seconds'), '.1f')}</td></tr>"
+        )
+
+    timing_html = ""
+    if timing_rows:
+        timing_html = f"""
+<h3>Generation timing (seconds, RTX 5090, 1024px, 9 steps)</h3>
+<p>Cold = first image after the text encoder is freshly loaded into VRAM
+(model-load time included); warm = first image on the cached model. The
+delta is the practical cost of a TE swap in a running session.</p>
+<table>
+<tr><th>Variant</th><th>TE file</th><th>Loader</th><th>Cold 1st img</th><th>Warm 1st img</th><th>Cold mean</th><th>Warm mean</th></tr>
+{chr(10).join(timing_rows)}
+</table>"""
+
+    return f"""
+<h2>A/B image evidence — same seed, only the text encoder swapped</h2>
+<p>Paired generations from the fixed seed {manifest.get("seed", "?")} through the
+real ComfyUI stack (Z-Image Turbo, 9 steps, cfg 1, euler/simple). Caption
+metrics: DiT-input damage (quant-floor units), DiT response (% of a
+seed-change), and cold→warm first-image time. Visual differences at
+matched seed are the image-level manifestation of the conditioning
+perturbation; identical-looking images at different damage levels
+demonstrate DiT robustness.</p>
+{chr(10).join(blocks)}
+{timing_html}"""
+
+
 def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
     findings: list[str] = []
     consumed = BACKEND_CONSUMED_LAYER.get(backend)
+
+    # CKA/MSE disconnect (methodological highlight): geometry-preserving
+    # damage. Scan non-dual variants for high MSE with CKA still >= 0.98.
+    disconnect = []
+    for var in variants:
+        if var["name"].endswith("__vs_base"):
+            continue
+        sr = var["streams"].get("refined_context")
+        if not sr:
+            continue
+        dmg = sr.get("damage_quant_units")
+        cka = sr.get("metrics", {}).get("cka_linear")
+        if dmg is not None and dmg > 50 and cka is not None and cka >= 0.98:
+            disconnect.append((var["name"], dmg, cka))
+    if disconnect:
+        worst = max(disconnect, key=lambda t: t[1])
+        disconnect_names = {n for n, _, _ in disconnect}
+        gguf_ct = sum(1 for n in disconnect_names if "_gguf_" in n)
+        findings.append(
+            f"<b>CKA/MSE disconnect</b>: {len(disconnect)} variants (incl. {gguf_ct} GGUF) exceed "
+            f"50× quant-floor MSE damage at the DiT input while CKA stays ≥ 0.98 — worst: "
+            f"<b>{html.escape(_display(worst[0]))}</b> at {worst[1]:.0f}× damage with CKA {worst[2]:.4f}. "
+            "The perturbation destroys magnitude alignment but preserves representational "
+            "geometry — consistent with the DiT's weak response to it."
+        )
 
     # GGUF variants are aggregated into summary lines (16 individual bullets
     # would drown the findings list) — full detail in the GGUF ladder section.
@@ -848,16 +1133,17 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
             (v["gguf"].get("bpw", 0), v["streams"].get("refined_context", {}).get("damage_quant_units"), v["name"])
             for v in gguf_vars
             if _is_reference_variant(v)
+            and v["streams"].get("refined_context", {}).get("damage_quant_units") is not None
         ]
-        measured = [(bpw, dmg) for bpw, dmg, _ in base_rungs if dmg is not None]
+        measured: list[tuple[float, Any]] = [(float(bpw), dmg) for bpw, dmg, _n in base_rungs]
         if measured:
-            best = min(measured, key=lambda t: t[1])
-            worst = max(measured, key=lambda t: t[1])
-            lo_bpws = [b for b, d in measured if d == best[1]]
+            best_rung: tuple[float, Any] = min(measured, key=lambda t: t[1])
+            worst_rung: tuple[float, Any] = max(measured, key=lambda t: t[1])
+            lo_bpws = [b for b, d in measured if d == best_rung[1]]
             findings.append(
                 f"<b>GGUF ladder (base containers, {len(measured)} rungs)</b>: pure-container DiT-input damage "
-                f"spans <b>{best[1]:.2f}×</b> (bpw {max(lo_bpws):.1f}) to <b>{worst[1]:.0f}×</b> (bpw {worst[0]:.1f}) "
-                f"quant floor — the full ladder is in the GGUF section below."
+                f"spans <b>{best_rung[1]:.2f}×</b> (bpw {max(lo_bpws):.1f}) to <b>{worst_rung[1]:.0f}×</b> "
+                f"(bpw {worst_rung[0]:.1f}) quant floor — the full ladder is in the GGUF section below."
             )
         heretic_ab = [
             v["streams"].get("refined_context", {}).get("damage_quant_units")
@@ -979,7 +1265,14 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
     graphs_dir = out.parent
     svgs = {
         n: graphs_dir / f"te_{n}.svg"
-        for n in ("layer_profile", "damage_ranking", "category_gradient", "layer_heatmap", "gguf_ladder")
+        for n in (
+            "layer_profile",
+            "damage_ranking",
+            "category_gradient",
+            "layer_heatmap",
+            "gguf_ladder",
+            "divergence_steps",
+        )
     }
     embedded = "".join(
         f'<figure><img src="{_svg_data_uri(p)}" alt="{name}"/><figcaption>{cap}</figcaption></figure>'
@@ -993,6 +1286,11 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
             ("category_gradient", svgs["category_gradient"], "Taboo-concentration — base quants vs abliterated panels"),
             ("layer_heatmap", svgs["layer_heatmap"], "Full per-layer damage map"),
             ("gguf_ladder", svgs["gguf_ladder"], "GGUF quantization ladder (damage vs bits-per-weight)"),
+            (
+                "divergence_steps",
+                svgs["divergence_steps"],
+                "Per-step latent divergence — compounding vs plateau (log scale)",
+            ),
         )
         if p.exists()
     )
@@ -1001,6 +1299,8 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
     divergence_data = _load_divergence(results_dir)
     divergence = _divergence_section(divergence_data)
     gguf_section = _gguf_section(variants, divergence_data)
+    ab_section = _ab_section(variants, divergence_data, results_dir)
+    directional = _directional_section(results_dir)
     has_gguf = any(v.get("gguf") for v in variants)
     gguf_method = (
         "<br/><b>GGUF methodology.</b> llama.cpp containers are loaded through ComfyUI-GGUF's "
@@ -1029,6 +1329,11 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
  .dmg-low {{ color: #27ae60; }}
  .ref-var {{ color: #7f8c8d; font-style: italic; }}
  .group-row td {{ background: #dde6f2; color: #2c3e66; font-weight: bold; text-align: left; }}
+ .ab-row {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; margin: 12px 0 28px 0; }}
+ .ab-cell {{ flex: 1 1 300px; max-width: 420px; margin: 0; text-align: center;
+            background: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 8px; }}
+ .ab-cell img {{ max-width: 100%; height: auto; border-radius: 4px; }}
+ .ab-cell figcaption {{ font-size: 12px; color: #333; margin-top: 6px; line-height: 1.5; }}
  .ci {{ color: #888; font-size: 11px; white-space: nowrap; }}
  figure {{ margin: 32px 0; text-align: center; }}
  figure img {{ max-width: 100%; background: white; border: 1px solid #e0e0e0; border-radius: 8px; }}
@@ -1046,7 +1351,9 @@ Results: {html.escape(str(results_dir))} · te_results_version: {TE_RESULTS_VERS
 <ol class="findings">{findings}</ol>
 {decomposition}
 {gguf_section}
+{directional}
 {divergence}
+{ab_section}
 <h2>Pipeline damage table</h2>
 <table>
 <tr><th>Variant</th><th>vs reference</th><th>Stage</th><th>Stream</th><th>CKA (linear)</th><th>Cos (all)</th><th>MSE</th><th>Damage (quant units)</th><th>Dmg (semantic)</th></tr>
@@ -1062,7 +1369,16 @@ pipeline stages (raw hidden states → projection → connector/refiner). Fideli
 CKA (representational similarity) and MSE; the headline number expresses MSE damage in units of
 <b>one quantization step of the noise floor</b> ({floor_label}) (damage &lt; 1 = below the perturbation
 a known-good compression would introduce). Prompt suite is stratified
-(innocent / mild / violent / sexual / extreme / multilingual). Pad positions are excluded.{gguf_method}
+(innocent / mild / violent / sexual / extreme / multilingual). Pad positions are excluded.
+<br/><b>Semantic unit definition.</b> "One meaning-change" is the mean squared
+distance between the mean-pooled conditioning of <i>distinct prompts from the
+base model</i> — all C(n,2) pairs of the 60-prompt suite (1,770 pairs;
+uniform subsample at ≤4,000, seed-fixed). It is therefore an <i>intra-suite
+content-change</i> scale: how far conditioning moves when the described
+scene changes entirely, under the same tokenizer/encoder. It is NOT
+synonym/antonym-calibrated and not cross-encoder; a variant at 1% of a
+meaning-change means its perturbation is 100× smaller than swapping the
+prompt for an unrelated one.{gguf_method}
 <br/><b>Scope.</b> This measures conditioning <i>perturbation</i> — how much the modified text
 encoder shifts what the DiT sees. It does not measure uncensoring efficacy in either direction.
 </div>
@@ -1096,6 +1412,7 @@ def main() -> None:
     graph_category_gradient(variants, out_dir / "te_category_gradient.svg")
     graph_layer_heatmap(variants, out_dir / "te_layer_heatmap.svg")
     graph_gguf_ladder(variants, out_dir / "te_gguf_ladder.svg")
+    graph_divergence_steps(_load_divergence_steps(results_dir), out_dir / "te_divergence_steps.svg")
     generate_html(variants, results_dir, out_dir / "te_report.html")
     log.info("Report generation complete")
 

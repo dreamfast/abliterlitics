@@ -138,6 +138,11 @@ cmd_te_divergence() {
     bash "${RUNNERS_DIR}/run_te_divergence.sh" $(global_flags) "$@"
 }
 
+cmd_te_directional() {
+    shift
+    bash "${RUNNERS_DIR}/run_te_directional.sh" $(global_flags) "$@"
+}
+
 cmd_graphs() {
     local comp_dir
     comp_dir="$(find_comp_dir "${1:-.}")"
@@ -349,6 +354,7 @@ case "$COMMAND" in
     te)           cmd_text_encoder "$COMMAND" "$@" ;;
     te-report)    cmd_te_report "${1:-.}" ;;
     te-divergence) cmd_te_divergence "$COMMAND" "$@" ;;
+    te-directional) cmd_te_directional "$COMMAND" "$@" ;;
     graphs)    cmd_graphs "${1:-.}" ;;
     report)    cmd_report "${1:-.}" ;;
     build)     cmd_build ;;

@@ -540,6 +540,79 @@ def import_te_results(
     return count
 
 
+def import_te_ab_images(
+    conn: sqlite3.Connection,
+    comparison_name: str,
+    manifest_path: Path,
+) -> int:
+    """Import A/B image manifest (run_ab_test.py) into te_ab_images.
+
+    One row per image (gen_seconds) plus per-variant timing summary rows
+    (label='__timing__', pass=NULL, metric_name like 'cold_first_image_seconds').
+
+    Returns the number of rows imported.
+    """
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("Failed to parse A/B manifest %s: %s", manifest_path, exc)
+        return 0
+
+    count = 0
+    for img in manifest.get("images", []):
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO te_ab_images
+                   (comparison, variant, te_name, loader, label, category, pass,
+                    metric_name, metric_value, image_path, seed)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'gen_seconds', ?, ?, ?)""",
+                (
+                    comparison_name,
+                    img["variant"],
+                    img.get("te_name", ""),
+                    img.get("loader", ""),
+                    img.get("label") or "unlabeled",
+                    img.get("category"),
+                    img.get("pass"),
+                    float(img.get("gen_seconds", 0.0)),
+                    img.get("path"),
+                    int(img.get("seed", 0)),
+                ),
+            )
+            count += 1
+        except (sqlite3.Error, ValueError, TypeError, KeyError) as exc:
+            log.warning("Failed to import A/B image row from %s: %s", manifest_path, exc)
+
+    for variant, timing in manifest.get("timing", {}).items():
+        for pass_name, stats in timing.get("passes", {}).items():
+            for metric, value in stats.items():
+                if value is None:
+                    continue
+                try:
+                    conn.execute(
+                        """INSERT OR REPLACE INTO te_ab_images
+                           (comparison, variant, te_name, loader, label, category, pass,
+                            metric_name, metric_value, image_path, seed)
+                           VALUES (?, ?, ?, ?, '__timing__', NULL, NULL, ?, ?, NULL, NULL)""",
+                        (
+                            comparison_name,
+                            variant,
+                            timing.get("te_name", ""),
+                            timing.get("loader", ""),
+                            f"{pass_name}_{metric}",
+                            float(value),
+                        ),
+                    )
+                    count += 1
+                except (sqlite3.Error, ValueError, TypeError) as exc:
+                    log.warning("Failed to import A/B timing row for %s: %s", variant, exc)
+
+    conn.commit()
+    if count:
+        log.info("Imported %d te_ab_images rows from %s", count, manifest_path)
+    return count
+
+
 def import_all_results(
     conn: sqlite3.Connection,
     comparison_dir: str,
@@ -611,6 +684,13 @@ def import_all_results(
         counts["text_encoder"] = import_te_results(conn, comparison_name, te_dir)
     else:
         log.info("No text_encoder results directory found")
+
+    # Text-encoder A/B image manifest
+    ab_manifest = te_dir / "ab_images" / "manifest.json"
+    if ab_manifest.exists():
+        counts["te_ab_images"] = import_te_ab_images(conn, comparison_name, ab_manifest)
+    else:
+        log.info("No A/B image manifest at %s", ab_manifest)
 
     log.info("Import complete for %s: %s", comparison_name, counts)
     return counts

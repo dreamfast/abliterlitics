@@ -54,7 +54,8 @@
       "skip_kl": true,
       "skip_lm_eval": true,
       "skip_harmbench": true,
-      "skip_weight": true
+      "skip_weight": true,
+      "te_reference": "base"
     },
     "heretic_int8": {
       "path": "models/base_stub",

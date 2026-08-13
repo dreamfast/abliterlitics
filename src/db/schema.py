@@ -256,6 +256,29 @@ CREATE INDEX IF NOT EXISTS idx_harmbench_scores_comp
 CREATE INDEX IF NOT EXISTS idx_te_results_comp
     ON te_results(comparison, variant);
 
+-- Text-encoder A/B image results (image-level evidence via ComfyUI API).
+-- One row per generated image (variant x prompt x pass); timing summary
+-- rows use stream='__timing__' with metric_name = cold/warm first-image
+-- seconds etc.
+CREATE TABLE IF NOT EXISTS te_ab_images (
+    comparison     TEXT NOT NULL,
+    variant        TEXT NOT NULL,
+    te_name        TEXT NOT NULL,
+    loader         TEXT NOT NULL,          -- safetensors | gguf
+    label          TEXT NOT NULL,          -- prompt label / '__timing__'
+    category       TEXT,
+    pass           TEXT,                   -- cold | warm | NULL for timing rows
+    metric_name    TEXT NOT NULL,          -- gen_seconds | cold_first_image_seconds | ...
+    metric_value   REAL NOT NULL,
+    image_path     TEXT,
+    seed           INTEGER,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (comparison, variant, label, pass, metric_name),
+    FOREIGN KEY (comparison) REFERENCES comparisons(name) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_te_ab_comp
+    ON te_ab_images(comparison, variant);
+
 -- ============================================================
 -- Views: Latest classification per response
 -- ============================================================
