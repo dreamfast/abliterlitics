@@ -243,7 +243,7 @@ def main() -> int:
         log.info("Comparing stage: %s (%d streams)", ref_art.stage.value, len(ref_art.streams))
         # floor_base: damage denominators are always measured against the
         # GLOBAL base, even when the comparison reference is a matched quant.
-        vr = compare(ref_art, var_art, quant_floor=qf_art, floor_base=base_art)
+        vr = compare(ref_art, var_art, quant_floor=qf_art, floor_base=base_art, n_boot=args.n_boot)
         variant_reports.append(vr)
 
     # --- Report ---

@@ -102,9 +102,24 @@ def bootstrap_ratio_ci(
     safe_den = boot_den.clamp(min=1e-15)
     boot_ratios = boot_num / safe_den.float()
 
-    # Point estimate from full data
+    # Point estimate from full data (plug-in ratio of means)
     point_den = max(float(denominator_values.mean().item()), 1e-15)
     point = float(numerator_values.mean().item()) / point_den
     ci_low = float(torch.quantile(boot_ratios, alpha).item())
     ci_high = float(torch.quantile(boot_ratios, 1.0 - alpha).item())
+    # Skew guard: with heavy-tailed per-prompt distributions (e.g. ratio
+    # estimators over variable-length prompts) the plug-in point can fall
+    # outside the percentile CI. Report the bootstrap median in that case —
+    # a standard convention for skewed ratio estimators — so the reported
+    # point is always consistent with its interval.
+    if not (ci_low <= point <= ci_high):
+        med = float(boot_ratios.median().item())
+        log.info(
+            "bootstrap_ratio_ci: plug-in point %.4f outside CI [%.4f, %.4f] (skewed ratio); reporting median %.4f",
+            point,
+            ci_low,
+            ci_high,
+            med,
+        )
+        point = med
     return point, ci_low, ci_high

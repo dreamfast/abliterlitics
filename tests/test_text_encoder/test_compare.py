@@ -223,3 +223,87 @@ class TestCompare:
         assert sr.mse.value >= 0.0
         assert sr.l2.value >= 0.0
         assert sr.rank_corr.value >= -1.0
+
+
+class TestSemanticCeiling:
+    def test_identical_inputs_zero_semantic_damage(self) -> None:
+        """Semantic damage ~0 for identical base and variant."""
+        g = torch.Generator().manual_seed(42)
+        x = torch.randn(20, 5, 16, generator=g)
+        base = _make_artifact(x, n=20)
+        variant = _make_artifact(x.clone(), n=20)
+        report = compare(base, variant)
+        sr = report.streams[0]
+        assert sr.damage_semantic_units is not None
+        assert sr.damage_semantic_units.value < 1e-8
+
+    def test_semantic_ceiling_positive(self) -> None:
+        """Semantic ceiling = mean pairwise distance between distinct prompts."""
+        g = torch.Generator().manual_seed(42)
+        x = torch.randn(20, 5, 16, generator=g)
+        base = _make_artifact(x, n=20)
+        variant = _make_artifact(x + 0.1 * torch.randn(20, 5, 16, generator=g), n=20)
+        report = compare(base, variant)
+        sr = report.streams[0]
+        assert sr.semantic_ceiling_mse is not None
+        assert sr.semantic_ceiling_mse > 0
+
+    def test_semantic_damage_small_for_small_perturbation(self) -> None:
+        """A 0.1-std perturbation should be a small fraction of a meaning change."""
+        g = torch.Generator().manual_seed(42)
+        x = torch.randn(40, 5, 16, generator=g)
+        base = _make_artifact(x, n=40)
+        variant = _make_artifact(x + 0.1 * torch.randn(40, 5, 16, generator=g), n=40)
+        report = compare(base, variant)
+        sr = report.streams[0]
+        assert sr.damage_semantic_units is not None
+        # 0.1-std noise on pooled vectors is ~1% of inter-prompt distance
+        assert sr.damage_semantic_units.value < 0.1
+
+
+class TestBootstrapCIs:
+    def test_mse_ci_present(self) -> None:
+        """compare() with default n_boot populates the MSE CI."""
+        g = torch.Generator().manual_seed(42)
+        x = torch.randn(20, 5, 16, generator=g)
+        base = _make_artifact(x, n=20)
+        variant = _make_artifact(x + 0.1 * torch.randn(20, 5, 16, generator=g), n=20)
+        report = compare(base, variant)
+        sr = report.streams[0]
+        assert sr.mse.ci_low is not None
+        assert sr.mse.ci_high is not None
+        assert sr.mse.ci_low <= sr.mse.value <= sr.mse.ci_high
+
+    def test_cos_all_ci_present(self) -> None:
+        g = torch.Generator().manual_seed(42)
+        x = torch.randn(20, 5, 16, generator=g)
+        base = _make_artifact(x, n=20)
+        variant = _make_artifact(x + 0.1 * torch.randn(20, 5, 16, generator=g), n=20)
+        report = compare(base, variant)
+        sr = report.streams[0]
+        assert sr.cos_all.ci_low is not None
+        assert sr.cos_all.ci_high is not None
+
+    def test_damage_ci_joint_bootstrap(self) -> None:
+        """Damage CI from joint ratio bootstrap contains the point estimate."""
+        g = torch.Generator().manual_seed(42)
+        x = torch.randn(20, 5, 16, generator=g)
+        base = _make_artifact(x, n=20)
+        quant = _make_artifact(x + 0.05 * torch.randn(20, 5, 16, generator=g), n=20, ckpt_id="quant")
+        variant = _make_artifact(x + 0.10 * torch.randn(20, 5, 16, generator=g), n=20)
+        report = compare(base, variant, quant_floor=quant)
+        sr = report.streams[0]
+        assert sr.damage_quant_units is not None
+        assert sr.damage_quant_units.ci_low is not None
+        assert sr.damage_quant_units.ci_high is not None
+        assert sr.damage_quant_units.ci_low <= sr.damage_quant_units.value
+
+    def test_n_boot_zero_disables_ci(self) -> None:
+        g = torch.Generator().manual_seed(42)
+        x = torch.randn(10, 5, 16, generator=g)
+        base = _make_artifact(x, n=10)
+        variant = _make_artifact(x + 0.1 * torch.randn(10, 5, 16, generator=g), n=10)
+        report = compare(base, variant, n_boot=0)
+        sr = report.streams[0]
+        assert sr.mse.ci_low is None
+        assert sr.mse.ci_high is None

@@ -59,12 +59,26 @@ class Report:
                                 "cka_linear": sr.cka_linear.value,
                                 "cka_rbf": sr.cka_rbf.value,
                                 "cos_all": sr.cos_all.value,
+                                "cos_all_ci": [sr.cos_all.ci_low, sr.cos_all.ci_high]
+                                if sr.cos_all.ci_low is not None
+                                else None,
                                 "cos_last": sr.cos_last.value,
                                 "mse": sr.mse.value,
+                                "mse_ci": [sr.mse.ci_low, sr.mse.ci_high] if sr.mse.ci_low is not None else None,
                                 "l2": sr.l2.value,
                                 "rank_corr": sr.rank_corr.value,
                             },
                             "damage_quant_units": (sr.damage_quant_units.value if sr.damage_quant_units else None),
+                            "damage_quant_ci": [
+                                sr.damage_quant_units.ci_low,
+                                sr.damage_quant_units.ci_high,
+                            ]
+                            if sr.damage_quant_units and sr.damage_quant_units.ci_low is not None
+                            else None,
+                            "semantic_ceiling_mse": sr.semantic_ceiling_mse,
+                            "damage_semantic_units": (
+                                sr.damage_semantic_units.value if sr.damage_semantic_units else None
+                            ),
                             "per_category": sr.per_category,
                         }
                         for sr in v.streams

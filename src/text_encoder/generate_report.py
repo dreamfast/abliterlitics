@@ -290,7 +290,7 @@ def graph_layer_heatmap(variants: list[dict[str, Any]], out: Path) -> None:
     ax.set_yticks(range(len(variants)))
     ax.set_yticklabels([_display(v["name"]) for v in variants], fontsize=9)
     ax.set_xticks(range(len(layers)))
-    ax.set_xticklabels(layers, fontsize=7)
+    ax.set_xticklabels([str(ly) for ly in layers], fontsize=7)
     ax.set_xlabel("encoder layer")
     ax.set_title("log10 MSE vs base")
     fig.colorbar(im, ax=ax, shrink=0.8)
@@ -333,12 +333,19 @@ def _table_rows(variants: list[dict[str, Any]]) -> str:
                 if _is_reference_variant(var)
                 else html.escape(_display(var["name"]))
             )
+            # Damage with CI when available
+            dmg_ci = sr.get("damage_quant_ci")
+            if dmg_s not in ("N/A", "—") and dmg_ci:
+                dmg_s = f"{dmg_s} <span class='ci'>[{dmg_ci[0]:.2f}, {dmg_ci[1]:.2f}]</span>"
+            # Semantic units: pooled damage / meaning-change distance
+            sem = sr.get("damage_semantic_units")
+            sem_s = f"{sem:.2%}" if sem is not None else "—"
             rows.append(
                 f"<tr><td>{name_cell}</td><td>{html.escape(var['reference'])}</td>"
                 f"<td>{html.escape(sr['stage'])}</td>"
                 f"<td>{html.escape(sr['stream'])}</td><td>{m['cka_linear']:.6f}</td>"
                 f"<td>{m['cos_all']:.6f}</td><td>{m['mse']:.3e}</td>"
-                f"<td{dmg_cls}>{dmg_s}</td></tr>"
+                f"<td{dmg_cls}>{dmg_s}</td><td>{sem_s}</td></tr>"
             )
     return "\n".join(rows)
 
@@ -466,9 +473,11 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
             pc = sr["per_category"]
             inn, ext = pc.get("innocent", {}).get("mse"), pc.get("extreme", {}).get("mse")
             if inn is not None and ext is not None and inn > 0:
+                sem = sr.get("damage_semantic_units")
+                sem_txt = f"; {sem:.2%} of a meaning-change" if sem is not None else ""
                 findings.append(
                     f"<b>{html.escape(_display(var['name']))}</b>: DiT-input damage "
-                    f"{_fmt(sr.get('damage_quant_units'))}× quant step; taboo-concentration "
+                    f"{_fmt(sr.get('damage_quant_units'))}× quant step{sem_txt}; taboo-concentration "
                     f"(extreme vs innocent MSE) = <b>{ext / inn:.1f}×</b>."
                 )
     return findings
@@ -509,6 +518,7 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
  .dmg-high {{ color: #c0392b; font-weight: bold; }}
  .dmg-low {{ color: #27ae60; }}
  .ref-var {{ color: #7f8c8d; font-style: italic; }}
+ .ci {{ color: #888; font-size: 11px; white-space: nowrap; }}
  figure {{ margin: 32px 0; text-align: center; }}
  figure img {{ max-width: 100%; background: white; border: 1px solid #e0e0e0; border-radius: 8px; }}
  figcaption {{ font-size: 13px; color: #666; margin-top: 6px; }}
@@ -526,7 +536,7 @@ Results: {html.escape(str(results_dir))} · te_results_version: {TE_RESULTS_VERS
 {decomposition}
 <h2>Pipeline damage table</h2>
 <table>
-<tr><th>Variant</th><th>vs reference</th><th>Stage</th><th>Stream</th><th>CKA (linear)</th><th>Cos (all)</th><th>MSE</th><th>Damage (quant units)</th></tr>
+<tr><th>Variant</th><th>vs reference</th><th>Stage</th><th>Stream</th><th>CKA (linear)</th><th>Cos (all)</th><th>MSE</th><th>Damage (quant units)</th><th>Dmg (semantic)</th></tr>
 {_table_rows(variants)}
 </table>
 
