@@ -36,8 +36,8 @@
 | T4.1 | Resolve H3 architecture (research) | pending | — | | layer-50-of-64 vs truncation |
 | T4.2 | H3Backend + headline run | pending | — | | answers PSA |
 | **Phase 5 — Reports** | | | | | |
-| T5.1 | SVG graphs | pending | — | | |
-| T5.2 | Markdown report | pending | — | | HF + Reddit |
+| T5.1 | SVG graphs | done | deepseek:✓ hy3:✓ | 42cfa22 | 4 graphs: layer profile w/ consumption marker, damage ranking, category gradient, heatmap |
+| T5.2 | HTML report | done | deepseek:✓ hy3:✓ | 42cfa22 | Self-contained te_report.html; auto key findings; methodology footer |
 
 ## Milestones
 - **M1**: Core validated (Phase 1 done, no GPU)
