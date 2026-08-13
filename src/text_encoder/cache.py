@@ -196,5 +196,8 @@ def get_or_compute(
 
     log.info("Cache miss: %s (transform=%s, stage=%s) — computing", ckpt_id, transform, stage)
     artifact: ConditioningArtifact = compute_fn()
+    # Ensure meta matches the requested transform so save_artifact uses the
+    # correct key (reviewer C1 — prevents silent cache key mismatch).
+    artifact.meta["transform"] = transform
     save_artifact(artifact, cache_dir)
     return artifact

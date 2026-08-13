@@ -90,13 +90,24 @@ def compute_stream_metrics(
     base_pooled = pool_mean(base_activations, base_mask)
     variant_pooled = pool_mean(variant_activations, variant_mask)
 
+    # For magnitude metrics (MSE/L2), mask out pad positions before computing
+    # so padding doesn't bias the damage formula. Only real-token positions
+    # contribute (reviewer W1).
+    if base_mask is not None:
+        mask_3d = base_mask.unsqueeze(-1).float()
+        base_masked = base_activations * mask_3d
+        var_masked = variant_activations * mask_3d
+    else:
+        base_masked = base_activations
+        var_masked = variant_activations
+
     return {
         "cka_linear": cka_linear(base_pooled, variant_pooled),
         "cka_rbf": cka_rbf(base_pooled, variant_pooled),
         "cos_all": cosine_all_tokens(base_activations, variant_activations, base_mask),
         "cos_last": cosine_last_token(base_activations, variant_activations, base_mask),
-        "mse": mse(base_activations, variant_activations),
-        "l2": l2_distance(base_activations, variant_activations),
+        "mse": mse(base_masked, var_masked),
+        "l2": l2_distance(base_masked, var_masked),
         "rank_corr": rank_correlation(base_pooled, variant_pooled),
     }
 

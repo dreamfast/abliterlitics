@@ -82,7 +82,8 @@ def bootstrap_ratio_ci(
         (point_ratio, ci_low, ci_high).
     """
     n = numerator_values.shape[0]
-    assert denominator_values.shape[0] == n, "numerator and denominator must have same length"
+    if denominator_values.shape[0] != n:
+        raise ValueError(f"numerator ({denominator_values.shape[0]}) and denominator ({n}) must have same length")
 
     if n < 2:
         den_mean = float(denominator_values.mean().item())
