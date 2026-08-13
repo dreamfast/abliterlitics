@@ -1054,6 +1054,15 @@ def _ab_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str, 
     js_caps = json.dumps(cap_data)
     js_vars = json.dumps(var_list)
     js_labels = json.dumps(labels)
+    # Full prompt text + adherence checks per label (small-text panel)
+    prompt_texts: dict[str, str] = {
+        lb: next((img.get("prompt", "") for img in images[lb].values()), "") for lb in labels
+    }
+    prompt_checks: dict[str, list[str]] = {
+        lb: next((img.get("checks", []) for img in images[lb].values()), []) for lb in labels
+    }
+    js_prompts = json.dumps(prompt_texts)
+    js_checks = json.dumps(prompt_checks)
 
     timing_rows: list[str] = []
     for var_name in sorted(manifest.get("timing", {})):
@@ -1085,8 +1094,11 @@ delta is the practical cost of a TE swap in a running session.</p>
 {chr(10).join(timing_rows)}
 </table>"""
 
+    seed_badge = (
+        f'<span class="ab-seed">seed {manifest.get("seed", "?")}</span>' if manifest.get("seed") is not None else ""
+    )
     return f"""
-<h2>A/B image evidence — same seed, only the text encoder swapped</h2>
+<h2>A/B image evidence — same seed, only the text encoder swapped {seed_badge}</h2>
 <p>Paired generations from the fixed seed {manifest.get("seed", "?")} through the
 real ComfyUI stack (Z-Image Turbo, 9 steps, cfg 1, euler/simple). Pick two
 variants and hover over the image to reveal: <b>left of the divider = variant
@@ -1101,6 +1113,8 @@ conditioning perturbation actually changed.</p>
   const CAP = {js_caps};
   const VARS = {js_vars};
   const LABELS = {js_labels};
+  const PROMPTS = {js_prompts};
+  const CHECKS = {js_checks};
   const app = document.getElementById('ab-app');
   let state = {{label: LABELS[0], a: VARS[0], b: VARS[1] || VARS[0]}};
 
@@ -1129,6 +1143,10 @@ conditioning perturbation actually changed.</p>
       <div class="ab-caps">
         <div class="ab-cap" id="ab-cap-a">${{cap(state.label, state.a)}}</div>
         <div class="ab-cap" id="ab-cap-b">${{cap(state.label, state.b)}}</div>
+      </div>
+      <div class="ab-prompt">
+        <div class="ab-prompt-text">${{(PROMPTS[state.label] || '').replace(/</g, '&lt;')}}</div>
+        <div class="ab-prompt-checks">${{(CHECKS[state.label] || []).map(c => '✓ ' + c.replace(/</g, '&lt;')).join(' &nbsp;·&nbsp; ')}}</div>
       </div>`;
     const slider = document.getElementById('ab-slider');
     const imgAElem = document.getElementById('ab-img-a');
@@ -1453,6 +1471,13 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
  .ab-cap {{ flex: 1 1 0; background: white; border: 1px solid #e0e0e0; border-radius: 8px;
            padding: 8px 12px; font-size: 12px; color: #333; line-height: 1.6; }}
  .ab-cap .ci {{ color: #888; font-size: 11px; }}
+ .ab-seed {{ display: inline-block; vertical-align: middle; background: #4c72b0; color: white;
+            font-size: 12px; font-weight: bold; border-radius: 10px; padding: 2px 10px;
+            margin-left: 8px; }}
+ .ab-prompt {{ max-width: 768px; margin: -18px auto 28px auto; background: #f6f7f9;
+              border: 1px dashed #c5cedd; border-radius: 8px; padding: 8px 12px; }}
+ .ab-prompt-text {{ font-size: 11px; color: #555; line-height: 1.55; }}
+ .ab-prompt-checks {{ font-size: 10.5px; color: #7a7a8a; margin-top: 4px; line-height: 1.5; }}
  .ci {{ color: #888; font-size: 11px; white-space: nowrap; }}
  figure {{ margin: 32px 0; text-align: center; }}
  figure img {{ max-width: 100%; background: white; border: 1px solid #e0e0e0; border-radius: 8px; }}
