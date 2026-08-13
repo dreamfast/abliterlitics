@@ -48,11 +48,11 @@ def _var(name: str, gguf: dict | None = None) -> dict[str, Any]:
 
 class TestVariantGroup:
     def test_five_groups(self) -> None:
-        assert _variant_group(_var("base_int8"))[1].startswith("Base model — safetensors")
-        assert _variant_group(_var("base_gguf_q4_k_m", GGUF_META(4.9)))[1].startswith("Base model — GGUF")
-        assert _variant_group(_var("heretic"))[1].startswith("Abliterated (heretic) — safetensors")
-        assert _variant_group(_var("heretic_gguf_q8_0", GGUF_META(8.5)))[1].startswith("Abliterated (heretic) — GGUF")
-        assert _variant_group(_var("heretic_int8__vs_base"))[1].startswith("Abliterated quant — combined")
+        assert _variant_group(_var("base_int8"))[1].startswith("Base model - safetensors")
+        assert _variant_group(_var("base_gguf_q4_k_m", GGUF_META(4.9)))[1].startswith("Base model - GGUF")
+        assert _variant_group(_var("heretic"))[1].startswith("Abliterated (heretic) - safetensors")
+        assert _variant_group(_var("heretic_gguf_q8_0", GGUF_META(8.5)))[1].startswith("Abliterated (heretic) - GGUF")
+        assert _variant_group(_var("heretic_int8__vs_base"))[1].startswith("Abliterated quant - combined")
 
     def test_group_order_monotonic(self) -> None:
         order = [
@@ -65,7 +65,7 @@ class TestVariantGroup:
         assert order == sorted(order) == [0, 1, 2, 3, 4]
 
     def test_name_only_gguf_inference(self) -> None:
-        """Divergence summaries carry names only — container inferred from name."""
+        """Divergence summaries carry names only - container inferred from name."""
         assert _variant_group({"name": "base_gguf_q6_k"})[0] == 1
         assert _variant_group({"name": "heretic_gguf_q6_k"})[0] == 3
         assert _variant_group({"name": "base_int8"})[0] == 0
@@ -110,9 +110,9 @@ class TestGroupedTables:
             _var("heretic"),
         ]
         rows = _table_rows(variants)
-        i_base = rows.index("Base model — safetensors quants")
-        i_heretic = rows.index("Abliterated (heretic) — safetensors")
-        i_gguf = rows.index("Abliterated (heretic) — GGUF containers")
+        i_base = rows.index("Base model - safetensors quants")
+        i_heretic = rows.index("Abliterated (heretic) - safetensors")
+        i_gguf = rows.index("Abliterated (heretic) - GGUF containers")
         assert i_base < i_heretic < i_gguf
         assert 'class="group-row"' in rows
 
@@ -123,8 +123,8 @@ class TestGroupedTables:
             _var("base_gguf_q4_k_m", GGUF_META(4.9)),
         ]
         out = _gguf_section(variants, divergence={})
-        i_base_block = out.index("Base containers — pure GGUF quantization")
-        i_heretic_block = out.index("Heretic containers — pure ablation")
+        i_base_block = out.index("Base containers - pure GGUF quantization")
+        i_heretic_block = out.index("Heretic containers - pure ablation")
         assert i_base_block < i_heretic_block
         # base_f16 row inside base block, before heretic block
         assert out.index("base_gguf_f16") < i_heretic_block
@@ -201,7 +201,7 @@ class TestGroupedGraphsR1:
         out = tmp_path / "dr.svg"
         graph_damage_ranking(variants, out)
         content = out.read_text()
-        # headline stream only — cap_embedded rows must NOT appear even
+        # headline stream only - cap_embedded rows must NOT appear even
         # though the fixture provides a damaged cap_embedded stream (99x)
         assert "cap_embedded" not in content
         # group annotations present

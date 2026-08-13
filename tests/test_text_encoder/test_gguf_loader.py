@@ -184,7 +184,7 @@ class TestSyntheticLoader:
         assert torch.equal(q, torch.from_numpy(q8_logical))  # type: ignore[arg-type]
 
         # F16 tensor: fp16 -> bf16 exact for these magnitudes (verify a row).
-        # (values were random fp16; check dtype/shape only — exactness covered
+        # (values were random fp16; check dtype/shape only - exactness covered
         # by the real-file identity test below)
 
     def test_fp16_detour_big_vocab(self, tmp_path: Path) -> None:
@@ -319,7 +319,7 @@ class TestRealFileIntegration:
             base_keys = set(f.keys())
             assert set(sd) == base_keys - {"spiece_model"}
             # bf16->fp16->bf16 is exact for fp16-NORMAL magnitudes; entries in
-            # fp16's subnormal range (<6.1e-5) can lose mantissa bits — so the
+            # fp16's subnormal range (<6.1e-5) can lose mantissa bits - so the
             # container is near-identical to the safetensors base (any
             # transpose/remap/mapping bug would produce O(1) diffs instead).
             for probe in ("model.layers.0.self_attn.o_proj.weight", "model.embed_tokens.weight"):

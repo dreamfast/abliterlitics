@@ -133,7 +133,7 @@ class TestGgufSection:
         assert "4.97" in out and "16.01" in out
         # f16 row (bpw 16.01) before q4 rows
         assert out.index("16.01") < out.index("4.97")
-        # heretic row annotated with its matched reference — as LIVE markup
+        # heretic row annotated with its matched reference - as LIVE markup
         # (the span must not be double-escaped into visible text)
         assert "vs base_gguf_q4_k_m" in out
         assert "&lt;span" not in out
@@ -148,7 +148,7 @@ class TestGgufSection:
     def test_qtype_mix_labels(self) -> None:
         assert _gguf_qtype_mix(HIST) == "Q4_K + Q6_K"
         assert _gguf_qtype_mix({"F16": 253, "F32": 145}) == "F16"
-        assert _gguf_qtype_mix(None) == "—"
+        assert _gguf_qtype_mix(None) == "-"
         mixed3 = {"Q3_K": 144, "Q4_K": 104, "Q5_K": 4, "Q6_K": 1, "F32": 145}
         assert _gguf_qtype_mix(mixed3) == "Q3_K + Q4_K + Q5_K…"
 
@@ -165,7 +165,7 @@ class TestDecompositionSuffixes:
         assert "55.00×" in row_m and "200×" in row_m
 
     def test_mxfp8_resolves_before_fp8(self) -> None:
-        """Regression: 'heretic_mxfp8'.endswith('fp8') is True — the suffix
+        """Regression: 'heretic_mxfp8'.endswith('fp8') is True - the suffix
         tuple must try mxfp8 first or the row resolves the WRONG base and
         drops its pure-ablation cell."""
         variants = [
@@ -251,7 +251,7 @@ class TestLadderGraph:
         assert not out.exists()
 
     def test_graph_tolerates_none_gguf_mixins(self, tmp_path: Path) -> None:
-        """Regression: safetensors variants carry gguf=None (key present) —
+        """Regression: safetensors variants carry gguf=None (key present) -
         graph must not crash mixing them with GGUF variants."""
         mixed = _variants() + [
             {

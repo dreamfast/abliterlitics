@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Text-encoder report generator — SVG graphs + self-contained HTML report.
+Text-encoder report generator - SVG graphs + self-contained HTML report.
 
 Reads te_<variant>.json results (written by run_analysis.py) and produces:
-- te_layer_profile.svg   — per-layer MSE (log) with the consumption-point marker.
+- te_layer_profile.svg   - per-layer MSE (log) with the consumption-point marker.
                            THE money chart: shows where abliteration damage lands
                            relative to what the DiT reads.
-- te_damage_ranking.svg  — damage in quant-floor units by stage, with the
+- te_damage_ranking.svg  - damage in quant-floor units by stage, with the
                            "one quantization step" reference line.
-- te_category_gradient.svg — per-category MSE on the DiT-input stream
+- te_category_gradient.svg - per-category MSE on the DiT-input stream
                            (taboo-concentration of transmitted damage).
-- te_layer_heatmap.svg   — variants x layers heatmap of log10 MSE.
-- te_report.html         — self-contained HTML (SVGs embedded base64) with
+- te_layer_heatmap.svg   - variants x layers heatmap of log10 MSE.
+- te_report.html         - self-contained HTML (SVGs embedded base64) with
                            tables + auto-generated key findings.
 
 Usage:
@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 # against ComfyUI model classes). Used to draw the consumption-point marker.
 BACKEND_CONSUMED_LAYER: dict[str, int | None] = {
     "zimage": 34,  # Qwen3_4BModel(layer="hidden", layer_idx=-2) of 36 layers
-    "ltx2": None,  # aggregates ALL layers through the projection — no single point
+    "ltx2": None,  # aggregates ALL layers through the projection - no single point
 }
 
 # Streams shown in the damage-ranking chart (the transmission pipeline).
@@ -59,7 +59,7 @@ def load_results(results_dir: Path) -> list[dict[str, Any]]:
     """Load all te_*.json result files.
 
     Each JSON's ``variants`` list carries one entry PER STAGE for the same
-    model (run_analysis emits a VariantReport per stage) — entries are merged
+    model (run_analysis emits a VariantReport per stage) - entries are merged
     by name so each model appears once with all its stage streams.
 
     Returns: [{name, dtype, backend, reference, streams: {stream_name: stream_dict}}]
@@ -96,7 +96,7 @@ def load_results(results_dir: Path) -> list[dict[str, Any]]:
             )
             for sr in var.get("streams", []):
                 if sr["stream"] in entry["streams"]:
-                    log.warning("Duplicate stream name %s in %s — overwriting (format drift?)", sr["stream"], f.name)
+                    log.warning("Duplicate stream name %s in %s - overwriting (format drift?)", sr["stream"], f.name)
                 entry["streams"][sr["stream"]] = sr
     if not merged:
         raise FileNotFoundError(f"No te_*.json variant results found in {results_dir}")
@@ -108,7 +108,7 @@ def load_results(results_dir: Path) -> list[dict[str, Any]]:
 def _is_reference_variant(var: dict[str, Any]) -> bool:
     """Non-abliterated quantizations of the base (noise-floor references).
 
-    Convention: variants named base_* — the pure-quant damage measurements.
+    Convention: variants named base_* - the pure-quant damage measurements.
     """
     return bool(var["name"].startswith("base_"))
 
@@ -134,7 +134,7 @@ def _variant_group(var: dict[str, Any]) -> tuple[int, str]:
 
     Groups by family (pure-quantization reference vs abliterated) and
     container format; dual-run combined entries get their own trailing
-    group (they duplicate the primary variant's streams — the decomposition
+    group (they duplicate the primary variant's streams - the decomposition
     table is their canonical view).
     """
     name = var["name"]
@@ -142,14 +142,14 @@ def _variant_group(var: dict[str, Any]) -> tuple[int, str]:
     # (divergence summaries carry names only).
     is_gguf = bool(var.get("gguf")) or "_gguf_" in name
     if name.endswith("__vs_base"):
-        return (4, "Abliterated quant — combined vs global base (dual runs)")
+        return (4, "Abliterated quant - combined vs global base (dual runs)")
     if _is_reference_variant(var):
         if is_gguf:
-            return (1, "Base model — GGUF containers (pure quantization)")
-        return (0, "Base model — safetensors quants (pure quantization)")
+            return (1, "Base model - GGUF containers (pure quantization)")
+        return (0, "Base model - safetensors quants (pure quantization)")
     if is_gguf:
-        return (3, "Abliterated (heretic) — GGUF containers")
-    return (2, "Abliterated (heretic) — safetensors")
+        return (3, "Abliterated (heretic) - GGUF containers")
+    return (2, "Abliterated (heretic) - safetensors")
 
 
 def _group_sort_key(var: dict[str, Any]) -> tuple[float, str]:
@@ -210,7 +210,7 @@ def graph_layer_profile(variants: list[dict[str, Any]], out: Path) -> None:
 
     # Readability curation: the safetensors story only (base quants as the
     # grey noise-floor band, heretic variants colored). GGUF containers have
-    # their own views (ladder graph + grouped heatmap) — 14 more colored
+    # their own views (ladder graph + grouped heatmap) - 14 more colored
     # lines here would be unreadable spaghetti.
     variants = [
         v for v in variants if not v["name"].endswith("__vs_base") and not v.get("gguf") and "_gguf_" not in v["name"]
@@ -248,7 +248,7 @@ def graph_layer_profile(variants: list[dict[str, Any]], out: Path) -> None:
     ax.set_yscale("log")
     ax.set_xlabel("encoder layer")
     ax.set_ylabel("MSE vs base (log)")
-    ax.set_title(f"Per-layer conditioning damage — {backend}")
+    ax.set_title(f"Per-layer conditioning damage - {backend}")
     ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=9)
     fig.tight_layout()
     fig.savefig(out, format="svg")
@@ -265,7 +265,7 @@ def graph_damage_ranking(variants: list[dict[str, Any]], out: Path) -> None:
     """Transmitted damage at the DiT input, grouped and log-scaled.
 
     Readability redesign: one bar per variant (the headline refined_context
-    stream — earlier pipeline stages live in the damage table), grouped by
+    stream - earlier pipeline stages live in the damage table), grouped by
     family×container with separator lines, log x-axis (damage spans 0.001×
     to 800×), and a stable family palette matching the ladder graph.
     """
@@ -278,7 +278,7 @@ def graph_damage_ranking(variants: list[dict[str, Any]], out: Path) -> None:
             rows.append((var, sr["damage_quant_units"]))
 
     if not rows:
-        log.warning("No damage data — skipping %s", out.name)
+        log.warning("No damage data - skipping %s", out.name)
         return
 
     def _bar_color(var: dict[str, Any]) -> str:
@@ -354,12 +354,12 @@ def graph_category_gradient(variants: list[dict[str, Any]], out: Path) -> None:
 
     One bar group per category; base quants (the noise floor) on the left
     panel, abliterated variants on the right; family palette matches the
-    other graphs. Log y-axis — extreme-category MSE spans orders of
+    other graphs. Log y-axis - extreme-category MSE spans orders of
     magnitude above innocent.
     """
     usable = _group_ordered([v for v in variants if not v["name"].endswith("__vs_base") and _di_input_stream(v)])
     if not usable:
-        log.warning("No per-category data — skipping %s", out.name)
+        log.warning("No per-category data - skipping %s", out.name)
         return
 
     cats = ["innocent", "mild", "violent", "sexual", "extreme", "multilingual"]
@@ -406,7 +406,7 @@ def graph_category_gradient(variants: list[dict[str, Any]], out: Path) -> None:
     axes[0].set_yscale("log")
     # No per-series legends: with 12 variants per panel the legend is pure
     # clutter and the figure's story is the category GRADIENT (taboo
-    # concentration), not per-variant identification — the damage table,
+    # concentration), not per-variant identification - the damage table,
     # ranking graph, and heatmap carry identity.
     axes[0].annotate(
         f"{len(ref_panel)} base quants (grey)",
@@ -424,7 +424,7 @@ def graph_category_gradient(variants: list[dict[str, Any]], out: Path) -> None:
         color="#666666",
         va="top",
     )
-    fig.suptitle(f"Damage by prompt category — DiT-input stream ({stream_name})", fontsize=12)
+    fig.suptitle(f"Damage by prompt category - DiT-input stream ({stream_name})", fontsize=12)
     fig.tight_layout()
     fig.savefig(out, format="svg")
     plt.close(fig)
@@ -444,7 +444,7 @@ def graph_layer_heatmap(variants: list[dict[str, Any]], out: Path) -> None:
     for var in variants:
         all_layers.update(idx for sr in var["streams"].values() if (idx := _layer_index(sr["stream"])) is not None)
     if not all_layers:
-        log.warning("No layer streams — skipping %s", out.name)
+        log.warning("No layer streams - skipping %s", out.name)
         return
     layers = sorted(all_layers)
 
@@ -485,7 +485,7 @@ def graph_layer_heatmap(variants: list[dict[str, Any]], out: Path) -> None:
 
 # Safetensors quants plotted as open reference markers at NOMINAL bpw
 # (GGUF bpw is measured from file bytes; safetensors formats carry format-
-# specific scale overhead that makes file-size bpw non-comparable — the
+# specific scale overhead that makes file-size bpw non-comparable - the
 # nominal values are labeled as such in the legend).
 _SAFETENSORS_NOMINAL_BPW = {
     "base_int8": 8.5,
@@ -521,7 +521,7 @@ def graph_gguf_ladder(variants: list[dict[str, Any]], out: Path) -> None:
             safetensors.append((_SAFETENSORS_NOMINAL_BPW[var["name"]], dmg, var["name"].replace("base_", "")))
 
     if not gguf_base and not gguf_heretic:
-        log.info("No GGUF ladder data — skipping %s", out.name)
+        log.info("No GGUF ladder data - skipping %s", out.name)
         return
 
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -587,7 +587,7 @@ def graph_gguf_ladder(variants: list[dict[str, Any]], out: Path) -> None:
     ax.set_yscale("log")
     ax.set_xlabel("bits per weight (GGUF: measured from file; safetensors: nominal)")
     ax.set_ylabel("DiT-input damage (quant-floor units, log)")
-    ax.set_title("GGUF quantization ladder — conditioning damage vs compression")
+    ax.set_title("GGUF quantization ladder - conditioning damage vs compression")
     ax.grid(True, which="both", alpha=0.25)
     ax.legend(fontsize=9, loc="best")
     fig.tight_layout()
@@ -626,7 +626,7 @@ def graph_divergence_steps(steps_data: dict[str, dict[str, Any]], out: Path) -> 
     to the final step while staying far below the noise-control anchor.
     """
     if not steps_data:
-        log.info("No per-step divergence data — skipping %s", out.name)
+        log.info("No per-step divergence data - skipping %s", out.name)
         return
     fig, ax = plt.subplots(figsize=(10, 6))
     # Deterministic group ordering: base safetensors, base GGUF, heretic
@@ -666,9 +666,9 @@ def graph_divergence_steps(steps_data: dict[str, dict[str, Any]], out: Path) -> 
     ax.set_yscale("log")
     ax.set_xlabel("Euler step")
     ax.set_ylabel("latent divergence vs base (log)")
-    ax.set_title("Per-step divergence — does conditioning damage compound or plateau?")
+    ax.set_title("Per-step divergence - does conditioning damage compound or plateau?")
     ax.grid(True, which="both", alpha=0.25)
-    # Legend outside right; ~27 series — compact font
+    # Legend outside right; ~27 series - compact font
     ax.legend(fontsize=7, loc="center left", bbox_to_anchor=(1.01, 0.5), ncol=2)
     fig.tight_layout()
     fig.savefig(out, format="svg", bbox_inches="tight")
@@ -681,7 +681,7 @@ def _svg_data_uri(path: Path) -> str:
 
 
 def _fmt(v: float | None, spec: str = ".4f") -> str:
-    return "—" if v is None else format(v, spec)
+    return "-" if v is None else format(v, spec)
 
 
 def _table_rows(variants: list[dict[str, Any]]) -> str:
@@ -711,11 +711,11 @@ def _table_rows(variants: list[dict[str, Any]]) -> str:
             )
             # Damage with CI when available
             dmg_ci = sr.get("damage_quant_ci")
-            if dmg_s not in ("N/A", "—") and dmg_ci:
+            if dmg_s not in ("N/A", "-") and dmg_ci:
                 dmg_s = f"{dmg_s} <span class='ci'>[{dmg_ci[0]:.2f}, {dmg_ci[1]:.2f}]</span>"
             # Semantic units: pooled damage / meaning-change distance
             sem = sr.get("damage_semantic_units")
-            sem_s = f"{sem:.2%}" if sem is not None else "—"
+            sem_s = f"{sem:.2%}" if sem is not None else "-"
             rows.append(
                 f"<tr><td>{name_cell}</td><td>{html.escape(var['reference'])}</td>"
                 f"<td>{html.escape(sr['stage'])}</td>"
@@ -733,8 +733,8 @@ def _decomposition_section(variants: list[dict[str, Any]]) -> str:
       - pure quant     = base_X vs base_bf16   (reference-variant result)
       - pure ablation  = V's primary run (vs base_X, via te_reference)
       - combined       = V's dual run (vs base_bf16, the __vs_base entry)
-    The three are DISTINCT measurements — a single run only ever produces
-    one of pure-ablation / combined, so missing counterparts render as "—".
+    The three are DISTINCT measurements - a single run only ever produces
+    one of pure-ablation / combined, so missing counterparts render as "-".
     """
     by_name = {v["name"]: v for v in variants}
     rows: list[str] = []
@@ -742,7 +742,7 @@ def _decomposition_section(variants: list[dict[str, Any]]) -> str:
         if _is_reference_variant(var) or var["name"].endswith("__vs_base"):
             continue
         # quant suffix from the variant name (e.g. heretic_int8 -> int8).
-        # LONGEST FIRST — "mxfp8" must precede "fp8" or heretic_mxfp8
+        # LONGEST FIRST - "mxfp8" must precede "fp8" or heretic_mxfp8
         # endswith("fp8") and resolves the wrong base (silent wrong table).
         # NOTE: keep in sync with variant naming conventions
         for suffix in (
@@ -769,7 +769,7 @@ def _decomposition_section(variants: list[dict[str, Any]]) -> str:
         if base_q is None:
             continue
 
-        # All three numbers must be measured on the SAME stream — pick the
+        # All three numbers must be measured on the SAME stream - pick the
         # first stream present in ALL participating artifacts.
         participants = [base_q, var] + (
             [by_name[f"{var['name']}__vs_base"]] if f"{var['name']}__vs_base" in by_name else []
@@ -794,7 +794,7 @@ def _decomposition_section(variants: list[dict[str, Any]]) -> str:
 
         pure_q = _dmg(base_q)
         # Pure ablation: this variant's primary run compared against base_X
-        # (matched by variant NAME — stable namespace, not filenames).
+        # (matched by variant NAME - stable namespace, not filenames).
         is_matched = var["reference"] == base_q["name"]
         pure_ab = _dmg(var) if is_matched else None
         # Combined: the dual run entry (variant vs global base)
@@ -804,7 +804,7 @@ def _decomposition_section(variants: list[dict[str, Any]]) -> str:
             continue
 
         def _cell(x: float | None) -> str:
-            return "—" if x is None else (f"{x:.2f}×" if x < 100 else f"{x:.0f}×")
+            return "-" if x is None else (f"{x:.2f}×" if x < 100 else f"{x:.0f}×")
 
         rows.append(
             f"<tr><td>{html.escape(_display(var['name']))}</td>"
@@ -813,7 +813,7 @@ def _decomposition_section(variants: list[dict[str, Any]]) -> str:
     if not rows:
         return ""
     return f"""
-<h2>Quantization vs abliteration decomposition</h2>
+<h2 id="sec-decomp">Quantization vs abliteration decomposition</h2>
 <p>Damage at the DiT input, in quant-floor units. Pure quant = base
 quantization vs BF16 base (1.0× by construction when the floor IS that
 file). Pure ablation = abliterated vs base at matched quant (isolates the
@@ -844,7 +844,7 @@ def _load_divergence(results_dir: Path) -> dict[str, dict[str, Any]]:
 def _gguf_qtype_mix(hist: dict[str, Any] | None) -> str:
     """Compact qtype-mix label, e.g. 'Q4_K + Q6_K' (F32 norms omitted)."""
     if not hist:
-        return "—"
+        return "-"
     quant = [(k, v) for k, v in hist.items() if k != "F32" and k != "F16"]
     quant.sort(key=lambda kv: -kv[1])
     if not quant:
@@ -853,7 +853,7 @@ def _gguf_qtype_mix(hist: dict[str, Any] | None) -> str:
 
 
 def _gguf_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str, Any]]) -> str:
-    """GGUF quantization ladder — damage vs bits-per-weight for GGUF containers.
+    """GGUF quantization ladder - damage vs bits-per-weight for GGUF containers.
 
     Rows are primary runs: base_gguf_* vs the global BF16 base, heretic_gguf_*
     vs their matched base_gguf_* (pure ablation at quant). bpw and the qtype
@@ -871,11 +871,11 @@ def _gguf_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str
         ci = sr.get("damage_quant_ci") if sr else None
         sem = sr.get("damage_semantic_units") if sr else None
         div = divergence.get(var["name"], {}).get("div_control_ratio")
-        dmg_txt = f"{dmg:.2f}×" if dmg is not None else "—"
+        dmg_txt = f"{dmg:.2f}×" if dmg is not None else "-"
         if dmg is not None and ci:
             dmg_txt += f' <span class="ci">[{ci[0]:.1f}, {ci[1]:.1f}]</span>'
-        sem_txt = f"{sem:.2%}" if sem is not None else "—"
-        div_txt = f"{div * 100:.1f}%" if div is not None else "—"
+        sem_txt = f"{sem:.2%}" if sem is not None else "-"
+        div_txt = f"{div * 100:.1f}%" if div is not None else "-"
         ref_cls = ' class="ref-var"' if _is_reference_variant(var) else ""
         # Heretic rows annotated with their matched-quant reference (span
         # appended AFTER escaping the name so the markup stays live)
@@ -896,15 +896,15 @@ def _gguf_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str
     rows_heretic.sort(key=lambda r: -r[0])
     blocks = []
     if rows_base:
-        blocks.append(_group_row("Base containers — pure GGUF quantization vs BF16 base", colspan=6))
+        blocks.append(_group_row("Base containers - pure GGUF quantization vs BF16 base", colspan=6))
         blocks.extend(r[1] for r in rows_base)
     if rows_heretic:
-        blocks.append(_group_row("Heretic containers — pure ablation at matched quant", colspan=6))
+        blocks.append(_group_row("Heretic containers - pure ablation at matched quant", colspan=6))
         blocks.extend(r[1] for r in rows_heretic)
     return f"""
-<h2>GGUF quantization ladder</h2>
+<h2 id="sec-gguf">GGUF quantization ladder</h2>
 <p>Damage for llama.cpp GGUF containers (ComfyUI-GGUF qwen3 path: vendored
-city96 block dequant, eager bf16 storage — same rounding ComfyUI's lazy
+city96 block dequant, eager bf16 storage - same rounding ComfyUI's lazy
 dequant applies at bf16 compute). base_gguf rows measure the pure container
 vs the BF16 safetensors base; heretic_gguf rows measure pure ablation at
 matched quant. bpw is measured from the file (storage bytes × 8 / params).
@@ -916,7 +916,7 @@ The rightmost column is the DiT's response vs the noise-control anchor.</p>
 
 
 def _directional_section(results_dir: Path) -> str:
-    """Directional analysis section — direction or noise?
+    """Directional analysis section - direction or noise?
 
     Reads te_directional_*.json (run_te_directional.sh). Reports the layer
     the DiT actually consumes (backend's consumed layer) plus the peak-z
@@ -954,7 +954,7 @@ def _directional_section(results_dir: Path) -> str:
     if not rows:
         return ""
     return f"""
-<h2>Directional analysis — is the abliteration delta a direction or noise?</h2>
+<h2 id="sec-directional">Directional analysis: is the abliteration delta a direction or noise?</h2>
 <p>The mechanistic claim behind abliteration is that the edit maps taboo
 representations toward benign ones. For each variant (vs its matched-quant
 reference), the per-layer ablation delta Δ is compared to the BASE model's
@@ -962,7 +962,7 @@ taboo direction d (mean(taboo) − mean(innocent), unit): cos(Δ, d) with a
 prompt-permutation z-score, the fraction of Δ energy orthogonal to d, and
 the signed movement of taboo prompts toward the innocent centroid.
 <b>Read:</b> small |cos| with ~99% orthogonal energy and |z<sub>TI</sub>| ≲ 3
-means the delta is NOT a taboo→harmless mapping — it is mostly
+means the delta is NOT a taboo→harmless mapping - it is mostly
 geometry-preserving noise concentrated on taboo prompts.</p>
 <table>
 <tr><th>Variant</th><th>DiT layer</th><th>cos(Δ, d) @ DiT layer</th><th>Orthogonal energy</th><th>Toward-innocent</th><th>Peak-z layer</th><th>cos @ peak</th></tr>
@@ -975,7 +975,7 @@ def _ab_embed_image(local: Path, max_px: int = 768, quality: int = 80) -> str | 
 
     The on-disk originals are quality-100 webp (~500KB each); embedding 27+
     of those base64 would make the report ~20MB. Re-encode at 768px/q80 for
-    the interactive gallery (~10x smaller) — originals stay on disk and are
+    the interactive gallery (~10x smaller) - originals stay on disk and are
     referenced by path in the manifest/DB.
     """
     try:
@@ -991,17 +991,17 @@ def _ab_embed_image(local: Path, max_px: int = 768, quality: int = 80) -> str | 
         buf = BytesIO()
         img.save(buf, "WEBP", quality=quality)
         return base64.b64encode(buf.getvalue()).decode()
-    except Exception as exc:  # noqa: BLE001 — gallery must not kill the report
+    except Exception as exc:  # noqa: BLE001 - gallery must not kill the report
         log.warning("Failed to embed %s: %s", local, exc)
         return None
 
 
 def _ab_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str, Any]], results_dir: Path) -> str:
-    """A/B image evidence — interactive JS comparison slider + timing.
+    """A/B image evidence - interactive JS comparison slider + timing.
 
     Reads ab_images/manifest.json (written by run_ab_test.py; also imported
     into the te_ab_images DB table). Warm-pass images are embedded (cold is
-    byte-identical — fixed seed). The interactive comparator lets the reader
+    byte-identical - fixed seed). The interactive comparator lets the reader
     pick any two variants per prompt and hover-reveal between them.
     """
     manifest_path = results_dir / "ab_images" / "manifest.json"
@@ -1014,7 +1014,7 @@ def _ab_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str, 
         return ""
 
     by_name = {v["name"]: v for v in variants}
-    # label -> variant -> img record (warm pass preferred — later in list)
+    # label -> variant -> img record (warm pass preferred - later in list)
     images: dict[str, dict[str, dict[str, Any]]] = {}
     for img in manifest.get("images", []):
         label = img.get("label") or "unlabeled"
@@ -1098,7 +1098,7 @@ delta is the practical cost of a TE swap in a running session.</p>
         f'<span class="ab-seed">seed {manifest.get("seed", "?")}</span>' if manifest.get("seed") is not None else ""
     )
     return f"""
-<h2>A/B image evidence — same seed, only the text encoder swapped {seed_badge}</h2>
+<h2 id="sec-ab">A/B image evidence: same seed, only the text encoder swapped {seed_badge}</h2>
 <p>Paired generations from the fixed seed {manifest.get("seed", "?")} through the
 real ComfyUI stack (Z-Image Turbo, 9 steps, cfg 1, euler/simple). Pick two
 variants and hover over the image to reveal: <b>left of the divider = variant
@@ -1231,14 +1231,14 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
         gguf_ct = sum(1 for n in disconnect_names if "_gguf_" in n)
         findings.append(
             f"<b>CKA/MSE disconnect</b>: {len(disconnect)} variants (incl. {gguf_ct} GGUF) exceed "
-            f"50× quant-floor MSE damage at the DiT input while CKA stays ≥ 0.98 — worst: "
+            f"50× quant-floor MSE damage at the DiT input while CKA stays ≥ 0.98 - worst: "
             f"<b>{html.escape(_display(worst[0]))}</b> at {worst[1]:.0f}× damage with CKA {worst[2]:.4f}. "
             "The perturbation destroys magnitude alignment but preserves representational "
-            "geometry — consistent with the DiT's weak response to it."
+            "geometry - consistent with the DiT's weak response to it."
         )
 
     # GGUF variants are aggregated into summary lines (16 individual bullets
-    # would drown the findings list) — full detail in the GGUF ladder section.
+    # would drown the findings list) - full detail in the GGUF ladder section.
     gguf_vars = [v for v in variants if v.get("gguf") and not v["name"].endswith("__vs_base")]
     gguf_names = {v["name"] for v in gguf_vars}
     if gguf_vars:
@@ -1256,7 +1256,7 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
             findings.append(
                 f"<b>GGUF ladder (base containers, {len(measured)} rungs)</b>: pure-container DiT-input damage "
                 f"spans <b>{best_rung[1]:.2f}×</b> (bpw {max(lo_bpws):.1f}) to <b>{worst_rung[1]:.0f}×</b> "
-                f"(bpw {worst_rung[0]:.1f}) quant floor — the full ladder is in the GGUF section below."
+                f"(bpw {worst_rung[0]:.1f}) quant floor - the full ladder is in the GGUF section below."
             )
         heretic_ab = [
             v["streams"].get("refined_context", {}).get("damage_quant_units")
@@ -1268,13 +1268,13 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
             findings.append(
                 f"<b>GGUF × heretic</b>: pure-ablation damage at matched quant spans "
                 f"<b>{min(heretic_ab):.1f}×–{max(heretic_ab):.1f}×</b> quant floor across the {len(heretic_ab)} "
-                f"rungs — decomposition table + ladder graph show the quant/abliteration interaction."
+                f"rungs - decomposition table + ladder graph show the quant/abliteration interaction."
             )
 
     for var in variants:
         if var["name"] in gguf_names:
             continue  # aggregated above
-        # Dual-run combined entries are surfaced in the decomposition table —
+        # Dual-run combined entries are surfaced in the decomposition table -
         # skip here to avoid duplicating the primary variant's findings.
         if var["name"].endswith("__vs_base"):
             continue
@@ -1285,7 +1285,7 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
             if dmg_val is not None:
                 findings.append(
                     f"<b>{html.escape(_display(var['name']))}</b> (pure quantization): DiT-input damage "
-                    f"{dmg_val:.2f}× quant floor — the reference damage level for its quant format."
+                    f"{dmg_val:.2f}× quant floor - the reference damage level for its quant format."
                 )
             continue
         # Peak layer damage
@@ -1302,7 +1302,7 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
                 findings.append(
                     f"<b>{html.escape(_display(var['name']))}</b>: peak damage {peak[2]:.1f}× quant floor at "
                     f"layer {peak[0]}; the DiT reads layer {consumed}, where damage is "
-                    f"{at_consumed[2]:.2f}× — a <b>{filt:.0f}× lower-damage</b> layer than the encoder's peak."
+                    f"{at_consumed[2]:.2f}× - a <b>{filt:.0f}× lower-damage</b> layer than the encoder's peak."
                 )
         # DiT-input damage + taboo ratio
         sr = var["streams"].get("refined_context") or var["streams"].get("cap_embedded")
@@ -1321,16 +1321,16 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
 
 
 def _divergence_section(divergence_data: dict[str, dict[str, Any]]) -> str:
-    """DiT-step divergence section — does the DiT respond to the perturbation?
+    """DiT-step divergence section - does the DiT respond to the perturbation?
 
     Rows come from the te_dit_divergence_*.json summaries (written by
-    run_dit_divergence, preloaded by _load_divergence) — final-latent
+    run_dit_divergence, preloaded by _load_divergence) - final-latent
     divergence per variant against the noise-control anchor
     ("completely different image" level).
     """
     rows: list[str] = []
     current_group: tuple[int, str] | None = None
-    # Group-ordered iteration (family × container × quant tier) — plain
+    # Group-ordered iteration (family × container × quant tier) - plain
     # alphabetical would flip-flop the group headers (base_gguf_* sorts
     # between base_fp8 and base_int4).
     entries = sorted(
@@ -1358,11 +1358,11 @@ def _divergence_section(divergence_data: dict[str, dict[str, Any]]) -> str:
     if not rows:
         return ""
     return f"""
-<h2>DiT-step divergence — does the diffusion model respond?</h2>
+<h2 id="sec-divergence">DiT-step divergence: does the diffusion model respond?</h2>
 <p>Paired flow-matching trajectories from <b>identical noise</b> (seed 42,
 20 Euler steps, 1024px latents), one with base conditioning and one with the
 variant's. Divergence is the final-latent relative difference; the
-<b>noise-control anchor</b> is the same conditioning with a different seed —
+<b>noise-control anchor</b> is the same conditioning with a different seed -
 the "completely different image" level. A variant at ~1% of the anchor means
 the DiT's output is ~100x closer to the base image than to a different
 image.</p>
@@ -1388,21 +1388,72 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
         )
     }
     embedded = "".join(
-        f'<figure><img src="{_svg_data_uri(p)}" alt="{name}"/><figcaption>{cap}</figcaption></figure>'
-        for name, p, cap in (
-            ("layer_profile", svgs["layer_profile"], "Where the damage lands vs where the DiT reads"),
+        f'<figure id="fig-{name}"><img src="{_svg_data_uri(p)}" alt="{name}"/>'
+        f"<figcaption><b>{cap}</b><br/><span class='fig-note'>{note}</span></figcaption></figure>"
+        for name, p, cap, note in (
+            (
+                "layer_profile",
+                svgs["layer_profile"],
+                "Where the damage lands vs where the DiT reads",
+                "Each line is one variant's per-layer MSE vs the base model (log y-axis). "
+                "Grey dashed lines are pure base quantizations (the noise floor every variant "
+                "must be compared against); colored lines are abliterated variants. The green "
+                "vertical line marks layer 34, the layer Z-Image actually reads. Abliteration "
+                "damage concentrates in late layers (30+), while the consumed layer stays near "
+                "the quantization floor.",
+            ),
             (
                 "damage_ranking",
                 svgs["damage_ranking"],
                 "Transmitted damage at the DiT input, grouped by family (log scale)",
+                "One bar per variant: MSE damage at the DiT input, expressed in units of one "
+                "int8 quantization step of the base model (log x-axis). The red dashed line at "
+                "1.0 marks the perturbation a known-good int8 compression introduces: bars left "
+                "of it are indistinguishable from ordinary quantization, bars right of it are "
+                "larger than a normal compression costs.",
             ),
-            ("category_gradient", svgs["category_gradient"], "Taboo-concentration — base quants vs abliterated panels"),
-            ("layer_heatmap", svgs["layer_heatmap"], "Full per-layer damage map"),
-            ("gguf_ladder", svgs["gguf_ladder"], "GGUF quantization ladder (damage vs bits-per-weight)"),
+            (
+                "category_gradient",
+                svgs["category_gradient"],
+                "Taboo-concentration: base quants vs abliterated panels",
+                "MSE damage split by prompt category (log y-axis), same scale both panels. "
+                "Left panel (pure base quants) is roughly flat: quantization is content-blind. "
+                "Right panel (abliterated variants) slopes upward toward violent/sexual/extreme "
+                "prompts: the abliteration edit concentrates damage where the refusal direction "
+                "lives instead of perturbing all content equally.",
+            ),
+            (
+                "layer_heatmap",
+                svgs["layer_heatmap"],
+                "Full per-layer damage map (log10 MSE)",
+                "Each cell is log10 of the MSE between that variant's layer activation "
+                "(mean-pooled per prompt) and the base model's. Every +1 on the color scale "
+                "means 10x more damage: black cells (about -6) are numerically identical, "
+                "yellow (about +2) is a large squared error. The bright column at layer 35 in "
+                "the heretic rows is the abliteration edit itself, which targets the final "
+                "layers; the DiT reads layer 34, one row of blocks to the left of the bright "
+                "band, which stays dark.",
+            ),
+            (
+                "gguf_ladder",
+                svgs["gguf_ladder"],
+                "GGUF quantization ladder (damage vs bits-per-weight)",
+                "DiT-input damage vs compression, log y-axis. Grey circles: base GGUF "
+                "containers measured against the BF16 base (the pure cost of that quant). "
+                "Red squares: heretic containers measured against the BF16 base (quant plus "
+                "abliteration combined). Open diamonds: safetensors quants at their nominal "
+                "bits-per-weight for cross-format comparison. The red line at 1.0 is one int8 "
+                "quantization step.",
+            ),
             (
                 "divergence_steps",
                 svgs["divergence_steps"],
-                "Per-step latent divergence — compounding vs plateau (log scale)",
+                "Per-step latent divergence: compounding vs plateau (log scale)",
+                "Mean latent divergence from the base trajectory at each Euler step, averaged "
+                "over prompts (log y-axis). Rising curves mean conditioning differences "
+                "accumulate as sampling proceeds. The green dashed line is the anchor: how far "
+                "the final latent moves when only the SEED changes (a completely different "
+                "image). Every variant stays 50-100x below it for the whole trajectory.",
             ),
         )
         if p.exists()
@@ -1419,8 +1470,8 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
         "<br/><b>GGUF methodology.</b> llama.cpp containers are loaded through ComfyUI-GGUF's "
         "qwen3 path (city96 block dequantization, Apache-2.0, vendored verbatim; ordered "
         "LLAMA_SD_MAP name remap; no llama_permute for qwen3; token-embedding fp16 detour for "
-        "large vocabularies). Weights are eagerly dequantized to bf16 storage — the same "
-        "fp16-scale-to-bf16 rounding ComfyUI's lazy dequant applies at bf16 compute — then "
+        "large vocabularies). Weights are eagerly dequantized to bf16 storage - the same "
+        "fp16-scale-to-bf16 rounding ComfyUI's lazy dequant applies at bf16 compute - then "
         "analyzed with fp32 model compute like every other variant."
         if has_gguf
         else ""
@@ -1486,28 +1537,83 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
  .findings li {{ margin: 10px 0; line-height: 1.5; }}
  .foot {{ margin-top: 48px; padding: 16px; background: #eef2f7; border-radius: 8px;
          font-size: 12.5px; color: #444; line-height: 1.6; }}
+ .toc {{ background: white; border: 1px solid #d5dde9; border-radius: 10px; padding: 12px 20px;
+        margin: 20px 0; font-size: 14px; }}
+ .toc b {{ color: #2c3e66; }}
+ .toc ol {{ margin: 8px 0 2px 0; columns: 2; column-gap: 32px; }}
+ .toc li {{ margin: 3px 0; }}
+ .toc a {{ color: #4c72b0; text-decoration: none; }}
+ .toc a:hover {{ text-decoration: underline; }}
+ .explainer {{ background: #f6f8fb; border-left: 4px solid #4c72b0; border-radius: 0 8px 8px 0;
+              padding: 10px 14px; font-size: 13px; color: #333; line-height: 1.6; }}
+ .glossary {{ margin: 10px 0 16px 0; font-size: 13px; }}
+ .glossary summary {{ cursor: pointer; color: #4c72b0; font-weight: 600; }}
+ .glossary dt {{ font-weight: bold; font-family: monospace; color: #2c3e66; margin-top: 8px; }}
+ .glossary dd {{ margin: 2px 0 0 0; color: #444; line-height: 1.55; }}
+ .fig-note {{ font-size: 11.5px; color: #777; line-height: 1.55; font-weight: normal; }}
+ h2 {{ scroll-margin-top: 16px; }}
 </style></head><body>
 <h1>Text-Encoder Conditioning Fidelity Report</h1>
 <p class="meta">Backend: <b>{html.escape(backend)}</b> · Variants: {len(variants)} ·
 Results: {html.escape(str(results_dir))} · te_results_version: {TE_RESULTS_VERSION}</p>
 
-<h2>Key findings</h2>
-<ol class="findings">{findings}</ol>
-{decomposition}
+<nav class="toc">
+<b>Contents</b>
+<ol>
+<li><a href="#sec-ab">A/B image evidence (interactive)</a></li>
+<li><a href="#sec-gguf">GGUF quantization ladder</a></li>
+<li><a href="#sec-decomp">Quantization vs abliteration decomposition</a></li>
+<li><a href="#sec-directional">Directional analysis</a></li>
+<li><a href="#sec-divergence">DiT-step divergence</a></li>
+<li><a href="#sec-damage">Pipeline damage table</a></li>
+<li><a href="#sec-visuals">Visualizations</a></li>
+<li><a href="#sec-summary">Summary of findings</a></li>
+<li><a href="#sec-methodology">Methodology</a></li>
+</ol>
+</nav>
+
+{ab_section}
 {gguf_section}
+{decomposition}
 {directional}
 {divergence}
-{ab_section}
-<h2>Pipeline damage table</h2>
+<h2 id="sec-damage">Pipeline damage table</h2>
+<p class="explainer">What this measures: for every variant, the table compares its conditioning
+tensors against the reference model's at each pipeline stage. <b>CKA (linear)</b> asks whether
+the representational geometry is preserved (1.0 = same structure, insensitive to magnitude
+changes). <b>Cos (all)</b> is the mean cosine similarity between paired per-prompt vectors
+(1.0 = same direction). <b>MSE</b> is the raw mean squared difference. <b>Damage (quant
+units)</b> re-expresses that MSE in units of one int8 quantization step of the base model, so
+numbers are comparable across stages and formats; <b>Dmg (semantic)</b> expresses it as a
+fraction of a full meaning-change (defined under Methodology).</p>
+<details class="glossary"><summary>Stream and stage names (click to expand)</summary>
+<dl>
+<dt>layer_00 ... layer_35 <dd>stage <code>raw_hidden</code>: the mean-pooled hidden state of
+that text-encoder layer. These rows build the per-layer damage profile.</dd></dt>
+<dt>consumed_hidden <dd>stage <code>raw_hidden</code>: the full token-sequence output of layer
+34 (second-to-last of 36 layers, index -2), the exact tensor Z-Image's conditioning pipeline
+consumes. Not pooled: every token position counts.</dd></dt>
+<dt>cap_embedded <dd>stage <code>projected</code>: consumed_hidden after the DiT checkpoint's
+cap_embedder (RMSNorm plus a 2560 to 3840 linear projection). The first tensor inside the
+diffusion model's own coordinate space.</dd></dt>
+<dt>refined_context <dd>stage <code>connector_out</code>: after the DiT's context_refiner (two
+transformer blocks, with ComfyUI's pad-to-32 applied). This is the tensor that enters
+cross-attention: literally what the DiT sees, and the headline stream for damage.</dd></dt>
+</dl>
+</details>
 <table>
 <tr><th>Variant</th><th>vs reference</th><th>Stage</th><th>Stream</th><th>CKA (linear)</th><th>Cos (all)</th><th>MSE</th><th>Damage (quant units)</th><th>Dmg (semantic)</th></tr>
 {_table_rows(variants)}
 </table>
 
-<h2>Visualizations</h2>
+<h2 id="sec-visuals">Visualizations</h2>
 {embedded}
 
-<div class="foot">
+<h2 id="sec-summary">Summary of findings</h2>
+<ol class="findings">{findings}</ol>
+
+<div class="foot" id="sec-methodology">
+<b>Methodology.</b>
 <b>Methodology.</b> Conditioning tensors are captured with ComfyUI's own model classes at three
 pipeline stages (raw hidden states → projection → connector/refiner). Fidelity is measured by
 CKA (representational similarity) and MSE; the headline number expresses MSE damage in units of
@@ -1516,14 +1622,14 @@ a known-good compression would introduce). Prompt suite is stratified
 (innocent / mild / violent / sexual / extreme / multilingual). Pad positions are excluded.
 <br/><b>Semantic unit definition.</b> "One meaning-change" is the mean squared
 distance between the mean-pooled conditioning of <i>distinct prompts from the
-base model</i> — all C(n,2) pairs of the 60-prompt suite (1,770 pairs;
+base model</i> - all C(n,2) pairs of the 60-prompt suite (1,770 pairs;
 uniform subsample at ≤4,000, seed-fixed). It is therefore an <i>intra-suite
 content-change</i> scale: how far conditioning moves when the described
 scene changes entirely, under the same tokenizer/encoder. It is NOT
 synonym/antonym-calibrated and not cross-encoder; a variant at 1% of a
 meaning-change means its perturbation is 100× smaller than swapping the
 prompt for an unrelated one.{gguf_method}
-<br/><b>Scope.</b> This measures conditioning <i>perturbation</i> — how much the modified text
+<br/><b>Scope.</b> This measures conditioning <i>perturbation</i> - how much the modified text
 encoder shifts what the DiT sees. It does not measure uncensoring efficacy in either direction.
 </div>
 </body></html>"""

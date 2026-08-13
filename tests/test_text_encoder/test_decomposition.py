@@ -59,28 +59,28 @@ class TestDecomposition:
         assert "heretic_int8" in html_out
 
     def test_combined_not_duplicated_when_no_dual_run(self) -> None:
-        """Without the __vs_base entry, combined must be missing (—), not a copy."""
+        """Without the __vs_base entry, combined must be missing (-), not a copy."""
         variants = [
             _variant("base_int8", "qwen_3_4b.safetensors", 0.99),
             _variant("heretic_int8", "base_int8", 0.42),
         ]
         html_out = _decomposition_section(variants)
         assert "0.42" in html_out  # pure ablation
-        # combined cell is "—" — 0.42 must NOT appear twice as combined
+        # combined cell is "-" - 0.42 must NOT appear twice as combined
         cells = [ln for ln in html_out.splitlines() if "heretic_int8</td>" in ln]
         assert len(cells) == 1
         row = cells[0]
         assert row.count("0.42") == 1  # appears once (pure ablation), not as combined
 
     def test_unmatched_reference_no_pure_ablation(self) -> None:
-        """Fallback run (reference = global base) -> pure ablation is —."""
+        """Fallback run (reference = global base) -> pure ablation is -."""
         variants = [
             _variant("base_int8", "qwen_3_4b.safetensors", 0.99),
             _variant("heretic_int8", "qwen_3_4b.safetensors", 1.30),  # fallback combined
         ]
         html_out = _decomposition_section(variants)
         row = [ln for ln in html_out.splitlines() if "heretic_int8</td>" in ln][0]
-        assert "—" in row  # pure ablation missing
+        assert "-" in row  # pure ablation missing
 
     def test_no_base_quant_no_section(self) -> None:
         variants = [_variant("heretic_int8", "qwen_3_4b.safetensors", 1.30)]
