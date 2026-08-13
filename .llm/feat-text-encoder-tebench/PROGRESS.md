@@ -106,3 +106,27 @@
   ladder 'vs' annotation double-escaped into visible text (user-reported).
 - 190 tests, ruff+mypy --strict clean. Lesson #28b bit again (backgrounded runner died
   at 7/16 — foreground rerun; skip-gates + cache made it cheap).
+
+## R2/R3 session (2026-08-13, commits 10f5d96 57d1e69 68131ed)
+- R1 grouping committed (10f5d96): 5-group family×container×quant ordering across
+  damage/divergence/ladder tables; damage_ranking + category_gradient graphs
+  redesigned (DiT-input-only log bars, two-panel base/heretic); heatmap grouped;
+  layer profile filtered to safetensors. User manually reviewed (sub-agents skipped).
+- R2a directional (57d1e69): directional.py + te-directional CLI. RESULT: heretic edit
+  touches taboo axis (cos ~ -0.15, z 50-134) but 97-99% orthogonal energy, no
+  toward-innocent movement — NOT a taboo→harmless mapping. 14 matched-quant pairs.
+- R2b/c (57d1e69): per-step divergence curves SVG; semantic-unit definition documented
+  (1770 distinct-prompt pairs); CKA/MSE-disconnect auto-finding.
+- R3 A/B (57d1e69 + 68131ed): run_ab_test.py vs live ComfyUI (host.docker.internal:8191,
+  Z-Image Turbo). User-supplied workflows moved to comparisons/te-zimage/workflows/
+  (safetensors node 35, GGUF node 38 — auto-dispatched). Stress prompts researched:
+  'ABLITERLITICS' chrome graffiti scene w/ countable elements + spray-can label.
+  Live bugs fixed: prompt_id polling hang (ComfyUI assigns its own), /view subfolder
+  404, const redeclaration. Perf: server_gen_ms, queue_number, cached_nodes, te_cached
+  (true cold/warm). 112 images (28 TEs × 2 prompts × 2 passes, ~9 min, fixed seed 42,
+  cold==warm byte-identical). GGUF cold +4-6s vs safetensors; warm 4s flat.
+- JS comparator (68131ed): dropdown prompt/A/B + swap, hover clip-path reveal, metric
+  captions per side, timing table. Images re-encoded 768px/q80 (report 6.9MB).
+  DB: te_ab_images 332 rows (paths+timing only, no blobs). node --check clean.
+- Remaining: full-matrix re-runs not needed (all cached/cheap); next comparison
+  could extend A/B to more seeds/prompts; publish writeup (HF full + Reddit condensed).
