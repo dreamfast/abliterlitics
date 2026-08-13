@@ -970,13 +970,21 @@ geometry-preserving noise concentrated on taboo prompts.</p>
 </table>"""
 
 
-def _ab_embed_image(local: Path, max_px: int = 768, quality: int = 80) -> str | None:
-    """Re-encode an A/B image for embedding (webp, capped size).
+def _ab_image_src(
+    local: Path,
+    split_dir: Path | None = None,
+    rel_name: str = "",
+    max_px: int = 768,
+    quality: int = 80,
+) -> str | None:
+    """Gallery image source: base64 data URI, or a sibling file when splitting.
 
-    The on-disk originals are quality-100 webp (~500KB each); embedding 27+
-    of those base64 would make the report ~20MB. Re-encode at 768px/q80 for
-    the interactive gallery (~10x smaller) - originals stay on disk and are
-    referenced by path in the manifest/DB.
+    The on-disk originals are quality-100 webp (~500KB each); embedding all
+    of those base64 makes the report huge. Re-encode at 768px/q80 for the
+    interactive gallery (~10x smaller). In split mode the re-encoded file is
+    written under ``split_dir`` (e.g. graphs/ab_images/<label>/<variant>.webp)
+    and a RELATIVE path is returned, so the report + folder travel together
+    and each image caches independently on a CDN.
     """
     try:
         from io import BytesIO
@@ -990,13 +998,26 @@ def _ab_embed_image(local: Path, max_px: int = 768, quality: int = 80) -> str | 
             img.thumbnail((max_px, max_px), Image.LANCZOS)  # type: ignore[attr-defined]
         buf = BytesIO()
         img.save(buf, "WEBP", quality=quality)
-        return base64.b64encode(buf.getvalue()).decode()
+        data = buf.getvalue()
+        if split_dir is not None and rel_name:
+            out = split_dir / rel_name
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(data)
+            # Relative to the HTML file (graphs/): ab_images/<label>/<variant>.webp
+            return f"ab_images/{rel_name}"
+        return "data:image/webp;base64," + base64.b64encode(data).decode()
     except Exception as exc:  # noqa: BLE001 - gallery must not kill the report
         log.warning("Failed to embed %s: %s", local, exc)
         return None
 
 
-def _ab_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str, Any]], results_dir: Path) -> str:
+def _ab_section(
+    variants: list[dict[str, Any]],
+    divergence: dict[str, dict[str, Any]],
+    results_dir: Path,
+    split_images: bool = False,
+    graphs_dir: Path | None = None,
+) -> str:
     """A/B image evidence - interactive JS comparison slider + timing.
 
     Reads ab_images/manifest.json (written by run_ab_test.py; also imported
@@ -1037,10 +1058,14 @@ def _ab_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str, 
             local = results_dir / "ab_images" / var_name / pth.name
             if not pth.name or not local.exists():
                 continue
-            b64 = _ab_embed_image(local)
-            if b64 is None:
+            src = _ab_image_src(
+                local,
+                split_dir=(graphs_dir / "ab_images") if (split_images and graphs_dir) else None,
+                rel_name=f"{label}/{var_name}.webp",
+            )
+            if src is None:
                 continue
-            img_data[label][var_name] = f"data:image/webp;base64,{b64}"
+            img_data[label][var_name] = src
             cap_data[label][var_name] = _ab_caption_html(var_name, img, by_name, manifest, divergence)
             all_variants.add(var_name)
 
@@ -1097,8 +1122,15 @@ delta is the practical cost of a TE swap in a running session.</p>
     seed_badge = (
         f'<span class="ab-seed">seed {manifest.get("seed", "?")}</span>' if manifest.get("seed") is not None else ""
     )
+    split_note = (
+        "<p class='meta'>This report references images in the sibling "
+        "<code>ab_images/</code> folder - keep them together when hosting.</p>"
+        if split_images
+        else ""
+    )
     return f"""
 <h2 id="sec-ab">A/B image evidence: same seed, only the text encoder swapped {seed_badge}</h2>
+{split_note}
 <p>Paired generations from the fixed seed {manifest.get("seed", "?")} through the
 real ComfyUI stack (Z-Image Turbo, 9 steps, cfg 1, euler/simple). Pick two
 variants and hover over the image to reveal: <b>left of the divider = variant
@@ -1372,7 +1404,7 @@ image.</p>
 </table>"""
 
 
-def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) -> None:
+def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path, split_images: bool = False) -> None:
     backend = variants[0]["backend"]
     floor_label = variants[0].get("floor", "fakequant_int8")
     graphs_dir = out.parent
@@ -1463,7 +1495,7 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
     divergence_data = _load_divergence(results_dir)
     divergence = _divergence_section(divergence_data)
     gguf_section = _gguf_section(variants, divergence_data)
-    ab_section = _ab_section(variants, divergence_data, results_dir)
+    ab_section = _ab_section(variants, divergence_data, results_dir, split_images=split_images, graphs_dir=out.parent)
     directional = _directional_section(results_dir)
     has_gguf = any(v.get("gguf") for v in variants)
     gguf_method = (
@@ -1649,6 +1681,12 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Generate TE graphs + HTML report")
     p.add_argument("--results-dir", required=True, help="Directory containing te_*.json")
     p.add_argument("--output-dir", required=True, help="Directory for graphs + te_report.html")
+    p.add_argument(
+        "--split-images",
+        action="store_true",
+        help="Write A/B gallery images to <output-dir>/ab_images/ with relative paths "
+        "(instead of base64-embedding them) - keeps the HTML small for large A/B matrices",
+    )
     args = p.parse_args()
 
     results_dir = Path(args.results_dir)
@@ -1663,7 +1701,7 @@ def main() -> None:
     graph_layer_heatmap(variants, out_dir / "te_layer_heatmap.svg")
     graph_gguf_ladder(variants, out_dir / "te_gguf_ladder.svg")
     graph_divergence_steps(_load_divergence_steps(results_dir), out_dir / "te_divergence_steps.svg")
-    generate_html(variants, results_dir, out_dir / "te_report.html")
+    generate_html(variants, results_dir, out_dir / "te_report.html", split_images=args.split_images)
     log.info("Report generation complete")
 
 

@@ -130,7 +130,12 @@ cmd_text_encoder() {
 }
 
 cmd_te_report() {
-    bash "${RUNNERS_DIR}/run_te_report.sh" "${1:-.}"
+    # Pass ALL args (flags like --split-images + the comparison dir); drop
+    # the leading global-flag slot when present (same shape as siblings).
+    if [[ "${1:-}" == --* ]]; then
+        shift
+    fi
+    bash "${RUNNERS_DIR}/run_te_report.sh" "$@"
 }
 
 cmd_te_divergence() {
@@ -352,7 +357,7 @@ case "$COMMAND" in
     harmbench) cmd_harmbench "$COMMAND" "$@" ;;
     text-encoder) cmd_text_encoder "$COMMAND" "$@" ;;
     te)           cmd_text_encoder "$COMMAND" "$@" ;;
-    te-report)    cmd_te_report "${1:-.}" ;;
+    te-report)    cmd_te_report "$@" ;;
     te-divergence) cmd_te_divergence "$COMMAND" "$@" ;;
     te-directional) cmd_te_directional "$COMMAND" "$@" ;;
     graphs)    cmd_graphs "${1:-.}" ;;
