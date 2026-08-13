@@ -56,6 +56,7 @@ def _encode_and_cache(
     cache_dir: Path,
     transform: str,
     fake_quant: str | None = None,
+    cache_context: str = "",
 ) -> list[Any]:
     """Encode one model with all stages, using the disk cache.
 
@@ -70,12 +71,14 @@ def _encode_and_cache(
     from src.text_encoder.suite import suite_hash
 
     p_hash = suite_hash(prompts, categories)
-    stage_list = ["raw_hidden", "projected", "connector_out"]
+    # Derive produced stages from the backend's declared streams (reviewer:
+    # hardcoding connector_out defeats the cache for ltx2 which doesn't make it)
+    stage_list = sorted({s.stage.value for s in get_backend(backend_name).streams})
 
     # Check cache for all stages first
     cached_artifacts: list[ConditioningArtifact] = []
     for stage in stage_list:
-        key = cache_key(str(te_file), p_hash, WILDCARD_DTYPE, device, stage, transform)
+        key = cache_key(str(te_file), p_hash, WILDCARD_DTYPE, device, stage, transform, context=cache_context)
         art = load_artifact(cache_dir, key)
         if art is None:
             cached_artifacts = []
@@ -95,8 +98,12 @@ def _encode_and_cache(
     finally:
         backend.close()
 
+    # Canonicalize stage order (cache loads alphabetical, encode returns
+    # pipeline order — zip alignment depends on a consistent sort).
+    artifacts = sorted(artifacts, key=lambda a: a.stage.value)
     for art in artifacts:
         art.meta["transform"] = transform
+        art.meta["cache_context"] = cache_context
         save_artifact(art, cache_dir)
     return artifacts
 
@@ -117,6 +124,9 @@ def main() -> int:
     cache_dir = Path(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
+    # Cache invalidation scope: backend + DiT file (conditioning source)
+    cache_ctx = f"{args.backend}:{Path(args.dit).name}"
+
     # --- Encode base ---
     log.info("=== Encoding BASE: %s ===", Path(args.base).name)
     base_artifacts = _encode_and_cache(
@@ -129,6 +139,7 @@ def main() -> int:
         args.device,
         cache_dir,
         "orig",
+        cache_context=cache_ctx,
     )
 
     # --- Encode fake-quantized base (noise floor) ---
@@ -144,6 +155,7 @@ def main() -> int:
         cache_dir,
         "fakequant_int8",
         fake_quant="int8",
+        cache_context=cache_ctx,
     )
 
     # --- Encode variant ---
@@ -158,6 +170,7 @@ def main() -> int:
         args.device,
         cache_dir,
         "orig",
+        cache_context=cache_ctx,
     )
 
     # --- Compare per stage ---

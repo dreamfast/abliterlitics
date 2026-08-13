@@ -21,6 +21,7 @@ count, which misaligns for batches of differing prompt lengths.
 
 from __future__ import annotations
 
+import gc
 import logging
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,8 @@ class LTX2Backend(BaseBackend):
         self.model: Any = None
         self.tokenizer: Any = None
         self._te_sd: dict[str, torch.Tensor] | None = None
+        self._te_dtype_probe: torch.dtype | None = None
+        self._quantized = False
         self._device = "cpu"
         self.ckpt_id: str = ""
 
@@ -113,12 +116,17 @@ class LTX2Backend(BaseBackend):
         self.ckpt_id = str(ckpt)
         self._device = device
         self._te_sd = comfyui_loader.load_te_state_dict(ckpt)
+        import comfy.text_encoders.hunyuan_video as hv
+
+        self._quantized = bool(hv.llama_detect(self._te_sd).get("llama_quantization_metadata"))
         dit_proj_sd = comfyui_loader.load_dit_projection_sd(dit_file)
 
-        self.model = comfyui_loader.create_ltx2_model(self._te_sd, dit_proj_sd, device=device)
+        # Tokenizer needs the embedded spiece_model BEFORE we free the dict.
         self.tokenizer = comfyui_loader.create_ltx2_tokenizer(self._te_sd)
-        # Keep the TE sd for the tokenizer reference but free the bulk:
-        # the spiece_model tensor is small; backbone tensors are consumed by load_sd.
+        norm_w = self._te_sd.get("model.norm.weight")
+        self._te_dtype_probe = norm_w.dtype if norm_w is not None else None
+        self.model = comfyui_loader.create_ltx2_model(self._te_sd, dit_proj_sd, device=device)
+        self._te_sd = None  # free the multi-GB state dict
         log.info("LTX2Backend loaded: %s (device=%s)", Path(ckpt).name, device)
 
     def tokenize(self, prompts: list[str]) -> dict[str, Any]:
@@ -270,12 +278,9 @@ class LTX2Backend(BaseBackend):
         prompts: list[str],
         categories: list[str],
     ) -> ConditioningArtifact:
-        dtype_str = "comfy_int8_convrot"
-        if self._te_sd is not None:
-            # Best-effort dtype label from the file
-            sample = self._te_sd.get("model.norm.weight")
-            if sample is not None and sample.dtype == torch.bfloat16:
-                dtype_str = "comfy_bf16"
+        dtype_str = "comfy_bf16"
+        if self._quantized:
+            dtype_str = "comfy_int8_convrot"
         return ConditioningArtifact(
             model="ltx2",
             backend="LTX2Backend",
@@ -299,7 +304,5 @@ class LTX2Backend(BaseBackend):
         self.model = None
         self.tokenizer = None
         self._te_sd = None
-        import gc
-
         gc.collect()
         log.info("LTX2Backend closed")

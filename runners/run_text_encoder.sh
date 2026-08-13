@@ -130,16 +130,28 @@ for variant in $VARIANT_NAMES; do
 
     result_file="${TE_RESULTS_DIR}/te_${variant}.json"
 
-    if result_exists "$result_file"; then
+    if [[ "${SKIP_EXISTING:-1}" == "1" ]] && result_exists "$result_file"; then
         log "Skipping (exists): te_${variant}.json"
         continue
+    fi
+
+    variant_te_host="${!te_file_var}"
+    if [[ ! -f "$variant_te_host" ]]; then
+        error "Variant TE file not found: $variant_te_host"
+        exit 1
     fi
 
     log "Running text-encoder analysis: base -> ${variant}"
 
     if [[ $DRY_RUN -eq 1 ]]; then
-        log "  [dry-run] base=${TEBENCH_BASE_TE_FILE} variant=${!te_file_var} dit=${TEBENCH_DIT_FILE}"
+        log "  [dry-run] base=${TEBENCH_BASE_TE_FILE} variant=${variant_te_host} dit=${TEBENCH_DIT_FILE}"
         continue
+    fi
+
+    # --force: clear cached artifacts for base + this variant so they re-encode
+    if [[ "${SKIP_EXISTING:-1}" == "0" ]]; then
+        log "  --force: clearing cache for ${variant}"
+        rm -f "${TE_CACHE_DIR}"/*.pt 2>/dev/null || true
     fi
 
     docker_args=(
@@ -156,7 +168,7 @@ for variant in $VARIANT_NAMES; do
     cmd_args=(
         /app/src/text_encoder/run_analysis.py
         --base "$(host_to_container "$TEBENCH_BASE_TE_FILE")"
-        --variant "$(host_to_container "${!te_file_var}")"
+        --variant "$(host_to_container "${variant_te_host}")"
         --dit "$(host_to_container "$TEBENCH_DIT_FILE")"
         --backend "${TEBENCH_BACKEND}"
         --comfyui /comfyui

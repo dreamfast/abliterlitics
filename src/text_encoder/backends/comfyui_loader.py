@@ -30,6 +30,7 @@ from safetensors import safe_open
 log = logging.getLogger(__name__)
 
 _comfy_imported = False
+_commit_cache: dict[str, str] = {}
 
 # Keys loaded selectively from the diffusion model file (DeepSeek C4 —
 # avoids materializing the full 28GB DIT state dict for ~1.2GB of weights).
@@ -78,19 +79,24 @@ def import_comfy(comfyui_path: str | Path, cpu: bool = True) -> None:
 
 
 def get_comfyui_commit(comfyui_path: str | Path) -> str:
-    """Get the git commit hash of the ComfyUI checkout (for reproducibility)."""
+    """Get the git commit hash of the ComfyUI checkout (cached, for reproducibility)."""
+    key = str(comfyui_path)
+    if key in _commit_cache:
+        return _commit_cache[key]
     try:
         result = subprocess.run(
-            ["git", "-C", str(comfyui_path), "rev-parse", "HEAD"],
+            ["git", "-C", key, "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
             timeout=10,
             check=True,
         )
-        return result.stdout.strip()
+        commit = result.stdout.strip()
     except (subprocess.SubprocessError, OSError) as exc:
         log.warning("Could not get ComfyUI commit hash: %s", exc)
-        return "unknown"
+        commit = "unknown"
+    _commit_cache[key] = commit
+    return commit
 
 
 def load_te_state_dict(te_file: str | Path) -> dict[str, torch.Tensor]:

@@ -21,6 +21,7 @@ Model files:
 
 from __future__ import annotations
 
+import gc
 import logging
 from pathlib import Path
 from typing import Any
@@ -89,7 +90,8 @@ def _build_conditioning_modules(
         {k.replace("cap_embedder.", ""): v for k, v in cond_sd.items() if k.startswith("cap_embedder.")},
         strict=True,
     )
-    assert not missing and not unexpected, f"cap_embedder mismatch: {missing} {unexpected}"
+    if missing or unexpected:
+        raise RuntimeError(f"cap_embedder mismatch: missing={missing} unexpected={unexpected}")
 
     rope_embedder = EmbedND(dim=CONTEXT_DIM // N_HEADS, theta=256.0, axes_dim=[32, 48, 48])
 
@@ -114,7 +116,8 @@ def _build_conditioning_modules(
         {k.replace("context_refiner.", ""): v for k, v in cond_sd.items() if k.startswith("context_refiner.")},
         strict=True,
     )
-    assert not missing2 and not unexpected2, f"context_refiner mismatch: {missing2} {unexpected2}"
+    if missing2 or unexpected2:
+        raise RuntimeError(f"context_refiner mismatch: missing={missing2} unexpected={unexpected2}")
 
     cap_embedder.eval()
     context_refiner.eval()
@@ -135,6 +138,7 @@ class ZImageBackend(BaseBackend):
         self.context_refiner: nn.Module | None = None
         self.cap_pad_token: torch.Tensor | None = None
         self._te_sd: dict[str, torch.Tensor] | None = None
+        self._te_dtype_probe: torch.dtype | None = None
         self._quantized = False
         self._te_fake_quant: str | None = None
         self._device = "cpu"
@@ -228,6 +232,11 @@ class ZImageBackend(BaseBackend):
         emb = self.model.qwen3_4b.transformer.model.embed_tokens.weight
         if emb.numel() > 0 and emb.float().abs().max().item() < 1e-8:
             raise RuntimeError("embed_tokens appears unloaded — backbone load failed silently")
+        # Free the full TE state dict (~24GB for 12B) — weights are consumed
+        # by load_sd; keep only the dtype probe for artifact labeling.
+        norm_w = self._te_sd.get("model.norm.weight")
+        self._te_dtype_probe = norm_w.dtype if norm_w is not None else None
+        self._te_sd = None
 
         self.tokenizer = z_image.ZImageTokenizer()
 
@@ -301,8 +310,10 @@ class ZImageBackend(BaseBackend):
                 # so sequence length == real token count (verified empirically).
                 # Align with the conditioning modules' device (ComfyUI may
                 # return the TE output on CPU even for GPU models).
-                assert self.cap_embedder is not None
-                cond_device = next(self.cap_embedder.parameters()).device
+                cap_embedder = self.cap_embedder
+                if cap_embedder is None:
+                    raise RuntimeError("cap_embedder not built — load() incomplete")
+                cond_device = next(cap_embedder.parameters()).device
                 consumed = out[0].float().to(cond_device)
 
                 captures = hm.get_captures()
@@ -318,30 +329,33 @@ class ZImageBackend(BaseBackend):
                 consumed_seqs.append(consumed.cpu())
 
                 if Stage.PROJECTED in wanted or Stage.CONNECTOR_OUT in wanted:
-                    assert self.cap_embedder is not None
+                    cap_embedder = self.cap_embedder
+                    if cap_embedder is None:
+                        raise RuntimeError("cap_embedder not built — load() incomplete")
                     with torch.no_grad():
-                        projected = self.cap_embedder(consumed.unsqueeze(0))[0]  # [L, 3840]
+                        projected = cap_embedder(consumed.unsqueeze(0))[0]  # [L, 3840]
                         projected_seqs.append(projected.cpu())
 
                         if Stage.CONNECTOR_OUT in wanted:
-                            assert self.rope_embedder is not None and self.context_refiner is not None
-                            assert self.cap_pad_token is not None
+                            rope_embedder = self.rope_embedder
+                            context_refiner = self.context_refiner
+                            cap_pad_token = self.cap_pad_token
+                            if rope_embedder is None or context_refiner is None or cap_pad_token is None:
+                                raise RuntimeError("conditioning modules not built — load() incomplete")
                             # Faithful replication of ComfyUI embed_cap: pad to
                             # multiple of 32 with cap_pad_token, then refine.
                             # Refiner expects 3D [bsz, L, dim].
                             pad_extra = (-projected.shape[0]) % PAD_TOKENS_MULTIPLE
                             if pad_extra:
-                                padded = torch.cat(
-                                    [projected, self.cap_pad_token.unsqueeze(0).repeat(pad_extra, 1)], dim=0
-                                )
+                                padded = torch.cat([projected, cap_pad_token.unsqueeze(0).repeat(pad_extra, 1)], dim=0)
                             else:
                                 padded = projected
                             seq_l = padded.shape[0]
                             pos_ids = torch.zeros(1, seq_l, 3, device=padded.device)
                             pos_ids[:, :, 0] = torch.arange(seq_l).float() + 1.0
-                            freqs_cis = self.rope_embedder(pos_ids).movedim(1, 2)
+                            freqs_cis = rope_embedder(pos_ids).movedim(1, 2)
                             refined = padded.unsqueeze(0)  # [1, L, 3840]
-                            for layer in self.context_refiner.children():
+                            for layer in context_refiner.children():
                                 refined = layer(refined, None, freqs_cis, transformer_options={})
                             refined = refined[0].float().cpu()  # back to [L, 3840]
                             mask = torch.zeros(seq_l, dtype=torch.int)
@@ -451,6 +465,8 @@ class ZImageBackend(BaseBackend):
             dtype_str = f"fakequant_{self._te_fake_quant}"
         elif self._quantized:
             dtype_str = "comfy_int8_convrot"
+        elif self._te_dtype_probe is not None and self._te_dtype_probe == torch.bfloat16:
+            dtype_str = "comfy_bf16"
         else:
             dtype_str = "comfy_bf16"
         return ConditioningArtifact(
@@ -479,7 +495,5 @@ class ZImageBackend(BaseBackend):
         self.context_refiner = None
         self.cap_pad_token = None
         self._te_sd = None
-        import gc
-
         gc.collect()
         log.info("ZImageBackend closed")

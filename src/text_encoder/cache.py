@@ -38,6 +38,7 @@ def cache_key(
     device: str,
     stage: str,
     transform: str = "orig",
+    context: str = "",
 ) -> str:
     """Deterministic cache key for an artifact.
 
@@ -52,11 +53,14 @@ def cache_key(
             "fp16_ref" — fp16 reference for numerical floor
             "fakequant_fp8" — fake fp8 quantization
             "fakequant_int8" — fake int8 quantization
+        context: Extra invalidation scope — backend name + DiT file identity
+                 (the conditioning modules come from the DiT, so changing it
+                 must invalidate projected/connector caches).
 
     Returns:
         Hex string cache key.
     """
-    payload = f"{ckpt_id}|{prompt_set_hash}|{dtype}|{device}|{stage}|{transform}"
+    payload = f"{ckpt_id}|{prompt_set_hash}|{dtype}|{device}|{stage}|{transform}|{context}"
     return hashlib.sha256(payload.encode()).hexdigest()[:24]
 
 
@@ -82,6 +86,7 @@ def save_artifact(artifact: ConditioningArtifact, cache_dir: Path | str) -> Path
         artifact.device,
         artifact.stage.value,
         transform,
+        artifact.meta.get("cache_context", ""),
     )
     path = cache_dir / f"{key}.pt"
 
