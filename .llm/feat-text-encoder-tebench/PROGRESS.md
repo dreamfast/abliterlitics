@@ -21,10 +21,10 @@
 | T1.8 | Activation cache (`cache.py`) | done | deepseek:✓ hy3:✓ | ce75cc3 | transform field in key (C1); get_or_compute sync |
 | **Phase 2 — LTX-2 backend** | | | | | |
 | T2.1 | BaseBackend ABC + HookManager + FakeQuantizer | done | deepseek:✓ hy3:✓ | 1be578c | 10 tests; review found C1 path bug, fixed |
-| T2.2 | ltx-core integration | blocked | — | | Needs ltx-core package + real model |
-| T2.3 | LTX2Backend | blocked | — | | Needs Gemma3 12B checkpoint |
-| T2.4 | ACCEPTANCE GATE — run_analysis.py | blocked | — | | Needs T2.2+T2.3 |
-| T2.5 | "2% revisited" result | blocked | — | | Needs T2.4 |
+| T2.2 | ComfyUI-native loader (comfyui_loader.py) | done | deepseek:✓ hy3:✓ | bfea6bd | Import guard + selective DIT load + fail-loud checks |
+| T2.3 | ZImageBackend (z_image.py) | done | deepseek:✓ hy3:✓ | b22aa3d | VERIFIED on real models, GPU; full conditioning chain |
+| T2.4 | LTX2Backend (ltx2.py) | done | deepseek:✓ hy3:✓ | bfea6bd | Same pattern; CONNECTOR_OUT DiT-side for dual_linear |
+| T2.5 | First real result: base-vs-heretic + quant variants | done | — | b22aa3d | Z-Image+Qwen3-4B: 3 heretic quants, damage table below |
 | **Phase 3 — Integration** | | | | | |
 | T3.1 | Dedicated Docker image (`Dockerfile.te`) | done | deepseek:✓ hy3:✓ | f75aed6 | abliterlitics-te:1.0.0, scipy+pyyaml |
 | T3.2 | Schema + config | done | deepseek:✓ hy3:✓ | f75aed6 | comparison.schema.json + config.py tebench fields |
@@ -57,6 +57,24 @@
 - 2026-08-14: Phase 3 (integration) complete — schema/config/DB/CLI/runner/Docker all wired.
   Phase 3 review found: C1 host-path-to-container bug (fixed), W1 importer defensiveness (fixed),
   W3 variant slug consistency (fixed), W5 tebench-not-configured guard (added), W7 build wiring (added).
-- Remaining: T2.2-T2.5 (LTX-2 backend, needs model checkpoint + ltx-core package),
-  T4.1-T4.2 (H3 backend, needs Qwen3-VL-32B), T5.1-T5.2 (reports, needs results).
-  These are GPU/model-dependent and require the actual text encoder checkpoints to proceed.
+- 2026-08-14: PIVOT to ComfyUI-native backends. The models are ComfyUI-format safetensors
+  (INT8 ConvRot/NVFP4) — HF transformers path was wrong. New approach: import ComfyUI's own
+  model classes (comfy.text_encoders.*) via a safe import guard (argv neutralization + cpu/cuda
+  mode). Verified empirically: base+heretic Qwen3-4B load with 0 missing keys; full conditioning
+  chain runs; GPU works in Docker (RTX 5090).
+  - ZImageBackend: Qwen3-4B (36 layers + consumed_hidden @ -2) + cap_embedder + pad-to-32 +
+    context_refiner from z_image_turbo_bf16.safetensors (faithful embed_cap replication).
+  - LTX2Backend: Gemma3-12B + dual_linear projection (video 4096/audio 2048); CONNECTOR_OUT
+    is DiT-side for dual_linear models — declared absent.
+  - FIRST REAL RESULTS (Z-Image + Qwen3-4B heretic, 60 prompts, GPU):
+    * layer_35 (heretic edit site): damage 121x/97x/63x (int8/fp8/nvfp4 quant floors)
+    * layer_34 = consumed_hidden (what Z-Image reads): damage 0.34x/0.89x/6.46x
+    * refined_context (enters DiT): damage 0.85x/1.03x/2.76x; taboo-ratio 4.2x/3.3x/1.3x
+    * KEY FINDING: heretic's abliteration edits layer 35 — one layer AFTER what Z-Image
+      consumes (layer -2 of 36 = 34). The massive 121x damage barely transmits: 0.85x
+      quant-noise at the DiT input for int8, but NVFP4 quant amplifies it to 2.76x.
+  - Backend reviews (deepseek APPROVE, hy3 NEEDS CHANGES) — all findings fixed in b22aa3d:
+    stage-order cache bug, _te_sd 24GB memory leak, --force no-op, assert->RuntimeError,
+    cache-key context gap, variant-file validation.
+- Remaining: H3 backend (T4.x, models available), graphs + reports (T5.x), DB import wiring
+  for te_results (importer exists, verify on real run).
