@@ -151,6 +151,36 @@ class TestCompare:
         sr = report.streams[0]
         assert sr.damage_quant_units is None
 
+    def test_floor_base_decouples_floor_from_reference(self) -> None:
+        """Matched-quant semantics: with reference=base_int8 and floor=base_int8,
+        damage must be MSE(base_int8, variant) / MSE(base_bf16, base_int8) —
+        NOT divided by MSE(base_int8, base_int8)=0 (which yields inf).
+        """
+        g = torch.Generator().manual_seed(42)
+        base_bf16 = torch.randn(10, 5, 16, generator=g)
+        base_int8_act = base_bf16 + 0.05 * torch.randn(10, 5, 16, generator=g)
+        heretic_act = base_int8_act + 0.10 * torch.randn(10, 5, 16, generator=g)
+
+        global_base = _make_artifact(base_bf16, ckpt_id="base_bf16")
+        ref = _make_artifact(base_int8_act, ckpt_id="base_int8")  # comparison reference
+        floor = _make_artifact(base_int8_act.clone(), ckpt_id="base_int8")  # same file as ref
+        variant = _make_artifact(heretic_act, ckpt_id="heretic_int8")
+
+        # Without floor_base: denominator = MSE(ref, floor) = 0 -> inf (the bug)
+        report_bug = compare(ref, variant, quant_floor=floor)
+        assert report_bug.streams[0].damage_quant_units is not None
+        assert report_bug.streams[0].damage_quant_units.value == float("inf")
+
+        # With floor_base=global base: finite damage isolating the abliteration
+        report_fixed = compare(ref, variant, quant_floor=floor, floor_base=global_base)
+        dmg = report_fixed.streams[0].damage_quant_units
+        assert dmg is not None
+        # Expected: MSE(ref,variant) / MSE(base,floor)
+        from src.text_encoder.metrics import mse as mse_fn
+
+        expected = mse_fn(base_int8_act, heretic_act) / mse_fn(base_bf16, base_int8_act)
+        assert dmg.value == pytest.approx(expected, rel=1e-4)
+
     def test_rejects_mismatched_prompts(self) -> None:
         g = torch.Generator().manual_seed(42)
         x = torch.randn(10, 5, 16, generator=g)

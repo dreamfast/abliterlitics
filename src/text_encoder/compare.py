@@ -137,20 +137,25 @@ def compare(
     variant: ConditioningArtifact,
     quant_floor: ConditioningArtifact | None = None,
     numerical_floor: ConditioningArtifact | None = None,
+    floor_base: ConditioningArtifact | None = None,
 ) -> VariantReport:
-    """Compare a variant artifact against the base.
+    """Compare a variant artifact against a base/reference.
 
     Computes all metrics per matching stream, plus optional damage in
     quant-floor units. Per-category breakdown is computed when categories
     are present and non-uniform.
 
     Args:
-        base: Base model artifact.
+        base: Base (or reference) model artifact — the comparison anchor.
         variant: Variant model artifact (must share prompts/categories).
-        quant_floor: Fake-quantized base artifact for damage computation.
+        quant_floor: Noise-floor artifact for damage computation.
                      If None, damage_quant_units is not computed.
         numerical_floor: Optional bf16-vs-fp16 reference (reported but not
                          used in the damage formula per reviewer C2).
+        floor_base: The artifact the quant floor is measured AGAINST when
+                    it differs from ``base`` (e.g. matched-quant isolation:
+                    base=base_int8 reference, but the floor stays
+                    MSE(global_base, floor_file)). Defaults to ``base``.
 
     Returns:
         VariantReport with per-stream StreamReports.
@@ -159,6 +164,9 @@ def compare(
         ValueError: If base and variant don't share prompts/categories.
     """
     base.assert_aligned(variant)
+    floor_ref = floor_base if floor_base is not None else base
+    if quant_floor is not None:
+        floor_ref.assert_aligned(quant_floor)
 
     streams_report: list[StreamReport] = []
     common_streams = sorted(set(base.streams) & set(variant.streams))
@@ -175,13 +183,18 @@ def compare(
             var_stream.mask,
         )
 
-        # Compute damage if quant floor is provided
+        # Compute damage if quant floor is provided.
+        # Denominator is measured against floor_ref (the global base), NOT
+        # the comparison base — matched-quant runs (heretic_int8 vs
+        # base_int8) would otherwise divide by MSE(base_int8, base_int8)=0.
         damage: MetricResult | None = None
         if quant_floor is not None and stream_name in quant_floor.streams:
             qf_stream = quant_floor.streams[stream_name]
-            mse_base_qf = mse(base_stream.activations, qf_stream.activations)
-            damage_val = compute_damage(metrics["mse"], mse_base_qf)
-            damage = MetricResult(value=damage_val)
+            if stream_name in floor_ref.streams:
+                fr_stream = floor_ref.streams[stream_name]
+                mse_base_qf = mse(fr_stream.activations, qf_stream.activations)
+                damage_val = compute_damage(metrics["mse"], mse_base_qf)
+                damage = MetricResult(value=damage_val)
 
         # Per-category breakdown
         per_category: dict[str, dict[str, float]] = {}

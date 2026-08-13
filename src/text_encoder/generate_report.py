@@ -62,7 +62,7 @@ def load_results(results_dir: Path) -> list[dict[str, Any]]:
     model (run_analysis emits a VariantReport per stage) — entries are merged
     by name so each model appears once with all its stage streams.
 
-    Returns: [{name, dtype, backend, streams: {stream_name: stream_dict}}]
+    Returns: [{name, dtype, backend, reference, streams: {stream_name: stream_dict}}]
     """
     merged: dict[str, dict[str, Any]] = {}
     for f in sorted(results_dir.glob("te_*.json")):
@@ -74,6 +74,12 @@ def load_results(results_dir: Path) -> list[dict[str, Any]]:
             log.warning("Failed to parse %s: %s", f, exc)
             continue
         name = f.stem.replace("te_", "", 1)
+        # Per-variant comparison reference: a variant NAME (e.g. "base_int8")
+        # when reference-name was passed, else the global base filename.
+        env = data.get("env", {})
+        ref = env.get("reference") or data.get("base_id", "")
+        ref = Path(ref).name if ref else "base"
+        floor = data.get("reference_floors", {}).get("quant", "fakequant_int8")
         for var in data.get("variants", []):
             entry = merged.setdefault(
                 name,
@@ -82,6 +88,8 @@ def load_results(results_dir: Path) -> list[dict[str, Any]]:
                     "variant_id": var.get("variant_id", name),
                     "dtype": var.get("dtype", ""),
                     "backend": data.get("backend", ""),
+                    "reference": ref,
+                    "floor": floor,
                     "streams": {},
                 },
             )
@@ -94,6 +102,19 @@ def load_results(results_dir: Path) -> list[dict[str, Any]]:
     variants = list(merged.values())
     log.info("Loaded %d variant results from %s", len(variants), results_dir)
     return variants
+
+
+def _is_reference_variant(var: dict[str, Any]) -> bool:
+    """Non-abliterated quantizations of the base (noise-floor references).
+
+    Convention: variants named base_* — the pure-quant damage measurements.
+    """
+    return bool(var["name"].startswith("base_"))
+
+
+def _display(name: str) -> str:
+    """Human-friendly variant name: dual-run suffix -> annotation."""
+    return name.replace("__vs_base", " (vs base)")
 
 
 def _layer_index(stream_name: str) -> int | None:
@@ -126,7 +147,11 @@ def graph_layer_profile(variants: list[dict[str, Any]], out: Path) -> None:
         xs, ys = zip(*pts, strict=True)
         # Clamp zeros for the log axis (consistent with the heatmap)
         ys = tuple(max(v, 1e-12) for v in ys)
-        ax.plot(xs, ys, marker="o", ms=3, lw=1.5, color=COLORS[i % len(COLORS)], label=var["name"])
+        if _is_reference_variant(var):
+            # Non-abliterated quants: the real quantization noise floor
+            ax.plot(xs, ys, marker="o", ms=2, lw=1.2, ls="--", color="#95a5a6", alpha=0.8, label=_display(var["name"]))
+        else:
+            ax.plot(xs, ys, marker="o", ms=3, lw=1.5, color=COLORS[i % len(COLORS)], label=_display(var["name"]))
 
     if consumed is not None:
         ax.axvline(consumed, color="#2ecc71", lw=2, ls="--", alpha=0.9)
@@ -158,8 +183,11 @@ def graph_layer_profile(variants: list[dict[str, Any]], out: Path) -> None:
 
 
 def graph_damage_ranking(variants: list[dict[str, Any]], out: Path) -> None:
+    floor_label = variants[0].get("floor", "fakequant_int8")
     rows: list[tuple[str, str, float]] = []
     for var in variants:
+        if var["name"].endswith("__vs_base"):
+            continue  # combined measurements live in the decomposition table
         for stream in PIPELINE_STREAMS:
             sr = var["streams"].get(stream)
             if sr and sr.get("damage_quant_units") is not None:
@@ -170,7 +198,7 @@ def graph_damage_ranking(variants: list[dict[str, Any]], out: Path) -> None:
         return
 
     fig, ax = plt.subplots(figsize=(10, max(2, 0.5 * len(rows) + 1.5)))
-    labels = [f"{v}  ·  {s}" for v, s, _ in rows]
+    labels = [f"{_display(v)}  ·  {s}" for v, s, _ in rows]
     values = [d for _, _, d in rows]
     colors = [COLORS[sorted({v for v, _, _ in rows}).index(v) % len(COLORS)] for v, _, _ in rows]
 
@@ -182,7 +210,7 @@ def graph_damage_ranking(variants: list[dict[str, Any]], out: Path) -> None:
     ax.set_yticks(y)
     ax.set_yticklabels(labels, fontsize=9)
     ax.invert_yaxis()
-    ax.set_xlabel("damage (int8 fake-quant floor units)")
+    ax.set_xlabel(f"damage ({floor_label} floor units)")
     ax.set_title("Transmitted damage by pipeline stage (lower = more faithful)")
     fig.tight_layout()
     fig.savefig(out, format="svg")
@@ -222,7 +250,7 @@ def graph_category_gradient(variants: list[dict[str, Any]], out: Path) -> None:
         sr = _di_input_stream(var)
         assert sr is not None
         vals = [max(sr["per_category"].get(c, {}).get("mse", 0.0), 1e-12) for c in present]
-        ax.bar(x + i * width, vals, width * 0.92, color=COLORS[i % len(COLORS)], label=var["name"])
+        ax.bar(x + i * width, vals, width * 0.92, color=COLORS[i % len(COLORS)], label=_display(var["name"]))
 
     sr0 = _di_input_stream(usable[0])
     stream_name = sr0["stream"] if sr0 else ""
@@ -260,7 +288,7 @@ def graph_layer_heatmap(variants: list[dict[str, Any]], out: Path) -> None:
     fig, ax = plt.subplots(figsize=(max(10, 0.3 * len(layers)), 1.2 + 0.6 * len(variants)))
     im = ax.imshow(mat, aspect="auto", cmap="magma")
     ax.set_yticks(range(len(variants)))
-    ax.set_yticklabels([v["name"] for v in variants], fontsize=9)
+    ax.set_yticklabels([_display(v["name"]) for v in variants], fontsize=9)
     ax.set_xticks(range(len(layers)))
     ax.set_xticklabels(layers, fontsize=7)
     ax.set_xlabel("encoder layer")
@@ -300,8 +328,14 @@ def _table_rows(variants: list[dict[str, Any]]) -> str:
                     dmg_cls = ' class="dmg-high"'
                 elif dmg <= 1.0:
                     dmg_cls = ' class="dmg-low"'
+            name_cell = (
+                f'<span class="ref-var">{html.escape(_display(var["name"]))}</span>'
+                if _is_reference_variant(var)
+                else html.escape(_display(var["name"]))
+            )
             rows.append(
-                f"<tr><td>{html.escape(var['name'])}</td><td>{html.escape(sr['stage'])}</td>"
+                f"<tr><td>{name_cell}</td><td>{html.escape(var['reference'])}</td>"
+                f"<td>{html.escape(sr['stage'])}</td>"
                 f"<td>{html.escape(sr['stream'])}</td><td>{m['cka_linear']:.6f}</td>"
                 f"<td>{m['cos_all']:.6f}</td><td>{m['mse']:.3e}</td>"
                 f"<td{dmg_cls}>{dmg_s}</td></tr>"
@@ -309,11 +343,107 @@ def _table_rows(variants: list[dict[str, Any]]) -> str:
     return "\n".join(rows)
 
 
+def _decomposition_section(variants: list[dict[str, Any]]) -> str:
+    """Quantization-vs-abliteration decomposition when matched data exists.
+
+    For each abliterated variant V with quant suffix X (e.g. heretic_int8):
+      - pure quant     = base_X vs base_bf16   (reference-variant result)
+      - pure ablation  = V's primary run (vs base_X, via te_reference)
+      - combined       = V's dual run (vs base_bf16, the __vs_base entry)
+    The three are DISTINCT measurements — a single run only ever produces
+    one of pure-ablation / combined, so missing counterparts render as "—".
+    """
+    by_name = {v["name"]: v for v in variants}
+    rows: list[str] = []
+    for var in variants:
+        if _is_reference_variant(var) or var["name"].endswith("__vs_base"):
+            continue
+        # quant suffix from the variant name (e.g. heretic_int8 -> int8)
+        # NOTE: keep in sync with variant naming conventions
+        for suffix in ("int8", "fp8", "nvfp4", "fp8_e4m3fn", "gguf_q8_0", "gguf_q6_k", "gguf_q4_k"):
+            if var["name"].endswith(suffix):
+                break
+        else:
+            continue
+        base_q = by_name.get(f"base_{suffix}")
+        if base_q is None:
+            continue
+
+        # All three numbers must be measured on the SAME stream — pick the
+        # first stream present in ALL participating artifacts.
+        participants = [base_q, var] + (
+            [by_name[f"{var['name']}__vs_base"]] if f"{var['name']}__vs_base" in by_name else []
+        )
+        shared = next(
+            (
+                s
+                for s in ("refined_context", "cap_embedded", "consumed_hidden")
+                if all(s in pt["streams"] for pt in participants)
+            ),
+            None,
+        )
+
+        def _dmg(v: dict[str, Any], stream: str | None = shared) -> float | None:
+            if stream is None:
+                return None
+            sr = v["streams"].get(stream)
+            if sr is not None:
+                d = sr.get("damage_quant_units")
+                return float(d) if d is not None else None
+            return None
+
+        pure_q = _dmg(base_q)
+        # Pure ablation: this variant's primary run compared against base_X
+        # (matched by variant NAME — stable namespace, not filenames).
+        is_matched = var["reference"] == base_q["name"]
+        pure_ab = _dmg(var) if is_matched else None
+        # Combined: the dual run entry (variant vs global base)
+        vs_base = by_name.get(f"{var['name']}__vs_base")
+        combined = _dmg(vs_base) if vs_base is not None else None
+        if pure_q is None and combined is None and pure_ab is None:
+            continue
+
+        def _cell(x: float | None) -> str:
+            return "—" if x is None else (f"{x:.2f}×" if x < 100 else f"{x:.0f}×")
+
+        rows.append(
+            f"<tr><td>{html.escape(_display(var['name']))}</td>"
+            f"<td>{_cell(pure_q)}</td><td>{_cell(pure_ab)}</td><td>{_cell(combined)}</td></tr>"
+        )
+    if not rows:
+        return ""
+    return f"""
+<h2>Quantization vs abliteration decomposition</h2>
+<p>Damage at the DiT input, in quant-floor units. Pure quant = base
+quantization vs BF16 base (1.0× by construction when the floor IS that
+file). Pure ablation = abliterated vs base at matched quant (isolates the
+abliteration edit). Combined = abliterated quant vs BF16 base. A missing
+column means that run wasn't performed.</p>
+<table>
+<tr><th>Variant</th><th>Pure quant</th><th>Pure ablation</th><th>Combined</th></tr>
+{chr(10).join(rows)}
+</table>"""
+
+
 def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
     findings: list[str] = []
     consumed = BACKEND_CONSUMED_LAYER.get(backend)
 
     for var in variants:
+        # Dual-run combined entries are surfaced in the decomposition table —
+        # skip here to avoid duplicating the primary variant's findings.
+        if var["name"].endswith("__vs_base"):
+            continue
+        sr = var["streams"].get("refined_context") or var["streams"].get("cap_embedded")
+        dmg_val = sr.get("damage_quant_units") if sr else None
+        if _is_reference_variant(var):
+            # Pure quantization floor: how much the quant alone perturbs conditioning
+            if dmg_val is not None:
+                findings.append(
+                    f"<b>{html.escape(_display(var['name']))}</b> (pure quantization): DiT-input damage "
+                    f"{dmg_val:.2f}× quant floor — the reference damage level for its quant format."
+                )
+            continue
         # Peak layer damage
         layer_data = [
             (idx, sr["metrics"]["mse"], sr.get("damage_quant_units"))
@@ -326,7 +456,7 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
             if at_consumed and peak[2] is not None and at_consumed[2] is not None:
                 filt = peak[2] / at_consumed[2] if at_consumed[2] > 0 else float("inf")
                 findings.append(
-                    f"<b>{html.escape(var['name'])}</b>: peak damage {peak[2]:.1f}× quant floor at "
+                    f"<b>{html.escape(_display(var['name']))}</b>: peak damage {peak[2]:.1f}× quant floor at "
                     f"layer {peak[0]}; the DiT reads layer {consumed}, where damage is "
                     f"{at_consumed[2]:.2f}× — a <b>{filt:.0f}× lower-damage</b> layer than the encoder's peak."
                 )
@@ -337,7 +467,7 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
             inn, ext = pc.get("innocent", {}).get("mse"), pc.get("extreme", {}).get("mse")
             if inn is not None and ext is not None and inn > 0:
                 findings.append(
-                    f"<b>{html.escape(var['name'])}</b>: DiT-input damage "
+                    f"<b>{html.escape(_display(var['name']))}</b>: DiT-input damage "
                     f"{_fmt(sr.get('damage_quant_units'))}× quant step; taboo-concentration "
                     f"(extreme vs innocent MSE) = <b>{ext / inn:.1f}×</b>."
                 )
@@ -346,6 +476,7 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
 
 def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) -> None:
     backend = variants[0]["backend"]
+    floor_label = variants[0].get("floor", "fakequant_int8")
     graphs_dir = out.parent
     svgs = {
         n: graphs_dir / f"te_{n}.svg" for n in ("layer_profile", "damage_ranking", "category_gradient", "layer_heatmap")
@@ -361,6 +492,7 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
         if p.exists()
     )
     findings = "\n".join(f"<li>{f}</li>" for f in _key_findings(variants, backend))
+    decomposition = _decomposition_section(variants)
 
     html_doc = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
@@ -376,6 +508,7 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
  tr:nth-child(even) {{ background: #f4f6fa; }}
  .dmg-high {{ color: #c0392b; font-weight: bold; }}
  .dmg-low {{ color: #27ae60; }}
+ .ref-var {{ color: #7f8c8d; font-style: italic; }}
  figure {{ margin: 32px 0; text-align: center; }}
  figure img {{ max-width: 100%; background: white; border: 1px solid #e0e0e0; border-radius: 8px; }}
  figcaption {{ font-size: 13px; color: #666; margin-top: 6px; }}
@@ -390,10 +523,10 @@ Results: {html.escape(str(results_dir))} · te_results_version: {TE_RESULTS_VERS
 
 <h2>Key findings</h2>
 <ol class="findings">{findings}</ol>
-
+{decomposition}
 <h2>Pipeline damage table</h2>
 <table>
-<tr><th>Variant</th><th>Stage</th><th>Stream</th><th>CKA (linear)</th><th>Cos (all)</th><th>MSE</th><th>Damage (quant units)</th></tr>
+<tr><th>Variant</th><th>vs reference</th><th>Stage</th><th>Stream</th><th>CKA (linear)</th><th>Cos (all)</th><th>MSE</th><th>Damage (quant units)</th></tr>
 {_table_rows(variants)}
 </table>
 
@@ -404,7 +537,7 @@ Results: {html.escape(str(results_dir))} · te_results_version: {TE_RESULTS_VERS
 <b>Methodology.</b> Conditioning tensors are captured with ComfyUI's own model classes at three
 pipeline stages (raw hidden states → projection → connector/refiner). Fidelity is measured by
 CKA (representational similarity) and MSE; the headline number expresses MSE damage in units of
-<b>one int8 fake-quantization step</b> of the base model (damage &lt; 1 = below the perturbation
+<b>one quantization step of the noise floor</b> ({floor_label}) (damage &lt; 1 = below the perturbation
 a known-good compression would introduce). Prompt suite is stratified
 (innocent / mild / violent / sexual / extreme / multilingual). Pad positions are excluded.
 <br/><b>Scope.</b> This measures conditioning <i>perturbation</i> — how much the modified text

@@ -209,6 +209,10 @@ def main() -> None:
         print(f"export TEBENCH_DIT_FILE={shlex.quote(dit_file)}")
         comfyui_path = tebench.get("comfyui_path", "/home/maxx/comfyui-docker/comfyui")
         print(f"export TEBENCH_COMFYUI_PATH={shlex.quote(comfyui_path)}")
+        qf = tebench.get("quant_floor_file", "")
+        if qf and not qf.startswith("/"):
+            qf = comp_dir + "/" + qf
+        print(f"export TEBENCH_QUANT_FLOOR_FILE={shlex.quote(qf)}")
         print(f"export TEBENCH_DEVICE={shlex.quote(str(tebench.get('device', 'cpu')))}")
         print(f"export TEBENCH_NUM_BOOTSTRAP={shlex.quote(str(tebench.get('n_boot', 1000)))}")
         print(f"export TEBENCH_PROMPT_SUITE={shlex.quote(str(tebench.get('prompt_suite', 'default')))}")
@@ -219,7 +223,7 @@ def main() -> None:
         print("export TEBENCH_BACKEND=")
         print("export TE_IMAGE=")
 
-    # Per-variant TE skip flags + te_file paths
+    # Per-variant TE skip flags + te_file paths + per-variant reference override
     for k, v in d["variants"].items():
         var_name = k.replace("-", "_")
         print(f"export VARIANT_SKIP_TE_{var_name}={'1' if v.get('skip_te', False) else '0'}")
@@ -227,6 +231,7 @@ def main() -> None:
         if te_f and not te_f.startswith("/"):
             te_f = comp_dir + "/" + te_f
         print(f"export VARIANT_TE_FILE_{var_name}={shlex.quote(te_f)}")
+        print(f"export VARIANT_TE_REF_{var_name}={shlex.quote(str(v.get('te_reference', '')))}")
 
 
 if __name__ == "__main__":

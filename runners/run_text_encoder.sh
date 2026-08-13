@@ -119,6 +119,7 @@ for variant in $VARIANT_NAMES; do
     var_slug="$(echo "$variant" | tr '-' '_')"
     skip_var="VARIANT_SKIP_TE_${var_slug}"
     te_file_var="VARIANT_TE_FILE_${var_slug}"
+    ref_name_resolved=""
     if [[ "${!skip_var}" == "1" ]]; then
         log "Skipping text-encoder analysis for ${variant} (skip_te=true)"
         continue
@@ -128,17 +129,51 @@ for variant in $VARIANT_NAMES; do
         continue
     fi
 
-    result_file="${TE_RESULTS_DIR}/te_${variant}.json"
-
-    if [[ "${SKIP_EXISTING:-1}" == "1" ]] && result_exists "$result_file"; then
-        log "Skipping (exists): te_${variant}.json"
+    variant_te_host="${!te_file_var}"
+    if [[ ! -f "$variant_te_host" ]]; then
+        # Transition tolerance: file not on disk yet (e.g. base quants pending
+        # from an external tool). Skip with a warning rather than aborting.
+        log "WARNING: TE file not found, skipping ${variant}: ${variant_te_host}"
         continue
     fi
 
-    variant_te_host="${!te_file_var}"
-    if [[ ! -f "$variant_te_host" ]]; then
-        error "Variant TE file not found: $variant_te_host"
-        exit 1
+    # Per-variant reference override (matched-quant abliteration isolation).
+    # Resolved BEFORE the skip gate: when base quants land after a first
+    # fallback run, the next run must NOT skip the matched-quant pass just
+    # because te_<variant>.json exists (it holds the fallback combined data).
+    ref_var="VARIANT_TE_REF_${var_slug}"
+    ref_name="${!ref_var}"
+    ref_name_resolved=""
+    ref_args=()
+    if [[ -n "$ref_name" ]]; then
+        ref_slug="$(echo "$ref_name" | tr '-' '_')"
+        ref_file_var="VARIANT_TE_FILE_${ref_slug}"
+        ref_host="${!ref_file_var:-}"
+        if [[ -n "$ref_host" && -f "$ref_host" ]]; then
+            ref_args+=(--reference "$(host_to_container "${ref_host}")" --reference-name "${ref_name}")
+            ref_name_resolved="$ref_name"
+            log "  Variant ${variant} compares against reference: ${ref_name}"
+        else
+            # Transition tolerance: reference file not on disk yet (e.g. base
+            # quants pending) — fall back to the global base with a warning.
+            log "  WARNING: te_reference '${ref_name}' for ${variant} has no te_file on disk — falling back to global base"
+        fi
+    fi
+
+    result_file="${TE_RESULTS_DIR}/te_${variant}.json"
+    if [[ -n "$ref_name_resolved" ]]; then
+        # Dual-run variant: complete only when BOTH passes exist
+        if [[ "${SKIP_EXISTING:-1}" == "1" ]] \
+           && result_exists "$result_file" \
+           && result_exists "${TE_RESULTS_DIR}/te_${variant}__vs_base.json"; then
+            log "Skipping (exists): te_${variant}.json + te_${variant}__vs_base.json"
+            continue
+        fi
+    else
+        if [[ "${SKIP_EXISTING:-1}" == "1" ]] && result_exists "$result_file"; then
+            log "Skipping (exists): te_${variant}.json"
+            continue
+        fi
     fi
 
     log "Running text-encoder analysis: base -> ${variant}"
@@ -165,28 +200,59 @@ for variant in $VARIANT_NAMES; do
         -e PYTHONPATH=/app:/comfyui
     )
 
-    cmd_args=(
-        /app/src/text_encoder/run_analysis.py
-        --base "$(host_to_container "$TEBENCH_BASE_TE_FILE")"
-        --variant "$(host_to_container "${variant_te_host}")"
-        --dit "$(host_to_container "$TEBENCH_DIT_FILE")"
-        --backend "${TEBENCH_BACKEND}"
-        --comfyui /comfyui
-        --prompts /prompts/te_suite.yaml
-        --results-dir "/results/${COMPARISON_NAME}/text_encoder"
-        --cache-dir /te_cache
-        --device "${TEBENCH_DEVICE}"
-        --n-boot "${TEBENCH_NUM_BOOTSTRAP}"
-        --variant-name "${variant}"
-    )
+    # Real quant floor: only when the configured file actually exists
+    floor_args=()
+    if [[ -n "${TEBENCH_QUANT_FLOOR_FILE:-}" ]]; then
+        if [[ -f "${TEBENCH_QUANT_FLOOR_FILE}" ]]; then
+            floor_args+=(--quant-floor-file "$(host_to_container "${TEBENCH_QUANT_FLOOR_FILE}")")
+        else
+            log "  WARNING: quant_floor_file not found, using fake-quant int8: ${TEBENCH_QUANT_FLOOR_FILE}"
+        fi
+    fi
+    limit_args=()
     if [[ "$LIMIT" != "0" ]]; then
-        cmd_args+=(--limit "$LIMIT")
+        limit_args+=(--limit "$LIMIT")
     fi
 
-    if [[ -n "$GPU" ]]; then
-        docker_run "$GPU" "$TE_IMAGE" "${docker_args[@]}" -- "${cmd_args[@]}"
-    else
-        docker_run_cpu "$TE_IMAGE" "${docker_args[@]}" -- "${cmd_args[@]}"
+    # run_te <variant_name_for_output> [extra args...]
+    run_te() {
+        local vname="$1"; shift
+        local cmd=(
+            /app/src/text_encoder/run_analysis.py
+            --base "$(host_to_container "$TEBENCH_BASE_TE_FILE")"
+            --variant "$(host_to_container "${variant_te_host}")"
+            --dit "$(host_to_container "$TEBENCH_DIT_FILE")"
+            --backend "${TEBENCH_BACKEND}"
+            --comfyui /comfyui
+            --prompts /prompts/te_suite.yaml
+            --results-dir "/results/${COMPARISON_NAME}/text_encoder"
+            --cache-dir /te_cache
+            --device "${TEBENCH_DEVICE}"
+            --n-boot "${TEBENCH_NUM_BOOTSTRAP}"
+            --variant-name "${vname}"
+        )
+        if [[ -n "$GPU" ]]; then
+            docker_run "$GPU" "$TE_IMAGE" "${docker_args[@]}" -- "${cmd[@]}" "$@" "${floor_args[@]}" "${limit_args[@]}"
+        else
+            docker_run_cpu "$TE_IMAGE" "${docker_args[@]}" -- "${cmd[@]}" "$@" "${floor_args[@]}" "${limit_args[@]}"
+        fi
+    }
+
+    # Pass 1: primary comparison — matched-quant (pure ablation) when the
+    # reference resolved, else the global base (combined damage).
+    run_te "${variant}" "${ref_args[@]+${ref_args[@]}}"
+
+    # Pass 2 (dual-run decomposition): when pass 1 used a matched reference,
+    # ALSO compare against the global base so the report has the combined
+    # number. Cheap — encodings come from the activation cache.
+    if [[ -n "$ref_name_resolved" ]]; then
+        vs_base_file="${TE_RESULTS_DIR}/te_${variant}__vs_base.json"
+        if [[ "${SKIP_EXISTING:-1}" == "1" ]] && result_exists "$vs_base_file"; then
+            log "Skipping (exists): te_${variant}__vs_base.json"
+        else
+            log "  Dual run: ${variant} vs global base (combined damage)"
+            run_te "${variant}__vs_base"
+        fi
     fi
 done
 

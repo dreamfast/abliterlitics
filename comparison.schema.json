@@ -56,6 +56,10 @@
               "type": "string",
               "description": "Path to this variant's text encoder safetensors (ComfyUI format). Required for text-encoder analysis."
             },
+            "te_reference": {
+              "type": "string",
+              "description": "Variant NAME to compare against instead of the global base (e.g. heretic_int8 -> base_int8 isolates abliteration damage at matched quant). The named variant must also have a te_file."
+            },
             "notes": {
               "type": "string",
               "description": "Free-form notes about the variant (method, recipe, provenance). Ignored by pipeline; for documentation/forensics context."
@@ -150,6 +154,10 @@
             "dit_file": {
               "type": "string",
               "description": "Path to the diffusion model safetensors (projection source)."
+            },
+            "quant_floor_file": {
+              "type": "string",
+              "description": "Path to a REAL quantized base safetensors (e.g. base_int8) used as the noise floor instead of fake-quantizing. Makes damage-in-quant-units literal. File must exist; falls back to fake-quant when absent."
             },
             "comfyui_path": {
               "type": "string",
