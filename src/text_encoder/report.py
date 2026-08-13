@@ -50,6 +50,7 @@ class Report:
                 {
                     "variant_id": v.variant_id,
                     "dtype": v.dtype,
+                    **({"gguf": v.gguf} if v.gguf else {}),
                     "streams": [
                         {
                             "stream": sr.stream,

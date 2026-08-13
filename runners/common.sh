@@ -18,7 +18,7 @@ FORENSICS_IMAGE="${FORENSICS_IMAGE:-abliterlitics-forensics:1.0.0}"
 LMEVAL_IMAGE="${LMEVAL_IMAGE:-abliterlitics-lmeval:1.0.0}"
 LLAMACPP_IMAGE="${LLAMACPP_IMAGE:-abliterlitics-llamacpp:1.0.0}"
 IK_LLAMACPP_IMAGE="${IK_LLAMACPP_IMAGE:-abliterlitics-ik-llamacpp:1.0.0}"
-TE_IMAGE="${TE_IMAGE:-abliterlitics-te:1.0.0}"
+TE_IMAGE="${TE_IMAGE:-abliterlitics-te:1.1.0}"
 
 # Source directory (for mounting into Docker)
 ABL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

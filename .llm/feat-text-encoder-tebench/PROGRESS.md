@@ -85,3 +85,24 @@
   All verified via stand-in simulation (pure_ab=0.00x for identical files — math proof),
   fully reverted. Files expected from external tool:
   qwen3-4b_{int8,fp8_e4m3fn,nvfp4}.safetensors in comfyui-models/text_encoders/.
+
+## GGUF section (2026-08-13, uncommitted)
+- G1-G3: vendored city96 dequant (bit-exact vs gguf numpy reference on real tensors),
+  gguf_loader (fail-loud qwen3 key-set validation, GGUFMeta with measured bpw),
+  z_image seam + artifact labeling gguf_<quant_label>, GGUFMeta->JSON threading.
+  deepseek: APPROVE (hy3 aborted -> degraded mode). Findings fixed: assert->ValueError,
+  BF16 container refusal, filename/content consistency warning, orig_shape metadata tests.
+- G4-G5: 16 GGUF variants (8 quants x base/heretic, te_reference dual-runs),
+  abliterlitics-te:1.1.0 (gguf==0.19.0) built + smoke-tested.
+- G6: _gguf_section ladder (bpw from persisted GGUFMeta, not constants),
+  graph_gguf_ladder SVG, decomposition suffix tuple (mxfp8 BEFORE fp8 — endswith trap),
+  findings aggregation (16 GGUF variants -> 2 summary lines), GGUF methodology para.
+- G8 gates: Gate A base_gguf_f16 = 0.0008x floor (loader reconstruction ~perfect).
+  Gate B cross-loader ratio 1.000 (33.26x vs 33.27x safetensors). Ladder: Q8_0 0.3x,
+  Q6_K 2.8x, Q5_K 7-8x, Q4_K 24-30x, Q3_K_M 83x; heretic pure-ablation survives all
+  quants (33-47x); divergence 1.0-1.6% of noise-control for all 16.
+- Hotfixes found during real-data verification (regression tested): graph crashed on
+  gguf=None mixin variants; heretic_mxfp8 decomposition row lost pure_ab (endswith fp8);
+  ladder 'vs' annotation double-escaped into visible text (user-reported).
+- 190 tests, ruff+mypy --strict clean. Lesson #28b bit again (backgrounded runner died
+  at 7/16 — foreground rerun; skip-gates + cache made it cheap).

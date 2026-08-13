@@ -87,6 +87,7 @@ def load_results(results_dir: Path) -> list[dict[str, Any]]:
                     "name": name,
                     "variant_id": var.get("variant_id", name),
                     "dtype": var.get("dtype", ""),
+                    "gguf": var.get("gguf"),
                     "backend": data.get("backend", ""),
                     "reference": ref,
                     "floor": floor,
@@ -305,6 +306,123 @@ def graph_layer_heatmap(variants: list[dict[str, Any]], out: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Graph 5: GGUF quantization ladder (damage vs bits-per-weight)
+# ---------------------------------------------------------------------------
+
+# Safetensors quants plotted as open reference markers at NOMINAL bpw
+# (GGUF bpw is measured from file bytes; safetensors formats carry format-
+# specific scale overhead that makes file-size bpw non-comparable — the
+# nominal values are labeled as such in the legend).
+_SAFETENSORS_NOMINAL_BPW = {
+    "base_int8": 8.5,
+    "base_fp8": 8.0,
+    "base_mxfp8": 8.0,
+    "base_nvfp4": 4.25,
+    "base_int4": 4.5,
+}
+
+
+def graph_gguf_ladder(variants: list[dict[str, Any]], out: Path) -> None:
+    """Damage (log y) vs bits-per-weight for GGUF containers + quant anchors."""
+    by_name = {v["name"]: v for v in variants}
+    gguf_base: list[tuple[float, float, str]] = []  # (bpw, damage, label)
+    gguf_heretic: list[tuple[float, float, str]] = []
+    safetensors: list[tuple[float, float, str]] = []
+
+    for var in variants:
+        if var["name"].endswith("__vs_base"):
+            continue
+        sr = var["streams"].get("refined_context") or var["streams"].get("cap_embedded")
+        if not sr or sr.get("damage_quant_units") is None:
+            continue
+        dmg = float(sr["damage_quant_units"])
+        if var.get("gguf"):
+            bpw = float(var["gguf"].get("bpw", 0))
+            label = var["gguf"].get("quant_label", var["name"])
+            if _is_reference_variant(var):
+                gguf_base.append((bpw, dmg, label))
+            else:
+                gguf_heretic.append((bpw, dmg, label))
+        elif var["name"] in _SAFETENSORS_NOMINAL_BPW and _is_reference_variant(var):
+            safetensors.append((_SAFETENSORS_NOMINAL_BPW[var["name"]], dmg, var["name"].replace("base_", "")))
+
+    if not gguf_base and not gguf_heretic:
+        log.info("No GGUF ladder data — skipping %s", out.name)
+        return
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    if gguf_base:
+        ax.scatter(
+            [b for b, _, _ in gguf_base],
+            [d for _, d, _ in gguf_base],
+            color="#8c8c8c",
+            marker="o",
+            s=70,
+            zorder=3,
+            label="GGUF base container (vs BF16 base)",
+        )
+        for b, d, lab in gguf_base:
+            ax.annotate(lab, (b, d), textcoords="offset points", xytext=(6, 4), fontsize=8, color="#666")
+    # Heretic combined entries (vs global base) are the apples-to-apples
+    # companion to the base rungs; fall back to the primary (pure-ablation)
+    # run only when the dual is missing, and note it via marker style.
+    heretic_dual: list[tuple[float, float, str]] = []
+    for b, d, lab in gguf_heretic:
+        v_name = next(
+            (
+                v["name"]
+                for v in variants
+                if (v.get("gguf") or {}).get("quant_label") == lab and v["name"].startswith("heretic")
+            ),
+            None,
+        )
+        dual = by_name.get(f"{v_name}__vs_base") if v_name else None
+        sr = (dual or {}).get("streams", {}).get("refined_context") if dual else None
+        if sr and sr.get("damage_quant_units") is not None:
+            heretic_dual.append((b, float(sr["damage_quant_units"]), lab))
+        else:
+            heretic_dual.append((b, d, lab))
+    if heretic_dual:
+        ax.scatter(
+            [b for b, _, _ in heretic_dual],
+            [d for _, d, _ in heretic_dual],
+            color="#c44e52",
+            marker="s",
+            s=60,
+            zorder=3,
+            label="GGUF heretic (combined vs BF16 base)",
+        )
+        for b, d, lab in heretic_dual:
+            ax.annotate(lab, (b, d), textcoords="offset points", xytext=(6, -10), fontsize=8, color="#a33")
+    if safetensors:
+        ax.scatter(
+            [b for b, _, _ in safetensors],
+            [d for _, d, _ in safetensors],
+            facecolors="none",
+            edgecolors="#4c72b0",
+            marker="D",
+            s=70,
+            zorder=3,
+            label="safetensors quant (nominal bpw)",
+        )
+        for b, d, lab in safetensors:
+            ax.annotate(lab, (b, d), textcoords="offset points", xytext=(6, 5), fontsize=8, color="#4c72b0")
+
+    ax.axhline(1.0, color="#e74c3c", lw=1.5, ls="--")
+    ax.text(15.9, 1.15, "one quant step", color="#e74c3c", fontsize=9, ha="right")
+    ax.set_yscale("log")
+    ax.set_xlabel("bits per weight (GGUF: measured from file; safetensors: nominal)")
+    ax.set_ylabel("DiT-input damage (quant-floor units, log)")
+    ax.set_title("GGUF quantization ladder — conditioning damage vs compression")
+    ax.grid(True, which="both", alpha=0.25)
+    ax.legend(fontsize=9, loc="best")
+    fig.tight_layout()
+    fig.savefig(out, format="svg")
+    plt.close(fig)
+    log.info("Wrote %s", out)
+
+
 def _svg_data_uri(path: Path) -> str:
     return "data:image/svg+xml;base64," + base64.b64encode(path.read_bytes()).decode()
 
@@ -365,9 +483,26 @@ def _decomposition_section(variants: list[dict[str, Any]]) -> str:
     for var in variants:
         if _is_reference_variant(var) or var["name"].endswith("__vs_base"):
             continue
-        # quant suffix from the variant name (e.g. heretic_int8 -> int8)
+        # quant suffix from the variant name (e.g. heretic_int8 -> int8).
+        # LONGEST FIRST — "mxfp8" must precede "fp8" or heretic_mxfp8
+        # endswith("fp8") and resolves the wrong base (silent wrong table).
         # NOTE: keep in sync with variant naming conventions
-        for suffix in ("int8", "fp8", "nvfp4", "fp8_e4m3fn", "int4", "mxfp8", "gguf_q8_0", "gguf_q6_k", "gguf_q4_k"):
+        for suffix in (
+            "fp8_e4m3fn",
+            "mxfp8",
+            "nvfp4",
+            "int8",
+            "int4",
+            "fp8",
+            "gguf_f16",
+            "gguf_q8_0",
+            "gguf_q6_k",
+            "gguf_q5_k_s",
+            "gguf_q5_k_m",
+            "gguf_q4_k_s",
+            "gguf_q4_k_m",
+            "gguf_q3_k_m",
+        ):
             if var["name"].endswith(suffix):
                 break
         else:
@@ -432,11 +567,129 @@ column means that run wasn't performed.</p>
 </table>"""
 
 
+def _load_divergence(results_dir: Path) -> dict[str, dict[str, Any]]:
+    """Load te_dit_divergence_*.json summaries keyed by variant name."""
+    out: dict[str, dict[str, Any]] = {}
+    for f in sorted(results_dir.glob("te_dit_divergence_*.json")):
+        try:
+            d = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Failed to parse %s: %s", f, exc)
+            continue
+        s = d.get("summary", {})
+        name = d.get("variant_name", f.stem.replace("te_dit_divergence_", ""))
+        if s.get("mean_final_latent_div") is not None:
+            out[name] = s
+    return out
+
+
+def _gguf_qtype_mix(hist: dict[str, Any] | None) -> str:
+    """Compact qtype-mix label, e.g. 'Q4_K + Q6_K' (F32 norms omitted)."""
+    if not hist:
+        return "—"
+    quant = [(k, v) for k, v in hist.items() if k != "F32" and k != "F16"]
+    quant.sort(key=lambda kv: -kv[1])
+    if not quant:
+        return "F16"
+    return " + ".join(k for k, _ in quant[:3]) + ("…" if len(quant) > 3 else "")
+
+
+def _gguf_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str, Any]]) -> str:
+    """GGUF quantization ladder — damage vs bits-per-weight for GGUF containers.
+
+    Rows are primary runs: base_gguf_* vs the global BF16 base, heretic_gguf_*
+    vs their matched base_gguf_* (pure ablation at quant). bpw and the qtype
+    mix come from the persisted GGUFMeta (measured, not hardcoded).
+    """
+    gguf_vars = [v for v in variants if v.get("gguf") and not v["name"].endswith("__vs_base")]
+    if not gguf_vars:
+        return ""
+    rows: list[tuple[float, str]] = []
+    for var in gguf_vars:
+        g = var["gguf"]
+        sr = var["streams"].get("refined_context") or var["streams"].get("cap_embedded")
+        dmg = sr.get("damage_quant_units") if sr else None
+        ci = sr.get("damage_quant_ci") if sr else None
+        sem = sr.get("damage_semantic_units") if sr else None
+        div = divergence.get(var["name"], {}).get("div_control_ratio")
+        dmg_txt = f"{dmg:.2f}×" if dmg is not None else "—"
+        if dmg is not None and ci:
+            dmg_txt += f' <span class="ci">[{ci[0]:.1f}, {ci[1]:.1f}]</span>'
+        sem_txt = f"{sem:.2%}" if sem is not None else "—"
+        div_txt = f"{div * 100:.1f}%" if div is not None else "—"
+        ref_cls = ' class="ref-var"' if _is_reference_variant(var) else ""
+        # Heretic rows annotated with their matched-quant reference (span
+        # appended AFTER escaping the name so the markup stays live)
+        label = html.escape(_display(var["name"]))
+        if not _is_reference_variant(var):
+            ref = var.get("reference", "")
+            if ref:
+                label += f" <span class='ci'>vs {html.escape(_display(ref))}</span>"
+        rows.append(
+            (
+                float(g.get("bpw", 0)),
+                # label is pre-escaped above (name escaped, span appended raw)
+                f"<tr><td{ref_cls}>{label}</td>"
+                f"<td>{html.escape(_gguf_qtype_mix(g.get('qtype_histogram')))}</td>"
+                f"<td>{g.get('bpw', 0):.2f}</td>"
+                f"<td>{dmg_txt}</td><td>{sem_txt}</td><td>{div_txt}</td></tr>",
+            )
+        )
+    rows.sort(key=lambda r: -r[0])
+    return f"""
+<h2>GGUF quantization ladder</h2>
+<p>Damage for llama.cpp GGUF containers (ComfyUI-GGUF qwen3 path: vendored
+city96 block dequant, eager bf16 storage — same rounding ComfyUI's lazy
+dequant applies at bf16 compute). base_gguf rows measure the pure container
+vs the BF16 safetensors base; heretic_gguf rows measure pure ablation at
+matched quant. bpw is measured from the file (storage bytes × 8 / params).
+The rightmost column is the DiT's response vs the noise-control anchor.</p>
+<table>
+<tr><th>Variant</th><th>Qtype mix</th><th>bpw</th><th>DiT-input damage</th><th>Semantic</th><th>DiT response</th></tr>
+{chr(10).join(r[1] for r in rows)}
+</table>"""
+
+
 def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
     findings: list[str] = []
     consumed = BACKEND_CONSUMED_LAYER.get(backend)
 
+    # GGUF variants are aggregated into summary lines (16 individual bullets
+    # would drown the findings list) — full detail in the GGUF ladder section.
+    gguf_vars = [v for v in variants if v.get("gguf") and not v["name"].endswith("__vs_base")]
+    gguf_names = {v["name"] for v in gguf_vars}
+    if gguf_vars:
+        base_rungs = [
+            (v["gguf"].get("bpw", 0), v["streams"].get("refined_context", {}).get("damage_quant_units"), v["name"])
+            for v in gguf_vars
+            if _is_reference_variant(v)
+        ]
+        measured = [(bpw, dmg) for bpw, dmg, _ in base_rungs if dmg is not None]
+        if measured:
+            best = min(measured, key=lambda t: t[1])
+            worst = max(measured, key=lambda t: t[1])
+            lo_bpws = [b for b, d in measured if d == best[1]]
+            findings.append(
+                f"<b>GGUF ladder (base containers, {len(measured)} rungs)</b>: pure-container DiT-input damage "
+                f"spans <b>{best[1]:.2f}×</b> (bpw {max(lo_bpws):.1f}) to <b>{worst[1]:.0f}×</b> (bpw {worst[0]:.1f}) "
+                f"quant floor — the full ladder is in the GGUF section below."
+            )
+        heretic_ab = [
+            v["streams"].get("refined_context", {}).get("damage_quant_units")
+            for v in gguf_vars
+            if not _is_reference_variant(v)
+        ]
+        heretic_ab = [d for d in heretic_ab if d is not None]
+        if heretic_ab:
+            findings.append(
+                f"<b>GGUF × heretic</b>: pure-ablation damage at matched quant spans "
+                f"<b>{min(heretic_ab):.1f}×–{max(heretic_ab):.1f}×</b> quant floor across the {len(heretic_ab)} "
+                f"rungs — decomposition table + ladder graph show the quant/abliteration interaction."
+            )
+
     for var in variants:
+        if var["name"] in gguf_names:
+            continue  # aggregated above
         # Dual-run combined entries are surfaced in the decomposition table —
         # skip here to avoid duplicating the primary variant's findings.
         if var["name"].endswith("__vs_base"):
@@ -483,22 +736,16 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
     return findings
 
 
-def _divergence_section(results_dir: Path) -> str:
+def _divergence_section(divergence_data: dict[str, dict[str, Any]]) -> str:
     """DiT-step divergence section — does the DiT respond to the perturbation?
 
-    Reads te_dit_divergence_*.json files (written by run_dit_divergence.py)
-    and renders the final-latent divergence per variant against the
-    noise-control anchor ("completely different image" level).
+    Rows come from the te_dit_divergence_*.json summaries (written by
+    run_dit_divergence, preloaded by _load_divergence) — final-latent
+    divergence per variant against the noise-control anchor
+    ("completely different image" level).
     """
     rows: list[str] = []
-    for f in sorted(results_dir.glob("te_dit_divergence_*.json")):
-        try:
-            d = json.loads(f.read_text())
-        except (json.JSONDecodeError, OSError) as exc:
-            log.warning("Failed to parse %s: %s", f, exc)
-            continue
-        s = d.get("summary", {})
-        name = d.get("variant_name", f.stem.replace("te_dit_divergence_", ""))
+    for name, s in sorted(divergence_data.items()):
         div = s.get("mean_final_latent_div")
         ctrl = s.get("noise_control_final")
         ratio = s.get("div_control_ratio")
@@ -532,7 +779,8 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
     floor_label = variants[0].get("floor", "fakequant_int8")
     graphs_dir = out.parent
     svgs = {
-        n: graphs_dir / f"te_{n}.svg" for n in ("layer_profile", "damage_ranking", "category_gradient", "layer_heatmap")
+        n: graphs_dir / f"te_{n}.svg"
+        for n in ("layer_profile", "damage_ranking", "category_gradient", "layer_heatmap", "gguf_ladder")
     }
     embedded = "".join(
         f'<figure><img src="{_svg_data_uri(p)}" alt="{name}"/><figcaption>{cap}</figcaption></figure>'
@@ -541,12 +789,26 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
             ("damage_ranking", svgs["damage_ranking"], "Transmitted damage, quant-floor units"),
             ("category_gradient", svgs["category_gradient"], "Taboo-concentration of transmitted damage"),
             ("layer_heatmap", svgs["layer_heatmap"], "Full per-layer damage map"),
+            ("gguf_ladder", svgs["gguf_ladder"], "GGUF quantization ladder (damage vs bits-per-weight)"),
         )
         if p.exists()
     )
     findings = "\n".join(f"<li>{f}</li>" for f in _key_findings(variants, backend))
     decomposition = _decomposition_section(variants)
-    divergence = _divergence_section(results_dir)
+    divergence_data = _load_divergence(results_dir)
+    divergence = _divergence_section(divergence_data)
+    gguf_section = _gguf_section(variants, divergence_data)
+    has_gguf = any(v.get("gguf") for v in variants)
+    gguf_method = (
+        "<br/><b>GGUF methodology.</b> llama.cpp containers are loaded through ComfyUI-GGUF's "
+        "qwen3 path (city96 block dequantization, Apache-2.0, vendored verbatim; ordered "
+        "LLAMA_SD_MAP name remap; no llama_permute for qwen3; token-embedding fp16 detour for "
+        "large vocabularies). Weights are eagerly dequantized to bf16 storage — the same "
+        "fp16-scale-to-bf16 rounding ComfyUI's lazy dequant applies at bf16 compute — then "
+        "analyzed with fp32 model compute like every other variant."
+        if has_gguf
+        else ""
+    )
 
     html_doc = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
@@ -579,6 +841,7 @@ Results: {html.escape(str(results_dir))} · te_results_version: {TE_RESULTS_VERS
 <h2>Key findings</h2>
 <ol class="findings">{findings}</ol>
 {decomposition}
+{gguf_section}
 {divergence}
 <h2>Pipeline damage table</h2>
 <table>
@@ -595,7 +858,7 @@ pipeline stages (raw hidden states → projection → connector/refiner). Fideli
 CKA (representational similarity) and MSE; the headline number expresses MSE damage in units of
 <b>one quantization step of the noise floor</b> ({floor_label}) (damage &lt; 1 = below the perturbation
 a known-good compression would introduce). Prompt suite is stratified
-(innocent / mild / violent / sexual / extreme / multilingual). Pad positions are excluded.
+(innocent / mild / violent / sexual / extreme / multilingual). Pad positions are excluded.{gguf_method}
 <br/><b>Scope.</b> This measures conditioning <i>perturbation</i> — how much the modified text
 encoder shifts what the DiT sees. It does not measure uncensoring efficacy in either direction.
 </div>
@@ -628,6 +891,7 @@ def main() -> None:
     graph_damage_ranking(variants, out_dir / "te_damage_ranking.svg")
     graph_category_gradient(variants, out_dir / "te_category_gradient.svg")
     graph_layer_heatmap(variants, out_dir / "te_layer_heatmap.svg")
+    graph_gguf_ladder(variants, out_dir / "te_gguf_ladder.svg")
     generate_html(variants, results_dir, out_dir / "te_report.html")
     log.info("Report generation complete")
 

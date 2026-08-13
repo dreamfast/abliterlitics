@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 
 import torch
 
@@ -79,6 +80,8 @@ class VariantReport:
     variant_id: str
     dtype: str
     streams: list[StreamReport]
+    # GGUF container provenance (additive; None for safetensors variants).
+    gguf: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -360,4 +363,5 @@ def compare(
         variant_id=variant.ckpt_id,
         dtype=variant.dtype,
         streams=streams_report,
+        gguf=variant.meta.get("gguf") if isinstance(variant.meta, dict) else None,
     )

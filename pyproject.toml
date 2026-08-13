@@ -30,6 +30,10 @@ dev = [
 
 [tool.ruff]
 line-length = 120
+# Honor `exclude` (top-level and [tool.ruff.format]) even for explicitly
+# passed paths — needed so `ruff format --check <vendored file>` skips it
+# while lint per-file-ignores still apply.
+force-exclude = true
 target-version = "py310"
 # Vendored third-party code and per-comparison workspace scripts are excluded
 # from linting. The vendored convert_hf_to_gguf.py is copied verbatim from the
@@ -58,6 +62,7 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
 "src/weight/stacking_analysis.py" = ["N806"]                # D_a, D_b, D_r, D_e are edit vectors
 "src/report/generate_graphs.py" = ["E741", "E501"]         # l in matplotlib labels, long format strings
 "src/text_encoder/generate_report.py" = ["E501"]            # Long HTML template f-strings in TE report
+"src/text_encoder/backends/gguf_dequant.py" = ["N802", "N806", "E501"]  # Vendored verbatim from ComfyUI-GGUF (city96) — do not rename/reformat
 "src/report/provenance_report.py" = ["E501", "N802"]       # Long f-strings in reports, L() helper
 "src/kl/kl_divergence.py" = ["N812", "E501", "N806"]       # torch.nn.functional as F, AutoModelClass, long log messages (FROZEN module)
 "src/benchmark/benchmark_eval.py" = ["N806", "E501", "B905"]  # BitsAndBytesConfig, docstring lines, zip
@@ -123,3 +128,8 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.format]
+# Vendored verbatim from ComfyUI-GGUF (city96) — byte-fidelity with upstream
+# beats formatter preferences; lint still runs via per-file-ignores above.
+exclude = ["src/text_encoder/backends/gguf_dequant.py"]

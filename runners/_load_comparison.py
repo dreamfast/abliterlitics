@@ -216,7 +216,7 @@ def main() -> None:
         print(f"export TEBENCH_DEVICE={shlex.quote(str(tebench.get('device', 'cpu')))}")
         print(f"export TEBENCH_NUM_BOOTSTRAP={shlex.quote(str(tebench.get('n_boot', 1000)))}")
         print(f"export TEBENCH_PROMPT_SUITE={shlex.quote(str(tebench.get('prompt_suite', 'default')))}")
-        te_image = tebench.get("te_image", "abliterlitics-te:1.0.0")
+        te_image = tebench.get("te_image", "abliterlitics-te:1.1.0")
         print(f"export TE_IMAGE={shlex.quote(te_image)}")
     else:
         # Export empty defaults so runner scripts don't break on unset vars

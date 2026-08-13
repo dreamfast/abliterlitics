@@ -31,8 +31,9 @@ import torch.nn as nn
 from safetensors import safe_open
 
 from src.text_encoder.artifact import ConditioningArtifact, Pooling, Stage, Stream, StreamSpec
-from src.text_encoder.backends import comfyui_loader
+from src.text_encoder.backends import comfyui_loader, gguf_loader
 from src.text_encoder.backends.base import BaseBackend, HookManager
+from src.text_encoder.backends.gguf_loader import GGUFMeta
 from src.text_encoder.metrics import pool_mean
 
 log = logging.getLogger(__name__)
@@ -141,6 +142,7 @@ class ZImageBackend(BaseBackend):
         self._te_dtype_probe: torch.dtype | None = None
         self._quantized = False
         self._te_fake_quant: str | None = None
+        self._gguf_meta: GGUFMeta | None = None
         self._device = "cpu"
         self.ckpt_id = ""
 
@@ -205,7 +207,12 @@ class ZImageBackend(BaseBackend):
 
         self.ckpt_id = str(ckpt)
         self._device = device
-        self._te_sd = comfyui_loader.load_te_state_dict(ckpt)
+        if str(ckpt).endswith(".gguf"):
+            # llama.cpp container: eager dequant -> HF-named state dict
+            # (ComfyUI-GGUF qwen3 path, see gguf_loader.py).
+            self._te_sd, self._gguf_meta = gguf_loader.load_gguf_te_state_dict(ckpt)
+        else:
+            self._te_sd = comfyui_loader.load_te_state_dict(ckpt)
 
         import comfy.text_encoders.hunyuan_video as hv
         import comfy.text_encoders.z_image as z_image
@@ -248,7 +255,12 @@ class ZImageBackend(BaseBackend):
             self.cap_pad_token,
         ) = _build_conditioning_modules(cond_sd, device=device)
 
-        log.info("ZImageBackend loaded: %s (quantized=%s)", Path(ckpt).name, self._quantized)
+        log.info(
+            "ZImageBackend loaded: %s (quantized=%s gguf=%s)",
+            Path(ckpt).name,
+            self._quantized,
+            self._gguf_meta.quant_label if self._gguf_meta else "-",
+        )
 
     def apply_fake_quant(self, quant_type: str = "int8") -> None:
         """Fake-quantize the loaded backbone weights (noise-floor reference).
@@ -461,7 +473,9 @@ class ZImageBackend(BaseBackend):
         prompts: list[str],
         categories: list[str],
     ) -> ConditioningArtifact:
-        if self._te_fake_quant:
+        if self._gguf_meta is not None:
+            dtype_str = f"gguf_{self._gguf_meta.quant_label}"
+        elif self._te_fake_quant:
             dtype_str = f"fakequant_{self._te_fake_quant}"
         elif self._quantized:
             dtype_str = "comfy_int8_convrot"
@@ -469,6 +483,16 @@ class ZImageBackend(BaseBackend):
             dtype_str = "comfy_bf16"
         else:
             dtype_str = "comfy_bf16"
+        meta: dict[str, Any] = {
+            "comfyui_commit": comfyui_loader.get_comfyui_commit(self.comfyui_path),
+            "quantized": self._quantized,
+            "pad_tokens_multiple": PAD_TOKENS_MULTIPLE,
+        }
+        if self._gguf_meta is not None:
+            # Additive provenance (bpw, qtype mix) — persisted into
+            # te_<name>.json via VariantReport and consumed by the report's
+            # GGUF ladder section.
+            meta["gguf"] = self._gguf_meta.to_dict()
         return ConditioningArtifact(
             model="zimage",
             backend="ZImageBackend",
@@ -479,11 +503,7 @@ class ZImageBackend(BaseBackend):
             categories=categories,
             dtype=dtype_str,
             device=self._device,
-            meta={
-                "comfyui_commit": comfyui_loader.get_comfyui_commit(self.comfyui_path),
-                "quantized": self._quantized,
-                "pad_tokens_multiple": PAD_TOKENS_MULTIPLE,
-            },
+            meta=meta,
         )
 
     def close(self) -> None:
@@ -495,5 +515,6 @@ class ZImageBackend(BaseBackend):
         self.context_refiner = None
         self.cap_pad_token = None
         self._te_sd = None
+        self._gguf_meta = None
         gc.collect()
         log.info("ZImageBackend closed")
