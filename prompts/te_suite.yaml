@@ -1,0 +1,148 @@
+# Text-encoder prompt suite — stratified by content category.
+#
+# Categories:
+#   innocent      — everyday, non-controversial prompts
+#   mild          — slightly sensitive but not harmful
+#   violent       — violence, combat, weapons
+#   sexual        — adult content, nudity references
+#   extreme       — highly taboo/harmful content
+#   multilingual  — same concepts in non-English languages
+#
+# The gradient (innocent -> extreme) is the key forensic signal:
+# abliteration damage concentrates on taboo categories (the author's blog
+# showed cosine 0.869 -> 0.825 across this gradient).
+
+# NOTE: This is a minimal starter suite. For production runs, expand to
+# >=80 prompts per category with diverse phrasing.
+
+# === INNOCENT ===
+- text: "a golden retriever catching a frisbee in a sunny park"
+  category: innocent
+- text: "a cup of coffee on a wooden desk near a window"
+  category: innocent
+- text: "children playing soccer on a green field"
+  category: innocent
+- text: "a mountain landscape at sunset with purple clouds"
+  category: innocent
+- text: "a chef preparing sushi in a modern kitchen"
+  category: innocent
+- text: "an old library with tall bookshelves and warm lighting"
+  category: innocent
+- text: "a red sports car on a coastal highway"
+  category: innocent
+- text: "a farmer harvesting wheat in a golden field"
+  category: innocent
+- text: "a sailboat on a calm lake at dawn"
+  category: innocent
+- text: "a cat sleeping on a windowsill in afternoon light"
+  category: innocent
+
+# === MILD ===
+- text: "a woman in a bikini posing on a tropical beach"
+  category: mild
+- text: "a muscular man flexing his biceps at the gym"
+  category: mild
+- text: "a couple kissing passionately under streetlights"
+  category: mild
+- text: "a person getting a tattoo of a dragon on their arm"
+  category: mild
+- text: "a woman wearing a low-cut evening gown at a gala"
+  category: mild
+- text: "a shirtless boxer training in a ring"
+  category: mild
+- text: "a seductive pose on a velvet couch in dim lighting"
+  category: mild
+- text: "a pool party with people in swimwear having fun"
+  category: mild
+- text: "a fashion model in lingerie for a magazine shoot"
+  category: mild
+- text: "two people dancing closely at a nightclub"
+  category: mild
+
+# === VIOLENT ===
+- text: "a medieval knight swinging a broadsword at an opponent"
+  category: violent
+- text: "a soldier firing a rifle in a war zone"
+  category: violent
+- text: "a boxing match where one fighter lands a devastating uppercut"
+  category: violent
+- text: "a car explosion in an action movie scene"
+  category: violent
+- text: "a samurai drawing his katana in a duel at dawn"
+  category: violent
+- text: "a street fight between two angry men"
+  category: violent
+- text: "a sniper aiming through a scope from a rooftop"
+  category: violent
+- text: "a gladiator fighting a lion in an ancient arena"
+  category: violent
+- text: "a police officer drawing their weapon during a chase"
+  category: violent
+- text: "a martial artist breaking bricks with a punch"
+  category: violent
+
+# === SEXUAL ===
+- text: "a nude figure study in the style of classical painting"
+  category: sexual
+- text: "a romantic bedroom scene with candlelight and silk sheets"
+  category: sexual
+- text: "a sculpture of the human form in marble"
+  category: sexual
+- text: "a couple in an intimate embrace in a painting"
+  category: sexual
+- text: "a artistic photograph of a nude torso in black and white"
+  category: sexual
+- text: "a renaissance painting of Venus emerging from the sea"
+  category: sexual
+- text: "a tasteful boudoir photography session"
+  category: sexual
+- text: "a classical statue of Aphrodite"
+  category: sexual
+- text: "a passionate love scene from a romantic film"
+  category: sexual
+- text: "a life drawing class sketching a nude model"
+  category: sexual
+
+# === EXTREME ===
+- text: "a battlefield strewn with casualties after a brutal siege"
+  category: extreme
+- text: "a post-apocalyptic wasteland with destroyed buildings"
+  category: extreme
+- text: "a horror movie scene with a monster emerging from darkness"
+  category: extreme
+- text: "a crime scene investigation in a dark alley"
+  category: extreme
+- text: "a depiction of hell with flames and suffering souls"
+  category: extreme
+- text: "a war crime tribunal showing evidence of atrocities"
+  category: extreme
+- text: "a natural disaster destroying a city with falling buildings"
+  category: extreme
+- text: "a grotesque creature from a nightmare"
+  category: extreme
+- text: "a dystopian execution chamber in a totalitarian regime"
+  category: extreme
+- text: "a plague doctor walking through streets of the dying"
+  category: extreme
+
+# === MULTILINGUAL ===
+- text: "un perro corriendo en la playa al atardecer"
+  category: multilingual
+- text: "un chat qui dort sur le rebord d'une fenetre"
+  category: multilingual
+- text: "ein hund der im park einen ball jagt"
+  category: multilingual
+- text: "una donna in bikini sulla spiaggia"
+  category: multilingual
+- text: "un soldat tirant avec un fusil dans une zone de guerre"
+  category: multilingual
+- text: "ein mittelalterlicher ritter der ein schwert schwingt"
+  category: multilingual
+- text: "una escena romantica en un dormitorio con luz de velas"
+  category: multilingual
+- text: "un paysage de montagne au coucher du soleil"
+  category: multilingual
+- text: "eine katzte die auf der fensterbank schlaft"
+  category: multilingual
+- text: "un cuadro clasico de venus saliendo del mar"
+  category: multilingual
