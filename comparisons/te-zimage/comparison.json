@@ -5,70 +5,82 @@
     "base_int8": {
       "path": "models/base_stub",
       "display_name": "Qwen3-4B Base INT8 (pure quantization)",
-      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b_int8.safetensors",
-      "skip_kl": true,
-      "skip_lm_eval": true,
-      "skip_harmbench": true,
-      "skip_weight": true
+      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b/qwen_3_4b_int8.safetensors",
+      "skip_kl": true, "skip_lm_eval": true, "skip_harmbench": true, "skip_weight": true
     },
     "base_fp8": {
       "path": "models/base_stub",
       "display_name": "Qwen3-4B Base FP8 (pure quantization)",
-      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b_fp8_e4m3fn.safetensors",
-      "skip_kl": true,
-      "skip_lm_eval": true,
-      "skip_harmbench": true,
-      "skip_weight": true
+      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b/qwen_3_4b_fp8_e4m3fn.safetensors",
+      "skip_kl": true, "skip_lm_eval": true, "skip_harmbench": true, "skip_weight": true
     },
     "base_nvfp4": {
       "path": "models/base_stub",
       "display_name": "Qwen3-4B Base NVFP4 (pure quantization)",
-      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b_nvfp4.safetensors",
-      "skip_kl": true,
-      "skip_lm_eval": true,
-      "skip_harmbench": true,
-      "skip_weight": true
+      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b/qwen_3_4b_nvfp4.safetensors",
+      "skip_kl": true, "skip_lm_eval": true, "skip_harmbench": true, "skip_weight": true
+    },
+    "base_int4": {
+      "path": "models/base_stub",
+      "display_name": "Qwen3-4B Base INT4 (pure quantization)",
+      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b/qwen_3_4b_int4.safetensors",
+      "skip_kl": true, "skip_lm_eval": true, "skip_harmbench": true, "skip_weight": true
+    },
+    "base_mxfp8": {
+      "path": "models/base_stub",
+      "display_name": "Qwen3-4B Base MXFP8 (pure quantization)",
+      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b/qwen_3_4b_mxfp8.safetensors",
+      "skip_kl": true, "skip_lm_eval": true, "skip_harmbench": true, "skip_weight": true
+    },
+    "heretic": {
+      "path": "models/base_stub",
+      "display_name": "Qwen3-4B Heretic BF16 (pure abliteration)",
+      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b/qwen3-4b-heretic.safetensors",
+      "skip_kl": true, "skip_lm_eval": true, "skip_harmbench": true, "skip_weight": true
     },
     "heretic_int8": {
       "path": "models/base_stub",
       "display_name": "Qwen3-4B Heretic INT8",
-      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/new_test/qwen3-4b-heretic_int8.safetensors",
+      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b/qwen3-4b-heretic_int8.safetensors",
       "te_reference": "base_int8",
-      "skip_kl": true,
-      "skip_lm_eval": true,
-      "skip_harmbench": true,
-      "skip_weight": true
+      "skip_kl": true, "skip_lm_eval": true, "skip_harmbench": true, "skip_weight": true
     },
     "heretic_fp8": {
       "path": "models/base_stub",
       "display_name": "Qwen3-4B Heretic FP8",
       "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b-heretic_fp8_e4m3fn.safetensors",
       "te_reference": "base_fp8",
-      "skip_kl": true,
-      "skip_lm_eval": true,
-      "skip_harmbench": true,
-      "skip_weight": true,
-      "skip_te": false
+      "skip_kl": true, "skip_lm_eval": true, "skip_harmbench": true, "skip_weight": true
     },
     "heretic_nvfp4": {
       "path": "models/base_stub",
       "display_name": "Qwen3-4B Heretic NVFP4",
-      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b-heretic_nvfp4.safetensors",
+      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b/qwen3-4b-heretic_nvfp4.safetensors",
       "te_reference": "base_nvfp4",
-      "skip_kl": true,
-      "skip_lm_eval": true,
-      "skip_harmbench": true,
-      "skip_weight": true,
-      "skip_te": false
+      "skip_kl": true, "skip_lm_eval": true, "skip_harmbench": true, "skip_weight": true
+    },
+    "heretic_int4": {
+      "path": "models/base_stub",
+      "display_name": "Qwen3-4B Heretic INT4",
+      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b/qwen3-4b-heretic_int4.safetensors",
+      "te_reference": "base_int4",
+      "skip_kl": true, "skip_lm_eval": true, "skip_harmbench": true, "skip_weight": true
+    },
+    "heretic_mxfp8": {
+      "path": "models/base_stub",
+      "display_name": "Qwen3-4B Heretic MXFP8",
+      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b/qwen3-4b-heretic_mxfp8.safetensors",
+      "te_reference": "base_mxfp8",
+      "skip_kl": true, "skip_lm_eval": true, "skip_harmbench": true, "skip_weight": true
     }
   },
   "settings": {
     "tebench": {
       "backend": "zimage",
-      "base_te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen_3_4b.safetensors",
+      "base_te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b/qwen_3_4b.safetensors",
       "dit_file": "/home/maxx/extra/comfyui-models/diffusion_models/z_image_turbo_bf16.safetensors",
       "comfyui_path": "/home/maxx/comfyui-docker/comfyui",
-      "quant_floor_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b_int8.safetensors",
+      "quant_floor_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b/qwen_3_4b_int8.safetensors",
       "device": "cuda",
       "n_boot": 1000
     }

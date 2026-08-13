@@ -367,7 +367,7 @@ def _decomposition_section(variants: list[dict[str, Any]]) -> str:
             continue
         # quant suffix from the variant name (e.g. heretic_int8 -> int8)
         # NOTE: keep in sync with variant naming conventions
-        for suffix in ("int8", "fp8", "nvfp4", "fp8_e4m3fn", "gguf_q8_0", "gguf_q6_k", "gguf_q4_k"):
+        for suffix in ("int8", "fp8", "nvfp4", "fp8_e4m3fn", "int4", "mxfp8", "gguf_q8_0", "gguf_q6_k", "gguf_q4_k"):
             if var["name"].endswith(suffix):
                 break
         else:
@@ -483,6 +483,50 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
     return findings
 
 
+def _divergence_section(results_dir: Path) -> str:
+    """DiT-step divergence section — does the DiT respond to the perturbation?
+
+    Reads te_dit_divergence_*.json files (written by run_dit_divergence.py)
+    and renders the final-latent divergence per variant against the
+    noise-control anchor ("completely different image" level).
+    """
+    rows: list[str] = []
+    for f in sorted(results_dir.glob("te_dit_divergence_*.json")):
+        try:
+            d = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Failed to parse %s: %s", f, exc)
+            continue
+        s = d.get("summary", {})
+        name = d.get("variant_name", f.stem.replace("te_dit_divergence_", ""))
+        div = s.get("mean_final_latent_div")
+        ctrl = s.get("noise_control_final")
+        ratio = s.get("div_control_ratio")
+        if div is None or ctrl is None or ratio is None:
+            continue
+        ref_cls = ' class="ref-var"' if name.startswith("base_") else ""
+        rows.append(
+            f"<tr><td{ref_cls}>{html.escape(_display(name))}</td>"
+            f"<td>{div:.5f}</td><td>{ctrl:.3f}</td>"
+            f"<td><b>{ratio * 100:.1f}%</b></td></tr>"
+        )
+    if not rows:
+        return ""
+    return f"""
+<h2>DiT-step divergence — does the diffusion model respond?</h2>
+<p>Paired flow-matching trajectories from <b>identical noise</b> (seed 42,
+20 Euler steps, 1024px latents), one with base conditioning and one with the
+variant's. Divergence is the final-latent relative difference; the
+<b>noise-control anchor</b> is the same conditioning with a different seed —
+the "completely different image" level. A variant at ~1% of the anchor means
+the DiT's output is ~100x closer to the base image than to a different
+image.</p>
+<table>
+<tr><th>Variant</th><th>Final latent divergence</th><th>Noise-control anchor</th><th>Relative response</th></tr>
+{chr(10).join(rows)}
+</table>"""
+
+
 def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) -> None:
     backend = variants[0]["backend"]
     floor_label = variants[0].get("floor", "fakequant_int8")
@@ -502,6 +546,7 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
     )
     findings = "\n".join(f"<li>{f}</li>" for f in _key_findings(variants, backend))
     decomposition = _decomposition_section(variants)
+    divergence = _divergence_section(results_dir)
 
     html_doc = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
@@ -534,6 +579,7 @@ Results: {html.escape(str(results_dir))} · te_results_version: {TE_RESULTS_VERS
 <h2>Key findings</h2>
 <ol class="findings">{findings}</ol>
 {decomposition}
+{divergence}
 <h2>Pipeline damage table</h2>
 <table>
 <tr><th>Variant</th><th>vs reference</th><th>Stage</th><th>Stream</th><th>CKA (linear)</th><th>Cos (all)</th><th>MSE</th><th>Damage (quant units)</th><th>Dmg (semantic)</th></tr>
