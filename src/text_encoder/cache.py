@@ -25,6 +25,11 @@ from src.text_encoder.artifact import ConditioningArtifact
 
 log = logging.getLogger(__name__)
 
+# Dtype is redundant with (ckpt, transform) — both sides of the cache use
+# this wildcard so save/load keys always agree regardless of the artifact's
+# detected dtype label.
+WILDCARD_DTYPE = "*"
+
 
 def cache_key(
     ckpt_id: str,
@@ -73,7 +78,7 @@ def save_artifact(artifact: ConditioningArtifact, cache_dir: Path | str) -> Path
     key = cache_key(
         artifact.ckpt_id,
         artifact.prompt_set_hash,
-        artifact.dtype,
+        WILDCARD_DTYPE,
         artifact.device,
         artifact.stage.value,
         transform,

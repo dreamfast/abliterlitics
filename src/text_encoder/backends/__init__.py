@@ -11,10 +11,28 @@ from src.text_encoder.backends.base import BaseBackend, HookManager, fake_quanti
 
 log = logging.getLogger(__name__)
 
+
 # Registry: backend name -> backend class.
 # Only implemented backends are registered (reviewer W8).
-# LTX2Backend will be added when T2.3 is complete.
 BACKENDS: dict[str, type[BaseBackend]] = {}
+
+
+def register_backend(name: str, cls: type[BaseBackend]) -> None:
+    """Register a backend class under a name."""
+    BACKENDS[name] = cls
+    log.debug("Registered backend: %s -> %s", name, cls.__name__)
+
+
+def _register_default_backends() -> None:
+    """Register implemented backends (lazy imports — comfyui import is heavy)."""
+    from src.text_encoder.backends.ltx2 import LTX2Backend
+    from src.text_encoder.backends.z_image import ZImageBackend
+
+    register_backend("ltx2", LTX2Backend)
+    register_backend("zimage", ZImageBackend)
+
+
+_register_default_backends()
 
 
 def get_backend(name: str) -> BaseBackend:
@@ -34,12 +52,6 @@ def get_backend(name: str) -> BaseBackend:
         available = ", ".join(sorted(BACKENDS.keys())) or "(none)"
         raise ValueError(f"Unknown backend: {name!r}. Available: {available}")
     return cls()
-
-
-def register_backend(name: str, cls: type[BaseBackend]) -> None:
-    """Register a backend class under a name."""
-    BACKENDS[name] = cls
-    log.debug("Registered backend: %s -> %s", name, cls.__name__)
 
 
 __all__ = [

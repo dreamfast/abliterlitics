@@ -1,16 +1,41 @@
 # Abliterlitics TE — Text-encoder conditioning fidelity analysis
-# CPU-first image with scipy/pyyaml for tebench metrics.
-# Based on same NGC PyTorch base as forensics for consistency.
+# CPU-first image with ComfyUI's dependency surface (needed to import
+# comfy.text_encoders for native model loading).
 FROM nvcr.io/nvidia/pytorch:26.02-py3
 
 WORKDIR /app
 
 ENV PIP_CACHE_DIR=/root/.cache/pip
 
-# Install tebench-specific dependencies
+# ComfyUI dependency surface (verified empirically — see
+# src/text_encoder/backends/comfyui_loader.py docstring):
+# - numpy, einops, sentencepiece, comfy-aimdo, comfy-kitchen: core comfy imports
+# - Pillow, tqdm, aiohttp, yarl, psutil, av: comfy.utils / model_management
+# - transformers>=4.50.3, tokenizers: sd1_clip tokenizer classes
+# - torchsde, filelock, blake3, simpleeval: assorted comfy imports
+# - scipy, pyyaml: tebench metrics + prompt suite
 RUN pip3 install --no-cache-dir \
-    scipy>=1.11.0 \
-    pyyaml>=6.0
+    "numpy>=1.25.0" \
+    einops \
+    "transformers>=4.50.3" \
+    "tokenizers>=0.13.3" \
+    sentencepiece \
+    "safetensors>=0.4.2" \
+    "aiohttp>=3.11.8" \
+    "yarl>=1.18.0" \
+    pyyaml \
+    Pillow \
+    "scipy>=1.11.0" \
+    tqdm \
+    psutil \
+    "av>=16.0.0" \
+    "comfy-kitchen==0.2.30" \
+    "comfy-aimdo==0.4.13" \
+    torchsde \
+    filelock \
+    blake3 \
+    "simpleeval>=1.0.0" \
+    requests
 
 COPY src/ ./src/
 COPY comparison.schema.json ./

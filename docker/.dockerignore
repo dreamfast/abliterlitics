@@ -1,4 +1,5 @@
 *
 !requirements.txt
 !src/
+!prompts/
 !docker/Dockerfile.*

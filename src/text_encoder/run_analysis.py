@@ -2,12 +2,17 @@
 """
 Text-encoder conditioning fidelity analysis — main entry point.
 
-Loads base + variant text encoders, captures conditioning at multiple
-pipeline stages, computes CKA/MSE/damage metrics, and writes report.
+Loads base + variant text encoders (ComfyUI-format safetensors), captures
+conditioning at multiple pipeline stages via ComfyUI's own model classes,
+computes CKA/MSE/damage metrics, and writes the report.
 
 Usage:
-    python3 run_analysis.py --base /models/base --variant /models/heretic \
-        --backend ltx2 --prompts /prompts/te_suite.yaml \
+    python3 run_analysis.py \
+        --base /models/gemma-3-12b-it_int8.safetensors \
+        --variant /models/gemma-3-12b-it-heretic-v2_int8.safetensors \
+        --dit /models/ltx-2.3-22b-dev-fp8.safetensors \
+        --backend ltx2 --comfyui /comfyui \
+        --prompts /prompts/te_suite.yaml \
         --results-dir /results --cache-dir /te_cache
 """
 
@@ -17,6 +22,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
@@ -24,65 +30,180 @@ logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(na
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Text-encoder conditioning fidelity analysis")
-    p.add_argument("--base", required=True, help="Path to base text encoder checkpoint")
-    p.add_argument("--variant", required=True, help="Path to variant text encoder checkpoint")
-    p.add_argument("--backend", required=True, choices=["ltx2", "h3", "ltx25"], help="Backend name")
+    p.add_argument("--base", required=True, help="Path to BASE text encoder safetensors (ComfyUI format)")
+    p.add_argument("--variant", required=True, help="Path to VARIANT text encoder safetensors")
+    p.add_argument("--dit", required=True, help="Path to diffusion model safetensors (projection source)")
+    p.add_argument("--backend", default="zimage", choices=["zimage", "ltx2"], help="Backend name")
+    p.add_argument("--comfyui", default="/comfyui", help="Path to ComfyUI repo (contains comfy/)")
     p.add_argument("--variant-name", default="variant", help="Variant display name")
     p.add_argument("--prompts", default="/prompts/te_suite.yaml", help="Path to prompt suite YAML")
     p.add_argument("--results-dir", default="/results", help="Output directory for results")
     p.add_argument("--cache-dir", default="/te_cache", help="Activation cache directory")
     p.add_argument("--device", default="cpu", help="Device: cpu or cuda")
-    p.add_argument("--batch-size", type=int, default=8, help="Batch size for encoding")
-    p.add_argument("--max-length", type=int, default=1024, help="Max sequence length")
+    p.add_argument("--limit", type=int, default=0, help="Limit prompt count (0 = all)")
     p.add_argument("--n-boot", type=int, default=1000, help="Bootstrap resamples for CIs")
-    p.add_argument("--dtype", default="bf16", help="Data type for model loading")
     return p.parse_args()
+
+
+def _encode_and_cache(
+    backend_name: str,
+    comfyui_path: str,
+    te_file: str,
+    dit_file: str,
+    prompts: list[str],
+    categories: list[str],
+    device: str,
+    cache_dir: Path,
+    transform: str,
+    fake_quant: str | None = None,
+) -> list[Any]:
+    """Encode one model with all stages, using the disk cache.
+
+    Args:
+        transform: Cache-key transform label ("orig", "fakequant_int8", ...).
+        fake_quant: If set, apply fake-quantization to the loaded backbone
+                    before encoding (noise-floor reference builds).
+    """
+    from src.text_encoder.artifact import ConditioningArtifact
+    from src.text_encoder.backends import get_backend
+    from src.text_encoder.cache import WILDCARD_DTYPE, cache_key, load_artifact, save_artifact
+    from src.text_encoder.suite import suite_hash
+
+    p_hash = suite_hash(prompts, categories)
+    stage_list = ["raw_hidden", "projected", "connector_out"]
+
+    # Check cache for all stages first
+    cached_artifacts: list[ConditioningArtifact] = []
+    for stage in stage_list:
+        key = cache_key(str(te_file), p_hash, WILDCARD_DTYPE, device, stage, transform)
+        art = load_artifact(cache_dir, key)
+        if art is None:
+            cached_artifacts = []
+            break
+        cached_artifacts.append(art)
+    if cached_artifacts:
+        log.info("Cache hit for all stages: %s (transform=%s)", Path(te_file).name, transform)
+        return cached_artifacts
+
+    log.info("Cache miss — encoding %s (transform=%s)", Path(te_file).name, transform)
+    backend = get_backend(backend_name)
+    backend.load(te_file, device=device, dit_file=dit_file)
+    try:
+        if fake_quant:
+            backend.apply_fake_quant(fake_quant)  # type: ignore[attr-defined]
+        artifacts = backend.encode(prompts, categories)
+    finally:
+        backend.close()
+
+    for art in artifacts:
+        art.meta["transform"] = transform
+        save_artifact(art, cache_dir)
+    return artifacts
 
 
 def main() -> int:
     args = parse_args()
 
-    from src.text_encoder.backends import get_backend
     from src.text_encoder.suite import load_suite
 
-    # Load prompt suite
     prompts, categories = load_suite(args.prompts)
+    if args.limit and args.limit < len(prompts):
+        prompts = prompts[: args.limit]
+        categories = categories[: args.limit]
     log.info("Loaded %d prompts (%d categories)", len(prompts), len(set(categories)))
-
-    # Get backend
-    backend = get_backend(args.backend)
-    log.info("Using backend: %s", backend.name)
-
-    # This is where the real work happens — model loading, encoding, comparing.
-    # The full pipeline is implemented in T2.3-T2.4 (LTX2Backend) and T4.2 (H3Backend).
-    # For now, this script is the wiring point — backends will be plugged in as they're completed.
-    log.warning("Backend %s not yet fully implemented — this is the wiring point", args.backend)
-    log.info("Would: load base=%s, variant=%s, device=%s", args.base, args.variant, args.device)
-
-    # Write a placeholder so the runner doesn't fail
-    import json
-    from datetime import datetime, timezone
-
-    from src.text_encoder import TE_RESULTS_VERSION
 
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = Path(args.cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
-    output = {
-        "te_results_version": TE_RESULTS_VERSION,
-        "backend": args.backend,
-        "base_id": args.base,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "status": "not_implemented",
-        "message": f"Backend {args.backend} pending implementation (T2.3/T4.2)",
-        "variant_id": args.variant,
-    }
+    # --- Encode base ---
+    log.info("=== Encoding BASE: %s ===", Path(args.base).name)
+    base_artifacts = _encode_and_cache(
+        args.backend,
+        args.comfyui,
+        args.base,
+        args.dit,
+        prompts,
+        categories,
+        args.device,
+        cache_dir,
+        "orig",
+    )
 
-    output_path = results_dir / f"te_{args.variant_name}.json"
-    output_path.write_text(json.dumps(output, indent=2))
-    log.info("Wrote placeholder: %s", output_path)
+    # --- Encode fake-quantized base (noise floor) ---
+    log.info("=== Encoding BASE (fake-quant int8 noise floor): %s ===", Path(args.base).name)
+    quant_floor_artifacts = _encode_and_cache(
+        args.backend,
+        args.comfyui,
+        args.base,
+        args.dit,
+        prompts,
+        categories,
+        args.device,
+        cache_dir,
+        "fakequant_int8",
+        fake_quant="int8",
+    )
 
-    backend.close()
+    # --- Encode variant ---
+    log.info("=== Encoding VARIANT: %s ===", Path(args.variant).name)
+    variant_artifacts = _encode_and_cache(
+        args.backend,
+        args.comfyui,
+        args.variant,
+        args.dit,
+        prompts,
+        categories,
+        args.device,
+        cache_dir,
+        "orig",
+    )
+
+    # --- Compare per stage ---
+    from src.text_encoder.compare import compare
+    from src.text_encoder.report import Report
+
+    variant_reports = []
+    for base_art, var_art, qf_art in zip(base_artifacts, variant_artifacts, quant_floor_artifacts, strict=True):
+        if base_art.stage != var_art.stage:
+            raise RuntimeError(f"Stage mismatch: {base_art.stage} vs {var_art.stage}")
+        log.info("Comparing stage: %s (%d streams)", base_art.stage.value, len(base_art.streams))
+        vr = compare(base_art, var_art, quant_floor=qf_art)
+        variant_reports.append(vr)
+
+    # --- Report ---
+    report = Report(
+        base_id=args.base,
+        backend=args.backend,
+        reference_floors={"quant": "fakequant_int8"},
+        variants=variant_reports,
+        prompt_set_hash=base_artifacts[0].prompt_set_hash if base_artifacts else "",
+        env={
+            "device": args.device,
+            "comfyui": args.comfyui,
+            "n_prompts": str(len(prompts)),
+        },
+    )
+
+    written = report.save(results_dir, variant_name=args.variant_name)
+    for w in written:
+        log.info("Wrote: %s", w)
+
+    # --- Console summary: damage table ---
+    for vr in variant_reports:
+        for sr in vr.streams:
+            if sr.damage_quant_units is not None:
+                log.info(
+                    "  %-14s %-11s CKA=%.6f  MSE=%.3e  damage=%.4f",
+                    sr.stream,
+                    sr.stage,
+                    sr.cka_linear.value,
+                    sr.mse.value,
+                    sr.damage_quant_units.value,
+                )
+
+    log.info("=== Text-encoder analysis complete ===")
     return 0
 
 

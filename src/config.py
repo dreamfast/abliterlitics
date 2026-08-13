@@ -35,6 +35,7 @@ class VariantConfig:
     skip_harmbench: bool = False
     skip_weight: bool = False
     skip_te: bool = False
+    te_file: Path | None = None  # ComfyUI-format TE safetensors for tebench
 
 
 @dataclass
@@ -54,12 +55,11 @@ class ComparisonConfig:
     harmbench_max_tokens: int = 8096
     kl_num_prompts: int = 100
     kl_dataset: str = "mlabonne/harmless_alpaca"
-    # Text-encoder analysis settings (None = tebench not configured)
+    # Text-encoder analysis settings (None/empty = tebench not configured)
     tebench_backend: str = ""
-    tebench_dit_model_dir: Path | None = None
-    tebench_stages: list[str] = field(default_factory=list)
-    tebench_max_length: int = 1024
-    tebench_batch_size: int = 8
+    tebench_base_te_file: Path | None = None
+    tebench_dit_file: Path | None = None
+    tebench_comfyui_path: Path | None = None
     tebench_device: str = "cpu"
     tebench_n_boot: int = 1000
     tebench_prompt_suite: str = "default"
@@ -110,6 +110,10 @@ class ComparisonConfig:
             vpath = _resolve_model_path(vdata["path"], comparison_dir)
             _validate_model_dir(vpath)
 
+            te_file: Path | None = None
+            if vdata.get("te_file"):
+                te_file = _resolve_model_path(vdata["te_file"], comparison_dir)
+
             variants.append(
                 VariantConfig(
                     name=key,
@@ -120,6 +124,7 @@ class ComparisonConfig:
                     skip_harmbench=vdata.get("skip_harmbench", False),
                     skip_weight=vdata.get("skip_weight", False),
                     skip_te=vdata.get("skip_te", False),
+                    te_file=te_file,
                 )
             )
 
@@ -165,20 +170,27 @@ class ComparisonConfig:
         tebench = settings.get("tebench")
         if tebench:
             obj.tebench_backend = tebench.get("backend", "")
-            obj.tebench_stages = tebench.get("stages", ["raw_hidden", "projected", "connector_out"])
-            obj.tebench_max_length = tebench.get("max_length", 1024)
-            obj.tebench_batch_size = tebench.get("batch_size", 8)
             obj.tebench_device = tebench.get("device", "cpu")
             obj.tebench_n_boot = tebench.get("n_boot", 1000)
             obj.tebench_prompt_suite = tebench.get("prompt_suite", "default")
             obj.tebench_image = tebench.get("te_image", "")
-            dit_dir = tebench.get("dit_model_dir")
-            if dit_dir:
-                dit_path = Path(dit_dir)
-                if not dit_path.is_absolute():
-                    dit_path = comparison_dir / dit_dir
-                obj.tebench_dit_model_dir = dit_path.resolve()
-            log.info("TE bench configured: backend=%s device=%s", obj.tebench_backend, obj.tebench_device)
+            for key, attr in (
+                ("base_te_file", "tebench_base_te_file"),
+                ("dit_file", "tebench_dit_file"),
+                ("comfyui_path", "tebench_comfyui_path"),
+            ):
+                raw = tebench.get(key)
+                if raw:
+                    p = Path(raw)
+                    if not p.is_absolute():
+                        p = comparison_dir / p
+                    setattr(obj, attr, p.resolve())
+            log.info(
+                "TE bench configured: backend=%s device=%s base=%s",
+                obj.tebench_backend,
+                obj.tebench_device,
+                obj.tebench_base_te_file,
+            )
 
         # Auto-detect architecture
         obj.architecture = _detect_architecture(base_path)

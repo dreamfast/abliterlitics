@@ -12,7 +12,7 @@ from __future__ import annotations
 import torch
 
 from src.text_encoder.artifact import ConditioningArtifact, Pooling, Stage, Stream, StreamSpec
-from src.text_encoder.cache import cache_key, load_artifact, save_artifact
+from src.text_encoder.cache import WILDCARD_DTYPE, cache_key, load_artifact, save_artifact
 
 
 def _make_test_artifact(
@@ -80,7 +80,7 @@ class TestSaveLoad:
         # Compute key and load
         from src.text_encoder.cache import cache_key
 
-        key = cache_key(art.ckpt_id, art.prompt_set_hash, art.dtype, art.device, art.stage.value, "orig")
+        key = cache_key(art.ckpt_id, art.prompt_set_hash, WILDCARD_DTYPE, art.device, art.stage.value, "orig")
         loaded = load_artifact(tmp_path, key)
         assert loaded is not None
         assert loaded.ckpt_id == art.ckpt_id
@@ -104,7 +104,7 @@ class TestSaveLoad:
         key_orig = cache_key(
             art_orig.ckpt_id,
             art_orig.prompt_set_hash,
-            art_orig.dtype,
+            WILDCARD_DTYPE,
             art_orig.device,
             art_orig.stage.value,
             "orig",
@@ -112,7 +112,7 @@ class TestSaveLoad:
         key_quant = cache_key(
             art_quant.ckpt_id,
             art_quant.prompt_set_hash,
-            art_quant.dtype,
+            WILDCARD_DTYPE,
             art_quant.device,
             art_quant.stage.value,
             "fakequant_fp8",

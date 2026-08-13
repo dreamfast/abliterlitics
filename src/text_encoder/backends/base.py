@@ -170,13 +170,16 @@ class BaseBackend(ABC):
         ...
 
     @abstractmethod
-    def load(self, ckpt: str, dtype: str = "bf16", device: str = "cpu") -> None:
+    def load(self, ckpt: str, dtype: str = "bf16", device: str = "cpu", dit_file: str = "") -> None:
         """Load the text encoder model.
 
         Args:
-            ckpt: Path or repo ID of the checkpoint.
-            dtype: Data type ("bf16", "fp32", "fp16").
+            ckpt: Path or repo ID of the checkpoint (ComfyUI-format safetensors).
+            dtype: Data type ("bf16", "fp32", "fp16"). ComfyUI-native backends
+                   derive the true dtype from the file and ignore this.
             device: "cpu" or "cuda".
+            dit_file: Path to the diffusion model safetensors (projection/
+                      conditioning-module source). Required by ComfyUI backends.
         """
         ...
 

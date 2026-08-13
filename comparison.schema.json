@@ -52,6 +52,10 @@
               "default": false,
               "description": "Skip text-encoder analysis for this variant."
             },
+            "te_file": {
+              "type": "string",
+              "description": "Path to this variant's text encoder safetensors (ComfyUI format). Required for text-encoder analysis."
+            },
             "notes": {
               "type": "string",
               "description": "Free-form notes about the variant (method, recipe, provenance). Ignored by pipeline; for documentation/forensics context."
@@ -132,24 +136,27 @@
         "tebench": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Text-encoder conditioning fidelity analysis settings. Activates the text-encoder pipeline stage.",
+          "description": "Text-encoder conditioning fidelity analysis settings. ComfyUI-format safetensors.",
           "properties": {
             "backend": {
               "type": "string",
-              "enum": ["ltx2", "h3", "ltx25"],
+              "enum": ["zimage", "ltx2", "h3", "ltx25"],
               "description": "Which text-encoder backend to use."
             },
-            "dit_model_dir": {
+            "base_te_file": {
               "type": "string",
-              "description": "Path to the diffusion model dir containing feature extractor + connector weights."
+              "description": "Path to the BASE text encoder safetensors (ComfyUI format)."
             },
-            "stages": {
-              "type": "array",
-              "items": {"type": "string", "enum": ["raw_hidden", "projected", "connector_out", "dit_input"]},
-              "description": "Pipeline stages to capture."
+            "dit_file": {
+              "type": "string",
+              "description": "Path to the diffusion model safetensors (projection source)."
+            },
+            "comfyui_path": {
+              "type": "string",
+              "default": "/home/maxx/comfyui-docker/comfyui",
+              "description": "Path to the ComfyUI repo (contains comfy/). Mount target inside Docker: /comfyui."
             },
             "max_length": {"type": "integer", "default": 1024},
-            "batch_size": {"type": "integer", "default": 8},
             "device": {"type": "string", "default": "cpu"},
             "n_boot": {"type": "integer", "default": 1000},
             "prompt_suite": {"type": "string", "default": "default"},

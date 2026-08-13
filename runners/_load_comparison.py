@@ -199,14 +199,16 @@ def main() -> None:
     tebench = settings.get("tebench", {})
     if tebench:
         print(f"export TEBENCH_BACKEND={shlex.quote(str(tebench.get('backend', '')))}")
-        dit_dir = tebench.get("dit_model_dir", "")
-        if dit_dir:
-            dit_dir = comp_dir + "/" + dit_dir
-        print(f"export TEBENCH_DIT_MODEL_DIR={shlex.quote(dit_dir)}")
-        stages = tebench.get("stages", ["raw_hidden", "projected", "connector_out"])
-        print(f"export TEBENCH_STAGES={shlex.quote(','.join(stages))}")
-        print(f"export TEBENCH_MAX_LENGTH={shlex.quote(str(tebench.get('max_length', 1024)))}")
-        print(f"export TEBENCH_BATCH_SIZE={shlex.quote(str(tebench.get('batch_size', 8)))}")
+        base_te = tebench.get("base_te_file", "")
+        if base_te and not base_te.startswith("/"):
+            base_te = comp_dir + "/" + base_te
+        print(f"export TEBENCH_BASE_TE_FILE={shlex.quote(base_te)}")
+        dit_file = tebench.get("dit_file", "")
+        if dit_file and not dit_file.startswith("/"):
+            dit_file = comp_dir + "/" + dit_file
+        print(f"export TEBENCH_DIT_FILE={shlex.quote(dit_file)}")
+        comfyui_path = tebench.get("comfyui_path", "/home/maxx/comfyui-docker/comfyui")
+        print(f"export TEBENCH_COMFYUI_PATH={shlex.quote(comfyui_path)}")
         print(f"export TEBENCH_DEVICE={shlex.quote(str(tebench.get('device', 'cpu')))}")
         print(f"export TEBENCH_NUM_BOOTSTRAP={shlex.quote(str(tebench.get('n_boot', 1000)))}")
         print(f"export TEBENCH_PROMPT_SUITE={shlex.quote(str(tebench.get('prompt_suite', 'default')))}")
@@ -217,10 +219,14 @@ def main() -> None:
         print("export TEBENCH_BACKEND=")
         print("export TE_IMAGE=")
 
-    # Per-variant TE skip flags
+    # Per-variant TE skip flags + te_file paths
     for k, v in d["variants"].items():
         var_name = k.replace("-", "_")
         print(f"export VARIANT_SKIP_TE_{var_name}={'1' if v.get('skip_te', False) else '0'}")
+        te_f = v.get("te_file", "")
+        if te_f and not te_f.startswith("/"):
+            te_f = comp_dir + "/" + te_f
+        print(f"export VARIANT_TE_FILE_{var_name}={shlex.quote(te_f)}")
 
 
 if __name__ == "__main__":
