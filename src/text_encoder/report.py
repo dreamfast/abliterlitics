@@ -106,16 +106,22 @@ class Report:
             lines.append("")
             lines.append(
                 "| Stream | Stage | CKA (linear) | CKA (RBF) | Cos (all) | "
-                "MSE | L2 | Rank Corr | Damage (quant units) |"
+                "MSE | L2 | Rank Corr | Damage (quant units) | Dmg (semantic) |"
             )
-            lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|")
+            lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|")
             for sr in v.streams:
-                dmg = f"{sr.damage_quant_units.value:.4f}" if sr.damage_quant_units else "N/A"
+                if sr.damage_quant_units is not None:
+                    dmg = f"{sr.damage_quant_units.value:.4f}"
+                    if sr.damage_quant_units.ci_low is not None and sr.damage_quant_units.ci_high is not None:
+                        dmg += f" [{sr.damage_quant_units.ci_low:.3f}, {sr.damage_quant_units.ci_high:.3f}]"
+                else:
+                    dmg = "N/A"
+                sem = f"{sr.damage_semantic_units.value:.2%}" if sr.damage_semantic_units else "N/A"
                 lines.append(
                     f"| {sr.stream} | {sr.stage} | {sr.cka_linear.value:.6f} | "
                     f"{sr.cka_rbf.value:.6f} | {sr.cos_all.value:.6f} | "
                     f"{sr.mse.value:.6e} | {sr.l2.value:.6e} | "
-                    f"{sr.rank_corr.value:.6f} | {dmg} |"
+                    f"{sr.rank_corr.value:.6f} | {dmg} | {sem} |"
                 )
 
             # Per-category breakdown for streams that have it

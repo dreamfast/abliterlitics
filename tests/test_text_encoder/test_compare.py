@@ -172,13 +172,17 @@ class TestCompare:
         assert report_bug.streams[0].damage_quant_units.value == float("inf")
 
         # With floor_base=global base: finite damage isolating the abliteration
-        report_fixed = compare(ref, variant, quant_floor=floor, floor_base=global_base)
+        report_fixed = compare(ref, variant, quant_floor=floor, floor_base=global_base, n_boot=0)
         dmg = report_fixed.streams[0].damage_quant_units
         assert dmg is not None
-        # Expected: MSE(ref,variant) / MSE(base,floor)
-        from src.text_encoder.metrics import mse as mse_fn
+        # Expected (per-prompt weighting — the implemented functional):
+        # mean_i MSE_i(ref,variant) / mean_i MSE_i(base,floor)
+        from src.text_encoder.compare import _per_prompt_sq_err
 
-        expected = mse_fn(base_int8_act, heretic_act) / mse_fn(base_bf16, base_int8_act)
+        mask = torch.ones(10, 5, dtype=torch.int)
+        num = _per_prompt_sq_err(base_int8_act, heretic_act, mask).mean()
+        den = _per_prompt_sq_err(base_bf16, base_int8_act, mask).mean()
+        expected = float(num) / float(den)
         assert dmg.value == pytest.approx(expected, rel=1e-4)
 
     def test_rejects_mismatched_prompts(self) -> None:
@@ -283,6 +287,7 @@ class TestBootstrapCIs:
         sr = report.streams[0]
         assert sr.cos_all.ci_low is not None
         assert sr.cos_all.ci_high is not None
+        assert sr.cos_all.ci_low <= sr.cos_all.value <= sr.cos_all.ci_high
 
     def test_damage_ci_joint_bootstrap(self) -> None:
         """Damage CI from joint ratio bootstrap contains the point estimate."""
@@ -296,7 +301,7 @@ class TestBootstrapCIs:
         assert sr.damage_quant_units is not None
         assert sr.damage_quant_units.ci_low is not None
         assert sr.damage_quant_units.ci_high is not None
-        assert sr.damage_quant_units.ci_low <= sr.damage_quant_units.value
+        assert sr.damage_quant_units.ci_low <= sr.damage_quant_units.value <= sr.damage_quant_units.ci_high
 
     def test_n_boot_zero_disables_ci(self) -> None:
         g = torch.Generator().manual_seed(42)

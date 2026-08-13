@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 import torch
 
 from src.text_encoder.artifact import ConditioningArtifact
-from src.text_encoder.bootstrap import bootstrap_ci, bootstrap_ratio_ci
+from src.text_encoder.bootstrap import DEFAULT_N_BOOT, bootstrap_ci, bootstrap_ratio_ci
 from src.text_encoder.metrics import (
     MetricResult,
     cka_linear,
@@ -49,8 +49,6 @@ from src.text_encoder.metrics import (
 )
 
 log = logging.getLogger(__name__)
-
-DEFAULT_N_BOOT = 1000
 
 
 @dataclass
@@ -283,10 +281,14 @@ def compare(
         semantic_ceiling = _semantic_ceiling_pooled(base_pooled)
         pooled_damage = _pooled_mse(base_stream.activations, var_stream.activations, base_stream.mask)
         damage_semantic: MetricResult | None = None
+        semantic_ceiling_out: float | None = None
         if semantic_ceiling == semantic_ceiling and semantic_ceiling > 1e-15:  # not NaN, not ~0
             damage_semantic = MetricResult(value=pooled_damage / semantic_ceiling)
-        elif semantic_ceiling != semantic_ceiling:
-            log.debug("Semantic ceiling NaN for stream %s (n<2)", stream_name)
+            semantic_ceiling_out = semantic_ceiling
+        else:
+            if semantic_ceiling != semantic_ceiling:
+                log.debug("Semantic ceiling NaN for stream %s (n<2)", stream_name)
+            # NaN or ~0 ceiling: leave semantic fields unset (serializes None)
 
         # Compute damage if quant floor is provided.
         # Denominator is measured against floor_ref (the global base), NOT
@@ -348,7 +350,7 @@ def compare(
                 l2=MetricResult(value=metrics["l2"]),
                 rank_corr=MetricResult(value=metrics["rank_corr"]),
                 damage_quant_units=damage,
-                semantic_ceiling_mse=semantic_ceiling,
+                semantic_ceiling_mse=semantic_ceiling_out,
                 damage_semantic_units=damage_semantic,
                 per_category=per_category,
             )

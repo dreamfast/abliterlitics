@@ -85,3 +85,24 @@ class TestBootstrapRatioCi:
         # Ratio should be ~1.0 (num == den) with tight CI
         assert point == pytest.approx(1.0, abs=0.01)
         assert hi - lo < 0.5  # reasonably tight for correlated data
+
+
+class TestSkewGuard:
+    def test_median_fallback_when_point_outside_ci(self) -> None:
+        """Skewed ratio: plug-in point outside percentile CI -> median reported."""
+        g = torch.Generator().manual_seed(7)
+        # Heavy-tailed numerator + tiny skewed denominator
+        num = torch.cat([torch.rand(59, generator=g) * 0.01, torch.tensor([3.0])])
+        den = torch.cat([torch.rand(59, generator=g) * 0.0001 + 0.0001, torch.tensor([0.01])])
+        point, lo, hi = bootstrap_ratio_ci(num, den, n_boot=2000)
+        assert lo <= point <= hi, "reported point must be inside its CI"
+
+    def test_no_fallback_for_symmetric(self) -> None:
+        """Symmetric case: plug-in ratio survives (point == ratio of means)."""
+        g = torch.Generator().manual_seed(7)
+        num = torch.rand(100, generator=g) + 0.5
+        den = torch.rand(100, generator=g) + 0.5
+        point, lo, hi = bootstrap_ratio_ci(num, den, n_boot=1000)
+        ratio_of_means = float((num.mean() / den.mean()).item())
+        assert point == pytest.approx(ratio_of_means, rel=1e-6)
+        assert lo <= point <= hi
