@@ -213,6 +213,10 @@ cmd_build() {
     log "  Building ${IK_LLAMACPP_IMAGE} (requires IK_LLAMA_CPP_COMMIT)..."
     [[ $GLOBAL_DRY_RUN -eq 0 ]] && docker build -t "$IK_LLAMACPP_IMAGE" -f "${docker_dir}/Dockerfile.ik-llamacpp" "$docker_dir"
 
+    # Build text-encoder image (for tebench analysis)
+    log "  Building ${TE_IMAGE}..."
+    [[ $GLOBAL_DRY_RUN -eq 0 ]] && docker build -t "$TE_IMAGE" -f "${docker_dir}/Dockerfile.te" "$SCRIPT_DIR"
+
     log "Build complete"
 }
 

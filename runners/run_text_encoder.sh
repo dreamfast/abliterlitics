@@ -66,6 +66,25 @@ if [[ "$TEBENCH_PROMPT_SUITE" != "default" && -n "$TEBENCH_PROMPT_SUITE" ]]; the
     PROMPT_SUITE_PATH="${COMPARISON_DIR}/${TEBENCH_PROMPT_SUITE}"
 fi
 
+# Guard: tebench must be configured
+if [[ -z "$TEBENCH_BACKEND" ]]; then
+    error "tebench not configured — add 'settings.tebench' block to comparison.json"
+    exit 1
+fi
+
+# Translate host paths to container-relative paths.
+# COMPARISON_DIR is mounted at /comparison, ABL_ROOT/models at /models.
+host_to_container() {
+    local host_path="$1"
+    if [[ "$host_path" == "$COMPARISON_DIR"/* ]]; then
+        echo "/comparison/${host_path#$COMPARISON_DIR/}"
+    elif [[ "$host_path" == "$ABL_ROOT"/models/* ]]; then
+        echo "/models/${host_path#$ABL_ROOT/models/}"
+    else
+        echo "$host_path"
+    fi
+}
+
 # Run for each variant
 for variant in $VARIANT_NAMES; do
     var_slug="$(echo "$variant" | tr '-' '_')"
@@ -114,8 +133,8 @@ for variant in $VARIANT_NAMES; do
             "${docker_args[@]}" \
             -- \
             python3 /app/src/text_encoder/run_analysis.py \
-                --base "${BASE_DIR}" \
-                --variant "${!variant_path_var}" \
+                --base "$(host_to_container "$BASE_DIR")" \
+                --variant "$(host_to_container "${!variant_path_var}")" \
                 --backend "${TEBENCH_BACKEND}" \
                 --prompts /prompts/te_suite.yaml \
                 --results-dir "/results/${COMPARISON_NAME}/text_encoder" \
@@ -130,8 +149,8 @@ for variant in $VARIANT_NAMES; do
             "${docker_args[@]}" \
             -- \
             python3 /app/src/text_encoder/run_analysis.py \
-                --base "${BASE_DIR}" \
-                --variant "${!variant_path_var}" \
+                --base "$(host_to_container "$BASE_DIR")" \
+                --variant "$(host_to_container "${!variant_path_var}")" \
                 --backend "${TEBENCH_BACKEND}" \
                 --prompts /prompts/te_suite.yaml \
                 --results-dir "/results/${COMPARISON_NAME}/text_encoder" \

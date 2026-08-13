@@ -502,7 +502,9 @@ def import_te_results(
 
         backend = data.get("backend", "unknown")
         for variant in data.get("variants", []):
-            variant_id = variant.get("variant_id", variant.get("variant", ""))
+            # Use slug from filename (te_<slug>.json) for consistency with other tables
+            variant_slug = f.stem.replace("te_", "", 1)
+            variant_id = variant.get("variant_id", variant_slug)
             for sr in variant.get("streams", []):
                 stream = sr.get("stream", "")
                 stage = sr.get("stage", "")
@@ -510,24 +512,27 @@ def import_te_results(
                 damage = sr.get("damage_quant_units")
 
                 for metric_name, metric_value in metrics.items():
-                    conn.execute(
-                        """INSERT OR REPLACE INTO te_results
-                           (comparison, variant, backend, stream, stage, metric_name,
-                            metric_value, damage_quant_units, result_path)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (
-                            comparison_name,
-                            variant_id,
-                            backend,
-                            stream,
-                            stage,
-                            metric_name,
-                            float(metric_value),
-                            damage,
-                            str(f),
-                        ),
-                    )
-                    count += 1
+                    try:
+                        conn.execute(
+                            """INSERT OR REPLACE INTO te_results
+                               (comparison, variant, backend, stream, stage, metric_name,
+                                metric_value, damage_quant_units, result_path)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                comparison_name,
+                                variant_slug,
+                                backend,
+                                stream,
+                                stage,
+                                metric_name,
+                                float(metric_value),
+                                damage,
+                                str(f),
+                            ),
+                        )
+                        count += 1
+                    except (sqlite3.Error, ValueError, TypeError) as exc:
+                        log.warning("Failed to import TE metric %s from %s: %s", metric_name, f, exc)
 
     conn.commit()
     if count:
