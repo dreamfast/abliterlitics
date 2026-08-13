@@ -30,7 +30,6 @@ import re
 import time
 import urllib.parse
 import urllib.request
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -133,10 +132,30 @@ def patch_workflow(
     return wf
 
 
-def queue_and_fetch(api_url: str, wf: dict[str, Any]) -> bytes:
-    """Queue the workflow, wait for completion, return the first image bytes."""
-    prompt_id = str(uuid.uuid4())
-    _api(api_url, "/prompt", {"prompt": wf, "client_id": "abliterlitics-ab"})
+def queue_and_fetch(api_url: str, wf: dict[str, Any], te_node_id: str = "") -> tuple[bytes, dict[str, Any]]:
+    """Queue the workflow, wait for completion, return (image bytes, perf).
+
+    Perf data extracted from the /history status messages (the richest the
+    ComfyUI API offers):
+    - ``server_gen_ms``: execution_success − execution_start timestamps
+    - ``queue_wait_ms``: execution_start − queue submit time
+    - ``te_cached``: whether the TE loader node appears in execution_cached
+      (true cold/warm verification — model loaded fresh vs reused)
+    - ``cached_nodes``: full cached-node list (execution graph reuse)
+    - ``prompt_id`` / ``queue_number``: server-side identifiers
+    """
+    client_id = "abliterlitics-ab"
+    submit_t0 = time.monotonic()
+    qresp = _api(api_url, "/prompt", {"prompt": wf, "client_id": client_id})
+    # CRITICAL: ComfyUI assigns its own prompt_id — polling a self-generated
+    # one never resolves (hangs until POLL_TIMEOUT).
+    prompt_id = qresp.get("prompt_id")
+    if not prompt_id:
+        raise RuntimeError(f"No prompt_id in queue response: {qresp}")
+    node_errors = qresp.get("node_errors") or {}
+    if node_errors:
+        raise RuntimeError(f"ComfyUI rejected the workflow: {json.dumps(node_errors)[:400]}")
+
     deadline = time.monotonic() + POLL_TIMEOUT
     while time.monotonic() < deadline:
         time.sleep(POLL_INTERVAL)
@@ -149,16 +168,41 @@ def queue_and_fetch(api_url: str, wf: dict[str, Any]) -> bytes:
             messages = status.get("messages", [])
             raise RuntimeError(f"ComfyUI reported error for {prompt_id}: {messages[:2]}")
         outputs = entry.get("outputs", {})
+        img_meta = None
         for node_out in outputs.values():
             for img in node_out.get("images", []):
-                subpath = img.get("subfolder", "")
-                name = img["filename"]
-                q = urllib.parse.quote(f"{subpath}/{name}".lstrip("/"))
-                with urllib.request.urlopen(f"{api_url.rstrip('/')}/view?filename={q}", timeout=60) as resp:
-                    data: bytes = resp.read()
-                    return data
-        if status.get("completed"):
-            break
+                img_meta = img
+                break
+            if img_meta:
+                break
+        if img_meta is None:
+            if status.get("completed"):
+                raise RuntimeError(f"Prompt {prompt_id} completed without image outputs: {outputs}")
+            continue
+
+        # --- perf extraction from status messages ---
+        msgs = dict(status.get("messages", []))
+        ts_start = msgs.get("execution_start", {}).get("timestamp")
+        ts_done = msgs.get("execution_success", {}).get("timestamp")
+        cached_nodes = msgs.get("execution_cached", {}).get("nodes", [])
+        server_gen_ms = (ts_done - ts_start) if (ts_start and ts_done) else None
+        perf = {
+            "prompt_id": prompt_id,
+            "queue_number": (entry.get("prompt", [None])[0] if isinstance(entry.get("prompt"), list) else None),
+            "server_gen_ms": server_gen_ms,
+            "client_wall_ms": round((time.monotonic() - submit_t0) * 1000, 1),
+            "cached_nodes": cached_nodes,
+            "te_cached": (te_node_id in cached_nodes) if te_node_id else None,
+            "status_str": status.get("status_str"),
+        }
+
+        subfolder = img_meta.get("subfolder", "")
+        fname = img_meta["filename"]
+        ftype = img_meta.get("type", "output")
+        q = urllib.parse.urlencode({"filename": fname, "subfolder": subfolder, "type": ftype})
+        with urllib.request.urlopen(f"{api_url.rstrip('/')}/view?{q}", timeout=60) as resp:
+            data: bytes = resp.read()
+        return data, perf
     raise TimeoutError(f"ComfyUI did not finish {prompt_id} within {POLL_TIMEOUT}s")
 
 
@@ -229,10 +273,14 @@ def main() -> None:
     comparison = json.loads(Path(args.comparison).read_text())
     suite = load_prompt_suite(Path(args.prompt_suite), args.prompts_per_category)
 
-    # Variant list from comparison.json (dict form)
+    # Variant list from comparison.json (dict form), with the global BASE
+    # TE prepended as the "base" A-side anchor (it is not a variant entry).
     variants_cfg = comparison["variants"]
     filter_set = {v.strip() for v in args.variants.split(",") if v.strip()}
     jobs: list[tuple[str, str]] = []  # (variant_name, comfy_te_name)
+    base_te = comparison.get("settings", {}).get("tebench", {}).get("base_te_file", "")
+    if base_te and (not filter_set or "base" in filter_set):
+        jobs.append(("base", comfy_te_name(base_te, args.models_root)))
     for name, cfg in variants_cfg.items():
         te_file = cfg.get("te_file")
         if not te_file:
@@ -292,7 +340,7 @@ def main() -> None:
                     filename_prefix=f"abliterlitics-ab/{name}",
                 )
                 t0 = time.monotonic()
-                data = queue_and_fetch(args.api_url, wf)
+                data, perf = queue_and_fetch(args.api_url, wf, te_node_id=clip_node_id)
                 dt = time.monotonic() - t0
                 per_image.append(dt)
                 out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -314,6 +362,7 @@ def main() -> None:
                         "loader": loader_kind,
                         "pass": pass_name,
                         "gen_seconds": round(dt, 2),
+                        "perf": perf,
                         "category": pr["category"],
                         "label": pr.get("label", ""),
                         "prompt": pr["text"],

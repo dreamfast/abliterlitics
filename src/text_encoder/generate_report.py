@@ -970,15 +970,39 @@ geometry-preserving noise concentrated on taboo prompts.</p>
 </table>"""
 
 
+def _ab_embed_image(local: Path, max_px: int = 768, quality: int = 80) -> str | None:
+    """Re-encode an A/B image for embedding (webp, capped size).
+
+    The on-disk originals are quality-100 webp (~500KB each); embedding 27+
+    of those base64 would make the report ~20MB. Re-encode at 768px/q80 for
+    the interactive gallery (~10x smaller) — originals stay on disk and are
+    referenced by path in the manifest/DB.
+    """
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        img: Image.Image = Image.open(local)
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        if max(img.size) > max_px:
+            img.thumbnail((max_px, max_px), Image.LANCZOS)  # type: ignore[attr-defined]
+        buf = BytesIO()
+        img.save(buf, "WEBP", quality=quality)
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception as exc:  # noqa: BLE001 — gallery must not kill the report
+        log.warning("Failed to embed %s: %s", local, exc)
+        return None
+
+
 def _ab_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str, Any]], results_dir: Path) -> str:
-    """A/B image gallery + generation-timing section.
+    """A/B image evidence — interactive JS comparison slider + timing.
 
     Reads ab_images/manifest.json (written by run_ab_test.py; also imported
-    into the te_ab_images DB table). Each prompt renders a comparison row:
-    the SAME seed sampled with only the text encoder swapped. Captions carry
-    the per-variant metrics (quant label, DiT-input damage, DiT response,
-    cold/warm generation time) so the visual delta reads against the
-    measured delta.
+    into the te_ab_images DB table). Warm-pass images are embedded (cold is
+    byte-identical — fixed seed). The interactive comparator lets the reader
+    pick any two variants per prompt and hover-reveal between them.
     """
     manifest_path = results_dir / "ab_images" / "manifest.json"
     if not manifest_path.exists():
@@ -990,68 +1014,46 @@ def _ab_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str, 
         return ""
 
     by_name = {v["name"]: v for v in variants}
-    # Warm-pass images preferred for the gallery (identical seed; cold pass
-    # exists for timing).
+    # label -> variant -> img record (warm pass preferred — later in list)
     images: dict[str, dict[str, dict[str, Any]]] = {}
     for img in manifest.get("images", []):
         label = img.get("label") or "unlabeled"
         slot = images.setdefault(label, {})
-        slot[img["variant"]] = img  # warm overwrites cold (later in list)
+        slot[img["variant"]] = img
 
     if not images:
         return ""
 
-    def _variant_caption(var_name: str, img: dict[str, Any]) -> str:
-        var = by_name.get(var_name, {})
-        sr = var.get("streams", {}).get("refined_context") or var.get("streams", {}).get("cap_embedded") or {}
-        dmg = sr.get("damage_quant_units")
-        ref = var.get("reference", "")
-        gguf = var.get("gguf") or {}
-        bits = f" · {gguf['bpw']:.1f} bpw" if gguf else ""
-        div = divergence.get(var_name, {}).get("div_control_ratio")
-        lines = [f"<b>{html.escape(_display(var_name))}</b>{bits}"]
-        if ref:
-            lines.append(f"<span class='ci'>vs {html.escape(ref)}</span>")
-        m: list[str] = []
-        if dmg is not None:
-            m.append(f"damage {dmg:.1f}×")
-        if div is not None:
-            m.append(f"DiT {div * 100:.1f}%")
-        t = manifest.get("timing", {}).get(var_name, {}).get("passes", {})
-        cold = t.get("cold", {}).get("first_image_seconds")
-        warm = t.get("warm", {}).get("first_image_seconds")
-        if cold and warm:
-            m.append(f"{cold:.1f}s → {warm:.1f}s")
-        if m:
-            lines.append(html.escape(" · ".join(m)))
-        return "<br/>".join(lines)
-
-    blocks: list[str] = []
-    for label in sorted(images):
-        row_imgs: list[str] = []
-        checks: list[str] = []
-        for var_name in sorted(images[label]):
-            img = images[label][var_name]
+    # ---- embed images + per-variant metric captions into JS data ----
+    img_data: dict[str, dict[str, str]] = {}
+    cap_data: dict[str, dict[str, str]] = {}
+    all_variants: set[str] = set()
+    for label, vars_ in images.items():
+        img_data.setdefault(label, {})
+        cap_data.setdefault(label, {})
+        for var_name in vars_:
+            img = vars_[var_name]
             pth = Path(img.get("path", ""))
-            local = results_dir / "ab_images" / var_name / pth.name if pth.name else None
-            if local is None or not local.exists():
-                # manifest paths may be absolute host paths — try the leaf
-                alt = results_dir / "ab_images" / var_name / pth.name
-                if not alt.exists():
-                    continue
-                local = alt
-            b64 = base64.b64encode(local.read_bytes()).decode()
-            row_imgs.append(
-                f'<figure class="ab-cell"><img src="data:image/webp;base64,{b64}" alt="{html.escape(var_name)}"/>'
-                f"<figcaption>{_variant_caption(var_name, img)}</figcaption></figure>"
-            )
-            checks = img.get("checks", [])
-        if not row_imgs:
-            continue
-        check_html = ""
-        if checks:
-            check_html = "<p class='meta'>Adherence checks: " + "; ".join(html.escape(chk) for chk in checks) + "</p>"
-        blocks.append(f"<h3>{html.escape(label)}</h3>{check_html}<div class='ab-row'>{''.join(row_imgs)}</div>")
+            local = results_dir / "ab_images" / var_name / pth.name
+            if not pth.name or not local.exists():
+                continue
+            b64 = _ab_embed_image(local)
+            if b64 is None:
+                continue
+            img_data[label][var_name] = f"data:image/webp;base64,{b64}"
+            cap_data[label][var_name] = _ab_caption_html(var_name, img, by_name, manifest, divergence)
+            all_variants.add(var_name)
+
+    labels = [lb for lb in images if img_data.get(lb)]
+    if not labels:
+        return ""
+    var_list = sorted(all_variants)
+    if "base" in var_list:  # base anchor first
+        var_list = ["base"] + [v for v in var_list if v != "base"]
+    js_images = json.dumps(img_data)
+    js_caps = json.dumps(cap_data)
+    js_vars = json.dumps(var_list)
+    js_labels = json.dumps(labels)
 
     timing_rows: list[str] = []
     for var_name in sorted(manifest.get("timing", {})):
@@ -1075,7 +1077,8 @@ def _ab_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str, 
         timing_html = f"""
 <h3>Generation timing (seconds, RTX 5090, 1024px, 9 steps)</h3>
 <p>Cold = first image after the text encoder is freshly loaded into VRAM
-(model-load time included); warm = first image on the cached model. The
+(server-side <code>execution_start→execution_success</code> ms also recorded
+per image in the manifest); warm = first image on the cached model. The
 delta is the practical cost of a TE swap in a running session.</p>
 <table>
 <tr><th>Variant</th><th>TE file</th><th>Loader</th><th>Cold 1st img</th><th>Warm 1st img</th><th>Cold mean</th><th>Warm mean</th></tr>
@@ -1085,14 +1088,106 @@ delta is the practical cost of a TE swap in a running session.</p>
     return f"""
 <h2>A/B image evidence — same seed, only the text encoder swapped</h2>
 <p>Paired generations from the fixed seed {manifest.get("seed", "?")} through the
-real ComfyUI stack (Z-Image Turbo, 9 steps, cfg 1, euler/simple). Caption
-metrics: DiT-input damage (quant-floor units), DiT response (% of a
-seed-change), and cold→warm first-image time. Visual differences at
-matched seed are the image-level manifestation of the conditioning
-perturbation; identical-looking images at different damage levels
-demonstrate DiT robustness.</p>
-{chr(10).join(blocks)}
+real ComfyUI stack (Z-Image Turbo, 9 steps, cfg 1, euler/simple). Pick two
+variants and hover over the image to reveal: <b>left of the divider = variant
+A, right = variant B</b>. Identical-looking images at very different damage
+levels demonstrate DiT robustness; visible differences localize what the
+conditioning perturbation actually changed.</p>
+<noscript><p class="meta">Enable JavaScript for the interactive comparator.</p></noscript>
+<div id="ab-app" class="ab-app"></div>
+<script>
+(function() {{
+  const IMG = {js_images};
+  const CAP = {js_caps};
+  const VARS = {js_vars};
+  const LABELS = {js_labels};
+  const app = document.getElementById('ab-app');
+  let state = {{label: LABELS[0], a: VARS[0], b: VARS[1] || VARS[0]}};
+
+  function cap(label, v) {{
+    return (CAP[label] && CAP[label][v]) || v;
+  }}
+  function render() {{
+    const labelSel = LABELS.map(l =>
+      `<option ${{l === state.label ? 'selected' : ''}}>${{l}}</option>`).join('');
+    const varOpts = VARS.map(v =>
+      `<option ${{v === state.a || v === state.b ? 'disabled' : ''}}>${{v}}</option>`).join('');
+    const imgA = (IMG[state.label] || {{}})[state.a];
+    const imgB = (IMG[state.label] || {{}})[state.b];
+    app.innerHTML = `
+      <div class="ab-controls">
+        <label>Prompt <select id="ab-label">${{labelSel}}</select></label>
+        <label>Variant A <select id="ab-a">${{VARS.map(v => `<option ${{v===state.a?'selected':''}}>${{v}}</option>`).join('')}}</select></label>
+        <label>Variant B <select id="ab-b">${{VARS.map(v => `<option ${{v===state.b?'selected':''}}>${{v}}</option>`).join('')}}</select></label>
+        <button id="ab-swap" type="button">⇄ swap</button>
+      </div>
+      <div class="ab-slider" id="ab-slider">
+        <img class="ab-img-b" src="${{imgB || ''}}" alt="B"/>
+        <img class="ab-img-a" id="ab-img-a" src="${{imgA || ''}}" alt="A"/>
+        <div class="ab-divider" id="ab-divider"><div class="ab-handle">◀▶</div></div>
+      </div>
+      <div class="ab-caps">
+        <div class="ab-cap" id="ab-cap-a">${{cap(state.label, state.a)}}</div>
+        <div class="ab-cap" id="ab-cap-b">${{cap(state.label, state.b)}}</div>
+      </div>`;
+    const slider = document.getElementById('ab-slider');
+    const imgAElem = document.getElementById('ab-img-a');
+    const divider = document.getElementById('ab-divider');
+    function move(clientX) {{
+      const r = slider.getBoundingClientRect();
+      const pct = Math.min(100, Math.max(0, (clientX - r.left) / r.width * 100));
+      // A visible left of the divider: clip A's right side beyond (100 - pct)%
+      imgAElem.style.clipPath = `inset(0 ${{100 - pct}}% 0 0)`;
+      divider.style.left = pct + '%';
+    }}
+    slider.addEventListener('mousemove', e => move(e.clientX));
+    slider.addEventListener('touchmove', e => move(e.touches[0].clientX));
+    slider.addEventListener('click', e => move(e.clientX));
+    document.getElementById('ab-label').onchange = e => {{ state.label = e.target.value; render(); }};
+    document.getElementById('ab-a').onchange = e => {{ state.a = e.target.value; render(); }};
+    document.getElementById('ab-b').onchange = e => {{ state.b = e.target.value; render(); }};
+    document.getElementById('ab-swap').onclick = () => {{ [state.a, state.b] = [state.b, state.a]; render(); }};
+  }}
+  render();
+}})();
+</script>
 {timing_html}"""
+
+
+def _ab_caption_html(
+    var_name: str,
+    img: dict[str, Any],
+    by_name: dict[str, Any],
+    manifest: dict[str, Any],
+    divergence: dict[str, dict[str, Any]],
+) -> str:
+    """Metric caption for one variant under the comparator (HTML string)."""
+    var = by_name.get(var_name, {})
+    sr = var.get("streams", {}).get("refined_context") or var.get("streams", {}).get("cap_embedded") or {}
+    dmg = sr.get("damage_quant_units")
+    ref = var.get("reference", "")
+    gguf = var.get("gguf") or {}
+    bits = f" · {gguf['bpw']:.1f} bpw" if gguf else ""
+    lines = [f"<b>{html.escape(_display(var_name))}</b>{bits}"]
+    if ref:
+        lines.append(f"<span class='ci'>vs {html.escape(ref)}</span>")
+    m: list[str] = []
+    if dmg is not None:
+        m.append(f"damage {dmg:.1f}×")
+    div = divergence.get(var_name, {}).get("div_control_ratio")
+    if div is not None:
+        m.append(f"DiT {div * 100:.1f}%")
+    t = manifest.get("timing", {}).get(var_name, {}).get("passes", {})
+    cold = t.get("cold", {}).get("first_image_seconds")
+    warm = t.get("warm", {}).get("first_image_seconds")
+    if cold and warm:
+        m.append(f"{cold:.1f}s → {warm:.1f}s")
+    perf = img.get("perf") or {}
+    if perf.get("server_gen_ms") is not None:
+        m.append(f"server {perf['server_gen_ms']:.0f}ms")
+    if m:
+        lines.append(html.escape(" · ".join(m)))
+    return "<br/>".join(lines)
 
 
 def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
@@ -1329,11 +1424,35 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
  .dmg-low {{ color: #27ae60; }}
  .ref-var {{ color: #7f8c8d; font-style: italic; }}
  .group-row td {{ background: #dde6f2; color: #2c3e66; font-weight: bold; text-align: left; }}
- .ab-row {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; margin: 12px 0 28px 0; }}
- .ab-cell {{ flex: 1 1 300px; max-width: 420px; margin: 0; text-align: center;
-            background: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 8px; }}
- .ab-cell img {{ max-width: 100%; height: auto; border-radius: 4px; }}
- .ab-cell figcaption {{ font-size: 12px; color: #333; margin-top: 6px; line-height: 1.5; }}
+ /* --- A/B interactive comparator --- */
+ .ab-app {{ margin: 16px 0 8px 0; }}
+ .ab-controls {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+                background: #eef2f7; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;
+                font-size: 13px; }}
+ .ab-controls label {{ display: flex; align-items: center; gap: 6px; color: #2c3e66; font-weight: 600; }}
+ .ab-controls select {{ padding: 4px 8px; border-radius: 6px; border: 1px solid #c5cedd;
+                       background: white; font-size: 13px; max-width: 260px; }}
+ .ab-controls button {{ padding: 5px 12px; border-radius: 6px; border: 1px solid #c5cedd;
+                       background: white; cursor: pointer; font-size: 13px; }}
+ .ab-controls button:hover {{ background: #dde6f2; }}
+ .ab-slider {{ position: relative; width: 100%; max-width: 768px; margin: 0 auto;
+              aspect-ratio: 1 / 1; overflow: hidden; border-radius: 8px;
+              border: 1px solid #d0d0d0; background: #222; cursor: ew-resize;
+              user-select: none; touch-action: none; }}
+ .ab-slider img {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+                  object-fit: contain; pointer-events: none; }}
+ .ab-slider img.ab-img-a {{ z-index: 2; clip-path: inset(0 50% 0 0); }}
+ .ab-divider {{ position: absolute; top: 0; left: 50%; height: 100%; width: 3px;
+               background: #ffd166; z-index: 3; transform: translateX(-50%);
+               pointer-events: none; box-shadow: 0 0 6px rgba(0,0,0,0.6); }}
+ .ab-handle {{ position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+              background: #ffd166; color: #1a1a2e; font-size: 13px; font-weight: bold;
+              border-radius: 14px; padding: 4px 8px; white-space: nowrap;
+              box-shadow: 0 1px 4px rgba(0,0,0,0.4); }}
+ .ab-caps {{ display: flex; gap: 12px; max-width: 768px; margin: 10px auto 28px auto; }}
+ .ab-cap {{ flex: 1 1 0; background: white; border: 1px solid #e0e0e0; border-radius: 8px;
+           padding: 8px 12px; font-size: 12px; color: #333; line-height: 1.6; }}
+ .ab-cap .ci {{ color: #888; font-size: 11px; }}
  .ci {{ color: #888; font-size: 11px; white-space: nowrap; }}
  figure {{ margin: 32px 0; text-align: center; }}
  figure img {{ max-width: 100%; background: white; border: 1px solid #e0e0e0; border-radius: 8px; }}
