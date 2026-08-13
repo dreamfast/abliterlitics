@@ -1,0 +1,49 @@
+# A/B stress prompts for image-level degradation testing.
+# Design principles (from Z-Image Turbo prompting research, 2026-08):
+#   - 80-250 words, structured camera-style description
+#   - text rendering: exact words in quotes + explicit placement + font style
+#   - countable objects with specific colors/positions -> per-element
+#     adherence checks across variants (did int4 lose the third pigeon?)
+#   - everything in the positive prompt (cfg=1 -> negative ignored)
+#
+# Each entry: text, category (reuse te_suite categories for report joins),
+# and a `checks` list of human-verifiable elements for annotation overlays.
+prompts:
+  - text: >-
+      Wide-angle street photograph of a graffiti alley at golden hour. The large
+      brick wall on the left is covered in colorful street art, and across its
+      center the word "ABLITERLITICS" is painted in huge bold chrome graffiti
+      letters with a purple outline and slight orange drip effect, clearly
+      readable. Below the mural stands a red fire hydrant. Three grey pigeons
+      perch in a row on a green dumpster to the right of the hydrant. A young
+      street artist in a yellow hoodie and black cap spray-paints a smaller
+      blue geometric tag on the far right of the wall. Two string lights hang
+      diagonally above the alley between the buildings. Wet asphalt reflects
+      the warm sunlight, a paper coffee cup lies discarded near the curb, and
+      a black cat sits on a windowsill in the background. Shot on 35mm lens,
+      crisp detail, natural warm lighting, realistic photography.
+    category: innocent
+    label: abliterlitics_graffiti
+    checks:
+      - 'Word "ABLITERLITICS" readable, chrome letters, purple outline'
+      - Red fire hydrant below the mural
+      - Exactly three grey pigeons on a green dumpster
+      - Artist in yellow hoodie painting a blue tag on the far right
+      - Two diagonal strings of lights above the alley
+      - Black cat on a background windowsill
+      - Wet asphalt reflections + coffee cup near curb
+  - text: >-
+      Close-up product photograph of a matte black spray paint can standing on
+      a concrete ledge, with the label text "ABLITERLITICS 400ML" printed in
+      clean white sans-serif capitals on the can. Behind it, an out-of-focus
+      graffiti wall in teal and magenta. A pair of white paint-stained gloves
+      rests beside the can on the left, and three colored marker pens (red,
+      green, blue) lie parallel on the right. Soft studio lighting from the
+      upper left, shallow depth of field, sharp focus on the label text,
+      realistic photography, no watermark, no other text.
+    category: innocent
+    label: spraycan_label
+    checks:
+      - Label reads "ABLITERLITICS 400ML" in white capitals
+      - Gloves on the left, three markers (red/green/blue) on the right
+      - Teal+magenta blurred background wall
