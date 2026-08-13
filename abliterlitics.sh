@@ -20,6 +20,7 @@ Commands:
   lm-eval       Run lm-evaluation-harness
   harmbench     Run HarmBench evaluation
   text-encoder  Text-encoder conditioning fidelity analysis (tebench)
+  te-report     Generate SVG graphs + HTML report from text-encoder results
   graphs        Generate all graphs from existing results
   report        Generate provenance report from results
   build         Build Docker images
@@ -125,6 +126,10 @@ cmd_harmbench() {
 cmd_text_encoder() {
     shift
     bash "${RUNNERS_DIR}/run_text_encoder.sh" $(global_flags) "$@"
+}
+
+cmd_te_report() {
+    bash "${RUNNERS_DIR}/run_te_report.sh" "${1:-.}"
 }
 
 cmd_graphs() {
@@ -336,6 +341,7 @@ case "$COMMAND" in
     harmbench) cmd_harmbench "$COMMAND" "$@" ;;
     text-encoder) cmd_text_encoder "$COMMAND" "$@" ;;
     te)           cmd_text_encoder "$COMMAND" "$@" ;;
+    te-report)    cmd_te_report "${1:-.}" ;;
     graphs)    cmd_graphs "${1:-.}" ;;
     report)    cmd_report "${1:-.}" ;;
     build)     cmd_build ;;

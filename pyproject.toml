@@ -57,6 +57,7 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
 "src/weight/subspace_alignment.py" = ["N806"]              # A, B, Q_a, Q_b, M from linear algebra
 "src/weight/stacking_analysis.py" = ["N806"]                # D_a, D_b, D_r, D_e are edit vectors
 "src/report/generate_graphs.py" = ["E741", "E501"]         # l in matplotlib labels, long format strings
+"src/text_encoder/generate_report.py" = ["E501"]            # Long HTML template f-strings in TE report
 "src/report/provenance_report.py" = ["E501", "N802"]       # Long f-strings in reports, L() helper
 "src/kl/kl_divergence.py" = ["N812", "E501", "N806"]       # torch.nn.functional as F, AutoModelClass, long log messages (FROZEN module)
 "src/benchmark/benchmark_eval.py" = ["N806", "E501", "B905"]  # BitsAndBytesConfig, docstring lines, zip
