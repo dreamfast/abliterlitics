@@ -113,6 +113,77 @@ def _is_reference_variant(var: dict[str, Any]) -> bool:
     return bool(var["name"].startswith("base_"))
 
 
+# ---------------------------------------------------------------------------
+# Variant grouping: family (base/heretic) x container (safetensors/GGUF)
+# ---------------------------------------------------------------------------
+
+# Quant display order within a group (bpw-descending for GGUF).
+_SAFETENSORS_QUANT_ORDER: dict[str, float] = {
+    "": 0.0,  # plain heretic / base (BF16)
+    "int8": 1.0,
+    "fp8": 2.0,
+    "fp8_e4m3fn": 2.0,
+    "mxfp8": 3.0,
+    "nvfp4": 4.0,
+    "int4": 5.0,
+}
+
+
+def _variant_group(var: dict[str, Any]) -> tuple[int, str]:
+    """Group key for report tables: (order, header label).
+
+    Groups by family (pure-quantization reference vs abliterated) and
+    container format; dual-run combined entries get their own trailing
+    group (they duplicate the primary variant's streams — the decomposition
+    table is their canonical view).
+    """
+    name = var["name"]
+    # Container from persisted GGUFMeta when present, else from the name
+    # (divergence summaries carry names only).
+    is_gguf = bool(var.get("gguf")) or "_gguf_" in name
+    if name.endswith("__vs_base"):
+        return (4, "Abliterated quant — combined vs global base (dual runs)")
+    if _is_reference_variant(var):
+        if is_gguf:
+            return (1, "Base model — GGUF containers (pure quantization)")
+        return (0, "Base model — safetensors quants (pure quantization)")
+    if is_gguf:
+        return (3, "Abliterated (heretic) — GGUF containers")
+    return (2, "Abliterated (heretic) — safetensors")
+
+
+def _group_sort_key(var: dict[str, Any]) -> tuple[float, str]:
+    """Sort within a group: quant tier (safetensors) or bpw-descending (GGUF)."""
+    if var.get("gguf"):
+        return (-float(var["gguf"].get("bpw", 0) or 0), var["name"])
+    base = var["name"].replace("__vs_base", "")
+    _prefix, _sep, suffix = base.partition("_")
+    if "_gguf_" in base:
+        # Name-only GGUF entries (divergence): order by known quant ladder.
+        gguf_order = {
+            "f16": 0.0,
+            "q8_0": 1.0,
+            "q6_k": 2.0,
+            "q5_k_s": 3.0,
+            "q5_k_m": 4.0,
+            "q4_k_s": 5.0,
+            "q4_k_m": 6.0,
+            "q3_k_m": 7.0,
+        }
+        gguf_suffix = base.rsplit("_gguf_", 1)[1] if "_gguf_" in base else ""
+        return (gguf_order.get(gguf_suffix, 50.0), var["name"])
+    return (_SAFETENSORS_QUANT_ORDER.get(suffix, 50.0), var["name"])
+
+
+def _group_ordered(variants: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Variants ordered by group header, then quant tier within group."""
+    return sorted(variants, key=lambda v: (_variant_group(v)[0], _group_sort_key(v), v["name"]))
+
+
+def _group_row(label: str, colspan: int = 9) -> str:
+    return f'<tr class="group-row"><td colspan="{colspan}">{html.escape(label)}</td></tr>'
+
+
 def _display(name: str) -> str:
     """Human-friendly variant name: dual-run suffix -> annotation."""
     return name.replace("__vs_base", " (vs base)")
@@ -137,6 +208,13 @@ def graph_layer_profile(variants: list[dict[str, Any]], out: Path) -> None:
     backend = variants[0]["backend"]
     consumed = BACKEND_CONSUMED_LAYER.get(backend)
 
+    # Readability curation: the safetensors story only (base quants as the
+    # grey noise-floor band, heretic variants colored). GGUF containers have
+    # their own views (ladder graph + grouped heatmap) — 14 more colored
+    # lines here would be unreadable spaghetti.
+    variants = [
+        v for v in variants if not v["name"].endswith("__vs_base") and not v.get("gguf") and "_gguf_" not in v["name"]
+    ]
     for i, var in enumerate(variants):
         pts = sorted(
             (idx, sr["metrics"]["mse"])
@@ -184,35 +262,74 @@ def graph_layer_profile(variants: list[dict[str, Any]], out: Path) -> None:
 
 
 def graph_damage_ranking(variants: list[dict[str, Any]], out: Path) -> None:
+    """Transmitted damage at the DiT input, grouped and log-scaled.
+
+    Readability redesign: one bar per variant (the headline refined_context
+    stream — earlier pipeline stages live in the damage table), grouped by
+    family×container with separator lines, log x-axis (damage spans 0.001×
+    to 800×), and a stable family palette matching the ladder graph.
+    """
     floor_label = variants[0].get("floor", "fakequant_int8")
-    rows: list[tuple[str, str, float]] = []
+    variants = _group_ordered([v for v in variants if not v["name"].endswith("__vs_base")])
+    rows: list[tuple[dict[str, Any], float]] = []
     for var in variants:
-        if var["name"].endswith("__vs_base"):
-            continue  # combined measurements live in the decomposition table
-        for stream in PIPELINE_STREAMS:
-            sr = var["streams"].get(stream)
-            if sr and sr.get("damage_quant_units") is not None:
-                rows.append((var["name"], stream, sr["damage_quant_units"]))
+        sr = var["streams"].get("refined_context") or var["streams"].get("cap_embedded")
+        if sr and sr.get("damage_quant_units") is not None:
+            rows.append((var, sr["damage_quant_units"]))
 
     if not rows:
         log.warning("No damage data — skipping %s", out.name)
         return
 
-    fig, ax = plt.subplots(figsize=(10, max(2, 0.5 * len(rows) + 1.5)))
-    labels = [f"{_display(v)}  ·  {s}" for v, s, _ in rows]
-    values = [d for _, _, d in rows]
-    colors = [COLORS[sorted({v for v, _, _ in rows}).index(v) % len(COLORS)] for v, _, _ in rows]
+    def _bar_color(var: dict[str, Any]) -> str:
+        is_gguf = bool(var.get("gguf")) or "_gguf_" in var["name"]
+        if _is_reference_variant(var):
+            return "#8c8c8c" if is_gguf else "#b8b8b8"
+        return "#c44e52" if is_gguf else "#4c72b0"
 
+    fig, ax = plt.subplots(figsize=(10, max(2, 0.42 * len(rows) + 2.0)))
     y = np.arange(len(rows))
+    values = [d for _, d in rows]
+    colors = [_bar_color(v) for v, _ in rows]
     ax.barh(y, values, color=colors, alpha=0.85)
+    ax.set_xscale("log")
+    ax.set_xlim(max(min(values) * 0.5, 1e-3), max(values) * 1.5)
     ax.axvline(1.0, color="#e74c3c", lw=1.5, ls="--")
     ax.text(1.0, len(rows) - 0.2, " one quant step", color="#e74c3c", fontsize=9, va="top")
 
     ax.set_yticks(y)
-    ax.set_yticklabels(labels, fontsize=9)
+    ax.set_yticklabels([_display(v["name"]) for v, _ in rows], fontsize=9)
     ax.invert_yaxis()
-    ax.set_xlabel(f"damage ({floor_label} floor units)")
-    ax.set_title("Transmitted damage by pipeline stage (lower = more faithful)")
+    # Group separators + inline group labels
+    group_ids = [_variant_group(v)[0] for v, _ in rows]
+    for i in range(1, len(rows)):
+        if group_ids[i] != group_ids[i - 1]:
+            ax.axhline(i - 0.5, color="#555555", lw=1.2, alpha=0.7)
+    # Compact group captions at the right edge of each block's first row
+    seen: set[int] = set()
+    for i, gid in enumerate(group_ids):
+        if gid not in seen:
+            seen.add(gid)
+            short = {
+                0: "base quants",
+                1: "base GGUF",
+                2: "heretic",
+                3: "heretic GGUF",
+            }.get(gid, "")
+            if short:
+                ax.annotate(
+                    short,
+                    xy=(0.99, i / max(len(rows) - 1, 1)),
+                    xycoords="axes fraction",
+                    xytext=(-2, 4),
+                    textcoords="offset points",
+                    ha="right",
+                    fontsize=8,
+                    color="#555555",
+                    style="italic",
+                )
+    ax.set_xlabel(f"DiT-input damage ({floor_label} floor units, log)")
+    ax.set_title("Transmitted damage at the DiT input (lower = more faithful)")
     fig.tight_layout()
     fig.savefig(out, format="svg")
     plt.close(fig)
@@ -233,7 +350,14 @@ def _di_input_stream(var: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def graph_category_gradient(variants: list[dict[str, Any]], out: Path) -> None:
-    usable = [v for v in variants if _di_input_stream(v)]
+    """Damage by prompt category, split into base/heretic panels.
+
+    One bar group per category; base quants (the noise floor) on the left
+    panel, abliterated variants on the right; family palette matches the
+    other graphs. Log y-axis — extreme-category MSE spans orders of
+    magnitude above innocent.
+    """
+    usable = _group_ordered([v for v in variants if not v["name"].endswith("__vs_base") and _di_input_stream(v)])
     if not usable:
         log.warning("No per-category data — skipping %s", out.name)
         return
@@ -243,23 +367,64 @@ def graph_category_gradient(variants: list[dict[str, Any]], out: Path) -> None:
     if not present:
         return
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    x = np.arange(len(present))
-    width = 0.8 / len(usable)
+    ref_panel = [v for v in usable if _is_reference_variant(v)]
+    heretic_panel = [v for v in usable if not _is_reference_variant(v)]
 
-    for i, var in enumerate(usable):
-        sr = _di_input_stream(var)
-        assert sr is not None
-        vals = [max(sr["per_category"].get(c, {}).get("mse", 0.0), 1e-12) for c in present]
-        ax.bar(x + i * width, vals, width * 0.92, color=COLORS[i % len(COLORS)], label=_display(var["name"]))
+    def _bar_color(var: dict[str, Any]) -> str:
+        is_gguf = bool(var.get("gguf")) or "_gguf_" in var["name"]
+        if _is_reference_variant(var):
+            return "#8c8c8c" if is_gguf else "#b8b8b8"
+        return "#c44e52" if is_gguf else "#4c72b0"
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+    x = np.arange(len(present))
+
+    for ax, panel, title in (
+        (axes[0], ref_panel, "Base quants (noise floor)"),
+        (axes[1], heretic_panel, "Abliterated (heretic)"),
+    ):
+        width = 0.8 / max(len(panel), 1)
+        for i, var in enumerate(panel):
+            sr = _di_input_stream(var)
+            assert sr is not None
+            vals = [max(sr["per_category"].get(c, {}).get("mse", 0.0), 1e-12) for c in present]
+            ax.bar(
+                x + i * width,
+                vals,
+                width * 0.92,
+                color=_bar_color(var),
+                label=_display(var["name"]),
+            )
+        ax.set_xticks(x + width * (len(panel) - 1) / 2)
+        ax.set_xticklabels(present, rotation=20)
+        ax.set_title(title, fontsize=11)
+        ax.grid(True, axis="y", alpha=0.25)
 
     sr0 = _di_input_stream(usable[0])
     stream_name = sr0["stream"] if sr0 else ""
-    ax.set_xticks(x + width * (len(usable) - 1) / 2)
-    ax.set_xticklabels(present, rotation=20)
-    ax.set_ylabel("MSE vs base")
-    ax.set_title(f"Damage by prompt category — DiT-input stream ({stream_name})")
-    ax.legend(fontsize=9)
+    axes[0].set_ylabel("MSE vs base (log)")
+    axes[0].set_yscale("log")
+    # No per-series legends: with 12 variants per panel the legend is pure
+    # clutter and the figure's story is the category GRADIENT (taboo
+    # concentration), not per-variant identification — the damage table,
+    # ranking graph, and heatmap carry identity.
+    axes[0].annotate(
+        f"{len(ref_panel)} base quants (grey)",
+        xy=(0.03, 0.97),
+        xycoords="axes fraction",
+        fontsize=9,
+        color="#666666",
+        va="top",
+    )
+    axes[1].annotate(
+        f"{len(heretic_panel)} heretic variants\n(blue = safetensors, red = GGUF)",
+        xy=(0.03, 0.97),
+        xycoords="axes fraction",
+        fontsize=9,
+        color="#666666",
+        va="top",
+    )
+    fig.suptitle(f"Damage by prompt category — DiT-input stream ({stream_name})", fontsize=12)
     fig.tight_layout()
     fig.savefig(out, format="svg")
     plt.close(fig)
@@ -272,6 +437,9 @@ def graph_category_gradient(variants: list[dict[str, Any]], out: Path) -> None:
 
 
 def graph_layer_heatmap(variants: list[dict[str, Any]], out: Path) -> None:
+    # Grouped ordering: base safetensors -> base GGUF -> heretic safetensors
+    # -> heretic GGUF -> dual runs, quant tier within each group.
+    variants = _group_ordered([v for v in variants if not v["name"].endswith("__vs_base")])
     all_layers: set[int] = set()
     for var in variants:
         all_layers.update(idx for sr in var["streams"].values() if (idx := _layer_index(sr["stream"])) is not None)
@@ -293,7 +461,12 @@ def graph_layer_heatmap(variants: list[dict[str, Any]], out: Path) -> None:
     ax.set_xticks(range(len(layers)))
     ax.set_xticklabels([str(ly) for ly in layers], fontsize=7)
     ax.set_xlabel("encoder layer")
-    ax.set_title("log10 MSE vs base")
+    ax.set_title("log10 MSE vs base (grouped: base quants, then abliterated)")
+    # Horizontal separators between groups
+    group_ids = [_variant_group(v)[0] for v in variants]
+    for i in range(1, len(variants)):
+        if group_ids[i] != group_ids[i - 1]:
+            ax.axhline(i - 0.5, color="white", lw=2.5)
     fig.colorbar(im, ax=ax, shrink=0.8)
     fig.tight_layout()
     fig.savefig(out, format="svg")
@@ -433,7 +606,12 @@ def _fmt(v: float | None, spec: str = ".4f") -> str:
 
 def _table_rows(variants: list[dict[str, Any]]) -> str:
     rows = []
-    for var in variants:
+    current_group: tuple[int, str] | None = None
+    for var in _group_ordered(variants):
+        group = _variant_group(var)
+        if group != current_group:
+            current_group = group
+            rows.append(_group_row(group[1]))
         for sr in var["streams"].values():
             if _layer_index(sr["stream"]) is not None:
                 continue
@@ -604,7 +782,8 @@ def _gguf_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str
     gguf_vars = [v for v in variants if v.get("gguf") and not v["name"].endswith("__vs_base")]
     if not gguf_vars:
         return ""
-    rows: list[tuple[float, str]] = []
+    rows_base: list[tuple[float, str]] = []
+    rows_heretic: list[tuple[float, str]] = []
     for var in gguf_vars:
         g = var["gguf"]
         sr = var["streams"].get("refined_context") or var["streams"].get("cap_embedded")
@@ -625,17 +804,23 @@ def _gguf_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str
             ref = var.get("reference", "")
             if ref:
                 label += f" <span class='ci'>vs {html.escape(_display(ref))}</span>"
-        rows.append(
-            (
-                float(g.get("bpw", 0)),
-                # label is pre-escaped above (name escaped, span appended raw)
-                f"<tr><td{ref_cls}>{label}</td>"
-                f"<td>{html.escape(_gguf_qtype_mix(g.get('qtype_histogram')))}</td>"
-                f"<td>{g.get('bpw', 0):.2f}</td>"
-                f"<td>{dmg_txt}</td><td>{sem_txt}</td><td>{div_txt}</td></tr>",
-            )
+        row_html = (
+            # label is pre-escaped above (name escaped, span appended raw)
+            f"<tr><td{ref_cls}>{label}</td>"
+            f"<td>{html.escape(_gguf_qtype_mix(g.get('qtype_histogram')))}</td>"
+            f"<td>{g.get('bpw', 0):.2f}</td>"
+            f"<td>{dmg_txt}</td><td>{sem_txt}</td><td>{div_txt}</td></tr>"
         )
-    rows.sort(key=lambda r: -r[0])
+        (rows_base if _is_reference_variant(var) else rows_heretic).append((float(g.get("bpw", 0)), row_html))
+    rows_base.sort(key=lambda r: -r[0])
+    rows_heretic.sort(key=lambda r: -r[0])
+    blocks = []
+    if rows_base:
+        blocks.append(_group_row("Base containers — pure GGUF quantization vs BF16 base", colspan=6))
+        blocks.extend(r[1] for r in rows_base)
+    if rows_heretic:
+        blocks.append(_group_row("Heretic containers — pure ablation at matched quant", colspan=6))
+        blocks.extend(r[1] for r in rows_heretic)
     return f"""
 <h2>GGUF quantization ladder</h2>
 <p>Damage for llama.cpp GGUF containers (ComfyUI-GGUF qwen3 path: vendored
@@ -646,7 +831,7 @@ matched quant. bpw is measured from the file (storage bytes × 8 / params).
 The rightmost column is the DiT's response vs the noise-control anchor.</p>
 <table>
 <tr><th>Variant</th><th>Qtype mix</th><th>bpw</th><th>DiT-input damage</th><th>Semantic</th><th>DiT response</th></tr>
-{chr(10).join(r[1] for r in rows)}
+{chr(10).join(blocks)}
 </table>"""
 
 
@@ -745,12 +930,26 @@ def _divergence_section(divergence_data: dict[str, dict[str, Any]]) -> str:
     ("completely different image" level).
     """
     rows: list[str] = []
-    for name, s in sorted(divergence_data.items()):
+    current_group: tuple[int, str] | None = None
+    # Group-ordered iteration (family × container × quant tier) — plain
+    # alphabetical would flip-flop the group headers (base_gguf_* sorts
+    # between base_fp8 and base_int4).
+    entries = sorted(
+        divergence_data.items(),
+        key=lambda kv: (_variant_group({"name": kv[0]})[0], _group_sort_key({"name": kv[0], "gguf": None})),
+    )
+    for name, s in entries:
         div = s.get("mean_final_latent_div")
         ctrl = s.get("noise_control_final")
         ratio = s.get("div_control_ratio")
         if div is None or ctrl is None or ratio is None:
             continue
+        # Group headers keyed by variant-name convention (base_* = reference)
+        pseudo = {"name": name}
+        group = _variant_group(pseudo)
+        if group != current_group:
+            current_group = group
+            rows.append(_group_row(group[1], colspan=4))
         ref_cls = ' class="ref-var"' if name.startswith("base_") else ""
         rows.append(
             f"<tr><td{ref_cls}>{html.escape(_display(name))}</td>"
@@ -786,8 +985,12 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
         f'<figure><img src="{_svg_data_uri(p)}" alt="{name}"/><figcaption>{cap}</figcaption></figure>'
         for name, p, cap in (
             ("layer_profile", svgs["layer_profile"], "Where the damage lands vs where the DiT reads"),
-            ("damage_ranking", svgs["damage_ranking"], "Transmitted damage, quant-floor units"),
-            ("category_gradient", svgs["category_gradient"], "Taboo-concentration of transmitted damage"),
+            (
+                "damage_ranking",
+                svgs["damage_ranking"],
+                "Transmitted damage at the DiT input, grouped by family (log scale)",
+            ),
+            ("category_gradient", svgs["category_gradient"], "Taboo-concentration — base quants vs abliterated panels"),
             ("layer_heatmap", svgs["layer_heatmap"], "Full per-layer damage map"),
             ("gguf_ladder", svgs["gguf_ladder"], "GGUF quantization ladder (damage vs bits-per-weight)"),
         )
@@ -825,6 +1028,7 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path) 
  .dmg-high {{ color: #c0392b; font-weight: bold; }}
  .dmg-low {{ color: #27ae60; }}
  .ref-var {{ color: #7f8c8d; font-style: italic; }}
+ .group-row td {{ background: #dde6f2; color: #2c3e66; font-weight: bold; text-align: left; }}
  .ci {{ color: #888; font-size: 11px; white-space: nowrap; }}
  figure {{ margin: 32px 0; text-align: center; }}
  figure img {{ max-width: 100%; background: white; border: 1px solid #e0e0e0; border-radius: 8px; }}
