@@ -116,6 +116,15 @@ def main() -> None:
         names.append(k)
         var_name = k.replace("-", "_")
         print(f"export VARIANT_PATH_{var_name}={shlex.quote(comp_dir + '/' + v['path'])}")
+        # LoRA adapter path (for vLLM dynamic LoRA loading). When set, the runner
+        # uses --enable-lora instead of loading a merged model. The variant's
+        # `path` should point to the BASE model (the adapter is applied on top).
+        # See AGENTS.md lesson #35 — BF16 merge of small-alpha LoRAs loses signal.
+        lora_path = v.get('lora_adapter_path')
+        if lora_path:
+            print(f"export VARIANT_LORA_ADAPTER_{var_name}={shlex.quote(comp_dir + '/' + lora_path)}")
+        else:
+            print(f"export VARIANT_LORA_ADAPTER_{var_name}=")
         print(f"export VARIANT_SKIP_HB_{var_name}={'1' if v.get('skip_harmbench', False) else '0'}")
         print(f"export VARIANT_SKIP_LM_{var_name}={'1' if v.get('skip_lm_eval', False) else '0'}")
         print(f"export VARIANT_SKIP_KL_{var_name}={'1' if v.get('skip_kl', False) else '0'}")
@@ -144,6 +153,9 @@ def main() -> None:
     print(f"export LM_EVAL_TASKS={shlex.quote(str(settings.get('lm_eval_tasks', default_tasks)))}")
     print(f"export LM_EVAL_MAX_MODEL_LEN={shlex.quote(str(settings.get('lm_eval_max_model_len', 16384)))}")
     print(f"export LM_EVAL_MAX_GEN_TOKS={shlex.quote(str(settings.get('lm_eval_max_gen_toks', 4096)))}")
+    # GSM8K Phase 2 generation budget (thinking models need thinking + answer room).
+    # Auto-capped to max_model_len - 1024 by the runner.
+    print(f"export GSM8K_GEN_TOKS={shlex.quote(str(settings.get('gsm8k_gen_toks', 7168)))}")
     # GPU memory utilization override (empty = use runner's size-based defaults).
     # Large-vocab models (e.g. Gemma, 256k vocab) need lower util so the
     # prompt_logprobs tensor (used by loglikelihood tasks) has headroom.
@@ -182,6 +194,33 @@ def main() -> None:
         override = settings.get(setting_key)
         if override:
             print(f"export {env_var}={shlex.quote(override)}")
+
+    # Text-encoder bench settings (optional — only if tebench block exists)
+    tebench = settings.get("tebench", {})
+    if tebench:
+        print(f"export TEBENCH_BACKEND={shlex.quote(str(tebench.get('backend', '')))}")
+        dit_dir = tebench.get("dit_model_dir", "")
+        if dit_dir:
+            dit_dir = comp_dir + "/" + dit_dir
+        print(f"export TEBENCH_DIT_MODEL_DIR={shlex.quote(dit_dir)}")
+        stages = tebench.get("stages", ["raw_hidden", "projected", "connector_out"])
+        print(f"export TEBENCH_STAGES={shlex.quote(','.join(stages))}")
+        print(f"export TEBENCH_MAX_LENGTH={shlex.quote(str(tebench.get('max_length', 1024)))}")
+        print(f"export TEBENCH_BATCH_SIZE={shlex.quote(str(tebench.get('batch_size', 8)))}")
+        print(f"export TEBENCH_DEVICE={shlex.quote(str(tebench.get('device', 'cpu')))}")
+        print(f"export TEBENCH_NUM_BOOTSTRAP={shlex.quote(str(tebench.get('n_boot', 1000)))}")
+        print(f"export TEBENCH_PROMPT_SUITE={shlex.quote(str(tebench.get('prompt_suite', 'default')))}")
+        te_image = tebench.get("te_image", "abliterlitics-te:1.0.0")
+        print(f"export TE_IMAGE={shlex.quote(te_image)}")
+    else:
+        # Export empty defaults so runner scripts don't break on unset vars
+        print("export TEBENCH_BACKEND=")
+        print("export TE_IMAGE=")
+
+    # Per-variant TE skip flags
+    for k, v in d["variants"].items():
+        var_name = k.replace("-", "_")
+        print(f"export VARIANT_SKIP_TE_{var_name}={'1' if v.get('skip_te', False) else '0'}")
 
 
 if __name__ == "__main__":

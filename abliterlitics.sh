@@ -19,6 +19,7 @@ Commands:
   kl            KL divergence analysis
   lm-eval       Run lm-evaluation-harness
   harmbench     Run HarmBench evaluation
+  text-encoder  Text-encoder conditioning fidelity analysis (tebench)
   graphs        Generate all graphs from existing results
   report        Generate provenance report from results
   build         Build Docker images
@@ -119,6 +120,11 @@ cmd_harmbench() {
     done
     load_comparison "$(find_comp_dir "$comp_dir")"
     python3 "${RUNNERS_DIR}/run_harmbench.py" $(global_flags) "$@"
+}
+
+cmd_text_encoder() {
+    shift
+    bash "${RUNNERS_DIR}/run_text_encoder.sh" $(global_flags) "$@"
 }
 
 cmd_graphs() {
@@ -324,6 +330,8 @@ case "$COMMAND" in
     kl)        cmd_kl "$COMMAND" "$@" ;;
     lm-eval)   cmd_lm_eval "$COMMAND" "$@" ;;
     harmbench) cmd_harmbench "$COMMAND" "$@" ;;
+    text-encoder) cmd_text_encoder "$COMMAND" "$@" ;;
+    te)           cmd_text_encoder "$COMMAND" "$@" ;;
     graphs)    cmd_graphs "${1:-.}" ;;
     report)    cmd_report "${1:-.}" ;;
     build)     cmd_build ;;

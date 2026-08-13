@@ -215,6 +215,26 @@ CREATE TABLE IF NOT EXISTS harmbench_scores (
 );
 
 -- ============================================================
+-- Text-encoder conditioning fidelity results
+-- ============================================================
+CREATE TABLE IF NOT EXISTS te_results (
+    comparison     TEXT NOT NULL,
+    variant        TEXT NOT NULL,
+    backend        TEXT NOT NULL,
+    stream         TEXT NOT NULL,
+    stage          TEXT NOT NULL,
+    metric_name    TEXT NOT NULL,
+    metric_value   REAL NOT NULL,
+    ci_low         REAL,
+    ci_high        REAL,
+    damage_quant_units REAL,
+    result_path    TEXT,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (comparison, variant, backend, stream, stage, metric_name),
+    FOREIGN KEY (comparison) REFERENCES comparisons(name) ON DELETE CASCADE
+);
+
+-- ============================================================
 -- Indexes for query-heavy columns
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_model_stages_comp
@@ -233,6 +253,8 @@ CREATE INDEX IF NOT EXISTS idx_classifications_comp
     ON classifications(comparison, model_name);
 CREATE INDEX IF NOT EXISTS idx_harmbench_scores_comp
     ON harmbench_scores(comparison, model_name);
+CREATE INDEX IF NOT EXISTS idx_te_results_comp
+    ON te_results(comparison, variant);
 
 -- ============================================================
 -- Views: Latest classification per response

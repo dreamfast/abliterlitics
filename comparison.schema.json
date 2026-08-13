@@ -46,6 +46,15 @@
             "skip_weight": {
               "type": "boolean",
               "default": false
+            },
+            "skip_te": {
+              "type": "boolean",
+              "default": false,
+              "description": "Skip text-encoder analysis for this variant."
+            },
+            "notes": {
+              "type": "string",
+              "description": "Free-form notes about the variant (method, recipe, provenance). Ignored by pipeline; for documentation/forensics context."
             }
           }
         }
@@ -89,6 +98,24 @@
           "default": 8096,
           "description": "Maximum generation tokens for HarmBench. Reasoning models need ~5K thinking + ~3K response."
         },
+        "gsm8k_gen_toks": {
+          "type": "integer",
+          "default": 7168,
+          "description": "Max generation tokens for GSM8K (Phase 2). Reasoning models need ~5K thinking + ~2K answer room. Auto-capped to max_model_len - 1024 by runner."
+        },
+        "lm_eval_gpu_util": {
+          "type": ["number", "string"],
+          "default": "",
+          "description": "vLLM gpu_memory_utilization override (0-1). Empty string = use runner default."
+        },
+        "lmeval_image": {
+          "type": "string",
+          "description": "Docker image override for lm-eval stage. Per-comparison override (AGENTS.md lesson #11). Example: 'abliterlitics-lmeval-gemma4unified:1.0.0' for Gemma4UnifiedForConditionalGeneration."
+        },
+        "forensics_image": {
+          "type": "string",
+          "description": "Docker image override for weights/kl forensics stages. Defaults to abliterlitics-forensics:1.0.0."
+        },
         "reasoning_parser": {
           "type": ["string", "null"],
           "default": null,
@@ -101,6 +128,36 @@
         "kl_dataset": {
           "type": "string",
           "default": "mlabonne/harmless_alpaca"
+        },
+        "tebench": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Text-encoder conditioning fidelity analysis settings. Activates the text-encoder pipeline stage.",
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": ["ltx2", "h3", "ltx25"],
+              "description": "Which text-encoder backend to use."
+            },
+            "dit_model_dir": {
+              "type": "string",
+              "description": "Path to the diffusion model dir containing feature extractor + connector weights."
+            },
+            "stages": {
+              "type": "array",
+              "items": {"type": "string", "enum": ["raw_hidden", "projected", "connector_out", "dit_input"]},
+              "description": "Pipeline stages to capture."
+            },
+            "max_length": {"type": "integer", "default": 1024},
+            "batch_size": {"type": "integer", "default": 8},
+            "device": {"type": "string", "default": "cpu"},
+            "n_boot": {"type": "integer", "default": 1000},
+            "prompt_suite": {"type": "string", "default": "default"},
+            "te_image": {
+              "type": "string",
+              "description": "Docker image override for text-encoder stage. Defaults to abliterlitics-te:1.0.0."
+            }
+          }
         }
       }
     }

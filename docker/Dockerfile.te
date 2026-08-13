@@ -1,0 +1,22 @@
+# Abliterlitics TE — Text-encoder conditioning fidelity analysis
+# CPU-first image with scipy/pyyaml for tebench metrics.
+# Based on same NGC PyTorch base as forensics for consistency.
+FROM nvcr.io/nvidia/pytorch:26.02-py3
+
+WORKDIR /app
+
+ENV PIP_CACHE_DIR=/root/.cache/pip
+
+# Install tebench-specific dependencies
+RUN pip3 install --no-cache-dir \
+    scipy>=1.11.0 \
+    pyyaml>=6.0
+
+COPY src/ ./src/
+COPY comparison.schema.json ./
+COPY prompts/ ./prompts/
+
+ENV PYTHONPATH=/app
+
+# Default: run Python scripts
+ENTRYPOINT ["python3"]

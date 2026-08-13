@@ -18,6 +18,7 @@ FORENSICS_IMAGE="${FORENSICS_IMAGE:-abliterlitics-forensics:1.0.0}"
 LMEVAL_IMAGE="${LMEVAL_IMAGE:-abliterlitics-lmeval:1.0.0}"
 LLAMACPP_IMAGE="${LLAMACPP_IMAGE:-abliterlitics-llamacpp:1.0.0}"
 IK_LLAMACPP_IMAGE="${IK_LLAMACPP_IMAGE:-abliterlitics-ik-llamacpp:1.0.0}"
+TE_IMAGE="${TE_IMAGE:-abliterlitics-te:1.0.0}"
 
 # Source directory (for mounting into Docker)
 ABL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,6 +44,30 @@ docker_run() {
     docker run --rm --runtime=nvidia \
         -e "NVIDIA_VISIBLE_DEVICES=${gpu}" \
         -e "CUDA_VISIBLE_DEVICES=0" \
+        "${docker_args[@]}" \
+        "$image" \
+        "${command[@]}"
+}
+
+# Docker run helper for CPU-only containers (no --runtime=nvidia).
+# Used by text-encoder analysis which runs on CPU by default.
+# Usage: docker_run_cpu IMAGE [additional docker args] -- [command]
+docker_run_cpu() {
+    local image="$1"; shift
+    local docker_args=()
+    local command=()
+    local found_separator=0
+    for arg in "$@"; do
+        if [[ "$arg" == "--" && $found_separator -eq 0 ]]; then
+            found_separator=1; continue
+        fi
+        if [[ $found_separator -eq 1 ]]; then
+            command+=("$arg")
+        else
+            docker_args+=("$arg")
+        fi
+    done
+    docker run --rm \
         "${docker_args[@]}" \
         "$image" \
         "${command[@]}"

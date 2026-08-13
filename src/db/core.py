@@ -24,7 +24,7 @@ HARMBENCH_BEHAVIORS_CSV = (
 )
 
 # Canonical stage names for model_stages
-STAGES = ("weights", "kl", "lm_eval", "harmbench", "graphs", "report")
+STAGES = ("weights", "kl", "lm_eval", "harmbench", "text_encoder", "graphs", "report")
 
 
 # ---------------------------------------------------------------------------

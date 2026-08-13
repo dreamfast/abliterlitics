@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -34,6 +34,7 @@ class VariantConfig:
     skip_lm_eval: bool = False
     skip_harmbench: bool = False
     skip_weight: bool = False
+    skip_te: bool = False
 
 
 @dataclass
@@ -53,6 +54,16 @@ class ComparisonConfig:
     harmbench_max_tokens: int = 8096
     kl_num_prompts: int = 100
     kl_dataset: str = "mlabonne/harmless_alpaca"
+    # Text-encoder analysis settings (None = tebench not configured)
+    tebench_backend: str = ""
+    tebench_dit_model_dir: Path | None = None
+    tebench_stages: list[str] = field(default_factory=list)
+    tebench_max_length: int = 1024
+    tebench_batch_size: int = 8
+    tebench_device: str = "cpu"
+    tebench_n_boot: int = 1000
+    tebench_prompt_suite: str = "default"
+    tebench_image: str = ""
     architecture: str = ""  # Auto-detected
     model_size_gb: float = 0.0  # Auto-computed
 
@@ -108,6 +119,7 @@ class ComparisonConfig:
                     skip_lm_eval=vdata.get("skip_lm_eval", False),
                     skip_harmbench=vdata.get("skip_harmbench", False),
                     skip_weight=vdata.get("skip_weight", False),
+                    skip_te=vdata.get("skip_te", False),
                 )
             )
 
@@ -149,6 +161,25 @@ class ComparisonConfig:
             kl_dataset=settings.get("kl_dataset", "mlabonne/harmless_alpaca"),
         )
 
+        # Parse tebench settings if present
+        tebench = settings.get("tebench")
+        if tebench:
+            obj.tebench_backend = tebench.get("backend", "")
+            obj.tebench_stages = tebench.get("stages", ["raw_hidden", "projected", "connector_out"])
+            obj.tebench_max_length = tebench.get("max_length", 1024)
+            obj.tebench_batch_size = tebench.get("batch_size", 8)
+            obj.tebench_device = tebench.get("device", "cpu")
+            obj.tebench_n_boot = tebench.get("n_boot", 1000)
+            obj.tebench_prompt_suite = tebench.get("prompt_suite", "default")
+            obj.tebench_image = tebench.get("te_image", "")
+            dit_dir = tebench.get("dit_model_dir")
+            if dit_dir:
+                dit_path = Path(dit_dir)
+                if not dit_path.is_absolute():
+                    dit_path = comparison_dir / dit_dir
+                obj.tebench_dit_model_dir = dit_path.resolve()
+            log.info("TE bench configured: backend=%s device=%s", obj.tebench_backend, obj.tebench_device)
+
         # Auto-detect architecture
         obj.architecture = _detect_architecture(base_path)
         log.info("Detected architecture: %s", obj.architecture)
@@ -174,6 +205,9 @@ class ComparisonConfig:
 
     def harmbench_results_dir(self, base_results_dir: Path) -> Path:
         return self.results_dir(base_results_dir) / "harmbench"
+
+    def te_results_dir(self, base_results_dir: Path) -> Path:
+        return self.results_dir(base_results_dir) / "text_encoder"
 
     def get_variant(self, name: str) -> VariantConfig:
         """Get a variant config by name."""
