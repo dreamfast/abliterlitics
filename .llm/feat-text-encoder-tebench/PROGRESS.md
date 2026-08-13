@@ -76,5 +76,12 @@
   - Backend reviews (deepseek APPROVE, hy3 NEEDS CHANGES) — all findings fixed in b22aa3d:
     stage-order cache bug, _te_sd 24GB memory leak, --force no-op, assert->RuntimeError,
     cache-key context gap, variant-file validation.
-- Remaining: H3 backend (T4.x, models available), graphs + reports (T5.x), DB import wiring
-  for te_results (importer exists, verify on real run).
+- Remaining: H3 backend (T4.x, models available), LTX-2 base TE acquisition, GGUF loader
+  (needs ComfyUI-GGUF custom node or gguf-lib dequant path — RESEARCH.md R8).
+- 2026-08-14: External base-quant preparation complete (05780a1). Quant/abliteration
+  decomposition: te_reference matched-quant comparisons + dual-run (__vs_base) + real
+  quant_floor_file. Two reviewer rounds: dual-run architecture (combined column was a
+  duplicate of pure ablation), floor_base inf bug, skip-gate ordering (two-phase flow).
+  All verified via stand-in simulation (pure_ab=0.00x for identical files — math proof),
+  fully reverted. Files expected from external tool:
+  qwen3-4b_{int8,fp8_e4m3fn,nvfp4}.safetensors in comfyui-models/text_encoders/.
