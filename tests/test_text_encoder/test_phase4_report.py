@@ -299,10 +299,182 @@ class TestNoiseEquivalentDose:
             "heretic_a1": cond(0.0155),
             "heretic_a10": cond(0.0324),
         }
-        html = _controls_section({"conditions": base_conds})
+        doc = {
+            "conditions": base_conds,
+            "heretic_mse": [1.34] * 6,
+            "max_dose_mse": [95.0] * 6,
+        }
+        html = _controls_section(doc)
         assert "P9 NOISE-EQUIVALENT DOSE" in html
-        assert "LESS image-disruptive" in html  # interpolated dose < 1.0
+        assert "× its own conditioning MSE" in html
+        # max_dose ~71x heretic MSE -> interpolated dose lands far above 0.5x
+        # heretic-MSE -> pre-registered P9 REFUTED wording
+        assert "P9 REFUTED" in html
         # without a bracket the note must be absent
-        no_bracket = {k: v for k, v in base_conds.items() if k not in ("noise_0.05x", "noise_0.1x", "noise_0.15x")}
-        html2 = _controls_section({"conditions": no_bracket})
+        no_bracket = {
+            **doc,
+            "conditions": {
+                k: v for k, v in base_conds.items() if k not in ("noise_0.05x", "noise_0.1x", "noise_0.15x")
+            },
+        }
+        html2 = _controls_section(no_bracket)
         assert "P9 NOISE-EQUIVALENT DOSE" not in html2
+
+
+class TestPhase5Breadth:
+    def _breadth(self, heretic_shifts: list[float]) -> dict[str, Any]:
+        cats = ["landscape", "multi_subject", "portrait", "text_render"]
+        base_overall = sum(heretic_shifts) / len(heretic_shifts)
+        per_pair = [{"variant": "heretic", "lpips": s} for s in heretic_shifts * 4] + [
+            {"variant": "base_int4", "lpips": 0.4} for _ in range(16)
+        ]
+        per_cat = {
+            "heretic": {c: {"n": 8, "lpips_mean": s} for c, s in zip(cats, heretic_shifts, strict=True)},
+            "base_int4": {c: {"n": 8, "lpips_mean": 0.4} for c in cats},
+        }
+        return {
+            "base": "base",
+            "categories": cats,
+            "per_category": per_cat,
+            "seed_anchor_per_category": {c: {"n": 8, "lpips_mean": 0.5} for c in cats},
+            "per_pair": per_pair,
+            "overall_h": base_overall,
+        }
+
+    def test_p10_uniform(self) -> None:
+        from src.text_encoder.phase4_report import _breadth_section
+
+        html = _breadth_section(self._breadth([0.28, 0.30, 0.29, 0.31]))
+        assert "sec-breadth" in html
+        assert "P10 holds" in html
+
+    def test_p10_concentrated(self) -> None:
+        from src.text_encoder.phase4_report import _breadth_section
+
+        html = _breadth_section(self._breadth([0.29, 0.30, 0.28, 0.60]))
+        assert "P10 fails" in html
+        assert "text_render" in html  # names the concentrating category
+
+    def test_none_category_does_not_mislabel_worst(self) -> None:
+        from src.text_encoder.phase4_report import _breadth_section
+
+        doc = self._breadth([0.29, 0.30, 0.28, 0.60])
+        doc["per_category"]["heretic"]["portrait"]["lpips_mean"] = None  # missing category
+        html = _breadth_section(doc)
+        assert "P10 fails" in html
+        assert "text_render" in html  # the TRUE worst, not the None slot
+
+    def test_heretic_missing_deferred_note(self) -> None:
+        from src.text_encoder.phase4_report import _breadth_section
+
+        doc = self._breadth([0.29, 0.30, 0.28, 0.31])
+        del doc["per_category"]["heretic"]
+        html = _breadth_section(doc)
+        assert "P10 deferred" in html
+
+    def test_empty(self) -> None:
+        from src.text_encoder.phase4_report import _breadth_section
+
+        assert _breadth_section(None) == ""
+
+
+class TestPhase5H6Verdict:
+    def _taboo(self, heretic_deltas: dict[str, float], int8_deltas: dict[str, float]) -> dict[str, Any]:
+        tiers = ["tier1_nudity", "tier2_explicit", "tier3_gore"]
+        base_gap = {"tier1_nudity": 0.10, "tier2_explicit": -0.05, "tier3_gore": 0.08}
+        per_tier: dict[str, dict[str, dict[str, Any]]] = {"base": {}, "heretic": {}, "base_int8": {}}
+        for t in tiers:
+            per_tier["base"][t] = {"n": 12, "gap_mean": base_gap[t], "nsfw_rate": 0.5, "lpips_mean": 0.0}
+            per_tier["heretic"][t] = {
+                "n": 12,
+                "gap_mean": base_gap[t] + heretic_deltas.get(t, 0.0),
+                "nsfw_rate": 0.5,
+                "lpips_mean": 0.1,
+            }
+            per_tier["base_int8"][t] = {
+                "n": 12,
+                "gap_mean": base_gap[t] + int8_deltas.get(t, 0.0),
+                "nsfw_rate": 0.5,
+                "lpips_mean": 0.05,
+            }
+        return {"tiers": tiers, "per_tier": per_tier}
+
+    def test_supported_two_tiers_outside_band(self) -> None:
+        from src.text_encoder.phase4_report import _h6_verdict
+
+        label, evidence, cls = _h6_verdict(
+            self._taboo(
+                {"tier1_nudity": 0.06, "tier2_explicit": 0.08, "tier3_gore": 0.0},
+                {"tier1_nudity": 0.01, "tier2_explicit": -0.01, "tier3_gore": 0.01},
+            )
+        )
+        assert label == "SUPPORTED" and cls == "yes"
+        assert "±0.01" in evidence
+
+    def test_refuted_within_control_band(self) -> None:
+        from src.text_encoder.phase4_report import _h6_verdict
+
+        label, _e, cls = _h6_verdict(
+            self._taboo(
+                {"tier1_nudity": 0.008, "tier2_explicit": -0.006, "tier3_gore": 0.0},
+                {"tier1_nudity": 0.01, "tier2_explicit": -0.01, "tier3_gore": 0.01},
+            )
+        )
+        assert label == "REFUTED" and cls == ""
+
+    def test_mixed_one_tier_only(self) -> None:
+        from src.text_encoder.phase4_report import _h6_verdict
+
+        label, _e, cls = _h6_verdict(
+            self._taboo(
+                {"tier1_nudity": 0.06, "tier2_explicit": 0.0, "tier3_gore": 0.0},
+                {"tier1_nudity": 0.0, "tier2_explicit": 0.0, "tier3_gore": 0.0},
+            )
+        )
+        assert label == "MIXED" and cls == "part"
+
+    def test_deferred_when_none(self) -> None:
+        from src.text_encoder.phase4_report import _h6_verdict
+
+        assert _h6_verdict(None)[0] == "DEFERRED"
+
+    def test_section_no_images_note(self) -> None:
+        from src.text_encoder.phase4_report import _taboo_section
+
+        html = _taboo_section(
+            self._taboo(
+                {"tier1_nudity": 0.06, "tier2_explicit": 0.08},
+                {"tier1_nudity": 0.01, "tier2_explicit": -0.01},
+            )
+        )
+        assert "sec-taboo" in html
+        assert "No explicit imagery is embedded" in html
+        assert "H6 verdict: SUPPORTED" in html
+
+    def test_no_int8_control_is_inconclusive_not_supported(self) -> None:
+        from src.text_encoder.phase4_report import _h6_verdict
+
+        taboo = self._taboo({"tier1_nudity": 0.06, "tier2_explicit": 0.08}, {})
+        del taboo["per_tier"]["base_int8"]
+        label, evidence, cls = _h6_verdict(taboo)
+        assert label == "INCONCLUSIVE"
+        assert "negative control" in evidence
+        assert cls == ""
+
+    def test_partial_gap_rows_inconclusive(self) -> None:
+        from src.text_encoder.phase4_report import _h6_verdict
+
+        taboo = self._taboo({"tier1_nudity": 0.06}, {})
+        taboo["per_tier"]["base"]["tier2_explicit"]["gap_mean"] = None
+        taboo["per_tier"]["heretic"]["tier2_explicit"]["gap_mean"] = None
+        taboo["per_tier"]["base"]["tier3_gore"]["gap_mean"] = None
+        taboo["per_tier"]["heretic"]["tier3_gore"]["gap_mean"] = None
+        label, _e, _c = _h6_verdict(taboo)
+        assert label == "INCONCLUSIVE"
+
+    def test_gore_tier_nsfw_rendered_na(self) -> None:
+        from src.text_encoder.phase4_report import _taboo_section
+
+        html = _taboo_section(self._taboo({"tier1_nudity": 0.06}, {"tier1_nudity": 0.01}))
+        # tier3_gore column shows n/a for the sexual NSFW rate on every row
+        assert "n/a" in html

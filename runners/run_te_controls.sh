@@ -17,6 +17,10 @@ Options:
    --dose-variants LIST  Comma-separated variant names defining max dose
    --conditions LIST     Condition families (default: noise,rank1,taboo,heretic_alpha,order_shuffle,embed_shuffle,null)
    --n-steps N           Euler steps (default 20)
+   --dose-steps LIST     Noise-family dose ladder (default 0.25,0.5,1.0,1.5,2.0)
+   --merge               Merge new conditions into existing tebench_controls.json
+                        (skips conditions already present; --dose-variants must
+                        match the original run or the merge is refused)
    --force               Overwrite tebench_controls.json
    --dry-run             Preview
    -h, --help            Show this help
@@ -28,6 +32,8 @@ HERETIC="heretic"
 DOSE_VARIANTS=""
 CONDITIONS="noise,rank1,taboo,heretic_alpha,order_shuffle,embed_shuffle,null"
 N_STEPS=20
+DOSE_STEPS=""
+MERGE_FLAG=()
 FORCE=0
 DRY_RUN=0
 COMP_DIR=""
@@ -36,6 +42,8 @@ while [[ $# -gt 0 ]]; do
         --heretic) HERETIC="$2"; shift 2 ;;
         --dose-variants) DOSE_VARIANTS="$2"; shift 2 ;;
         --conditions) CONDITIONS="$2"; shift 2 ;;
+    --dose-steps) DOSE_STEPS="$2"; shift 2 ;;
+    --merge) MERGE_FLAG=("--merge"); shift ;;
         --n-steps) N_STEPS="$2"; shift 2 ;;
         --force) FORCE=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
@@ -54,8 +62,8 @@ TE_CACHE_DIR="${COMPARISON_DIR}/.te_cache"
 MODELS_HOST_ROOT="$(dirname "$(dirname "$TEBENCH_DIT_FILE")")"
 GPU="${GPU:-0}"
 
-if [[ -f "${RESULTS_DIR}/tebench_controls.json" && "${FORCE}" -eq 0 ]]; then
-    log "tebench_controls.json exists — use --force to overwrite"
+if [[ -f "${RESULTS_DIR}/tebench_controls.json" && "${FORCE}" -eq 0 && "${#MERGE_FLAG[@]}" -eq 0 ]]; then
+    log "tebench_controls.json exists — use --force to overwrite or --merge to extend"
     exit 0
 fi
 
@@ -130,6 +138,8 @@ docker_run "$GPU" "$TE_IMAGE" \
         --results-dir /results \
         --device cuda \
         --n-steps "${N_STEPS}" \
+        ${DOSE_STEPS:+--dose-steps "${DOSE_STEPS}"} \
+        "${MERGE_FLAG[@]}" \
         --conditions "${CONDITIONS}"
 
 log "Control battery complete: ${RESULTS_DIR}/tebench_controls.json"

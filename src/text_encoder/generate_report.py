@@ -1748,6 +1748,8 @@ Results: {html.escape(str(results_dir))} · te_results_version: {TE_RESULTS_VERS
 <li><a href="#sec-controls">Counterfactual controls &amp; anchor ladder</a></li>
 <li><a href="#sec-attention">Attention readout</a></li>{words_toc}
 <li><a href="#sec-discriminability">Inter-prompt discriminability</a></li>
+<li><a href="#sec-breadth">Prompt-category breadth</a></li>
+<li><a href="#sec-taboo">Uncensoring behavior (H6)</a></li>
 <li><a href="#sec-verdicts">Verdict table (the solid answer)</a></li>
 <li><a href="#sec-damage">Pipeline divergence table</a></li>
 <li><a href="#sec-visuals">Visualizations</a></li>

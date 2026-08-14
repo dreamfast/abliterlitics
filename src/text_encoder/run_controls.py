@@ -194,6 +194,9 @@ def main() -> int:
     heretic_norms = [
         float(per_prompt_delta_norm(h.float() - b.float())) for b, h in zip(base_ctxs, her_ctxs, strict=True)
     ]
+    # heretic's own conditioning MSE — the report expresses the P9
+    # noise-equivalent dose in units of THIS (not of the max dose).
+    heretic_mse = [float(((b.float() - h.float()) ** 2).mean()) for b, h in zip(base_ctxs, her_ctxs, strict=True)]
 
     def _mk_taboo(scale: float) -> Callable[[list[torch.Tensor]], list[torch.Tensor]]:
         def make(ctxs: list[torch.Tensor]) -> list[torch.Tensor]:
@@ -263,6 +266,7 @@ def main() -> int:
         "alphas": alphas,
         "max_dose_mse": [float(m) for m in max_dose.tolist()],
         "heretic_delta_norm": heretic_norms,
+        "heretic_mse": heretic_mse,
         "conditions": {},
     }
 
@@ -278,8 +282,12 @@ def main() -> int:
                 and prior.get("heretic") == results["heretic"]
                 and prior.get("dit") == results["dit"]
                 and len(prior.get("max_dose_mse", [])) == len(results["max_dose_mse"])
+                # 5% relative tolerance: identical dose SETUP but the cache may
+                # have been recaptured since (small numeric drift). A wrong
+                # dose-variant is still caught: q3 differs ~2.7x, heretic-only
+                # ~70x from the int4 reference.
                 and all(
-                    abs(float(a) - float(b)) <= 1e-6 * max(1.0, abs(float(a)))
+                    abs(float(a) - float(b)) <= 5e-2 * max(1.0, abs(float(a)))
                     for a, b in zip(prior["max_dose_mse"], results["max_dose_mse"], strict=True)
                 )
             )
@@ -290,7 +298,11 @@ def main() -> int:
                 )
             overlap = sorted(set(prior.get("conditions", {})) & set(conditions))
             if overlap:
-                log.warning("--merge will overwrite existing conditions: %s", ", ".join(overlap))
+                log.info("--merge skipping conditions already present: %s", ", ".join(overlap))
+                for name in overlap:
+                    conditions.pop(name)
+            if prior.get("heretic_mse"):
+                results["heretic_mse"] = prior["heretic_mse"]
             results["conditions"] = {**prior.get("conditions", {})}
             results["dose_steps"] = sorted({*(float(x) for x in prior.get("dose_steps", [])), *dose_steps})
             results["alphas"] = sorted({*(float(x) for x in prior.get("alphas", [])), *alphas})
