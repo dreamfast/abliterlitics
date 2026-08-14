@@ -113,6 +113,10 @@ class TestVerdictSection:
             "heretic_gguf_q8_0": _mk_img_doc("heretic_gguf_q8_0", 0.30),
             "heretic_int8": _mk_img_doc("heretic_int8", 0.29),
             "base_nvfp4": _mk_img_doc("base_nvfp4", 0.28),
+            # round-2 fixture: matched pairs for per-tier deltas — including
+            # a QUANTIZATION-DOMINATED heavy tier (heretic_int4 BELOW base_int4)
+            "base_int8": _mk_img_doc("base_int8", 0.15),
+            "base_int4": _mk_img_doc("base_int4", 0.50),
         }
         controls = {
             "conditions": {
@@ -146,10 +150,12 @@ class TestVerdictSection:
         html = _verdict_section(anchors, img_vars, controls, {}, {}, {})
         h2_row = html[html.index("H2") : html.index("H3")]
         assert "SUPPORTED" in h2_row  # base q8 0.19 <= band; int4 0.45 > band
-        # hy3-C1: heretic rows (0.30 > band) must NOT flip the verdict; the
-        # evidence must disclose they carry the abliteration shift (H1)
-        assert "abliterated quants reach 0.450" in h2_row
+        # hy3-C1: heretic rows must NOT flip the verdict; hy3-R2 (round 2):
+        # attribution must be PER-TIER DELTA, never the global heretic max
+        # (int4 is quantization-dominated and must not be credited to ablation)
+        assert "abliteration adds up to +" in h2_row
         assert "not via quantization" in h2_row
+        assert "quantization-dominated" in h2_row
 
     def test_h2_refuted_when_base_tier_fails(self) -> None:
         anchors, img_vars, controls = self._ctx(heretic_lp=0.15, int4_lp=0.45, q8_lp=0.45)

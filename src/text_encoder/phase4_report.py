@@ -411,18 +411,57 @@ def _verdict_section(
                 band = floor_m * 1.25
                 pos_ok = all(lp > band for _, lp in pos_scores)
                 clean_ok = all(lp <= band for _, lp in clean_scores)
-                heretic_quant_max = None
-                for v in img_vars:
-                    if v.startswith("heretic_") and v not in ("heretic",):
-                        lp_hq, _, _ = _summary_mean(img_vars[v].get("te_swap", {}), "lpips")
-                        if lp_hq is not None:
-                            heretic_quant_max = max(heretic_quant_max or 0.0, lp_hq)
-                heretic_note = (
-                    f"; abliterated quants reach {heretic_quant_max:.3f} — above band via the "
-                    "abliteration shift itself (H1), not via quantization"
-                    if heretic_quant_max is not None and heretic_quant_max > band
-                    else ""
+                # Per-tier ablation attribution (hy3 round-2 CRITICAL fix):
+                # the GLOBAL max heretic_* LPIPS is int4 — quantization-
+                # dominated (heretic_int4 ≈ base_int4; the collapse leaves no
+                # room for the ablation shift to show). The honest ablation
+                # contribution is the per-tier DELTA on matched pairs, which
+                # peaks at clean quants. Never attribute a quantization-
+                # dominated tier to the ablation.
+                _suffixes = (
+                    "fp8_e4m3fn",
+                    "mxfp8",
+                    "nvfp4",
+                    "int8",
+                    "int4",
+                    "fp8",
+                    "gguf_f16",
+                    "gguf_q8_0",
+                    "gguf_q6_k",
+                    "gguf_q5_k_s",
+                    "gguf_q5_k_m",
+                    "gguf_q4_k_s",
+                    "gguf_q4_k_m",
+                    "gguf_q3_k_m",
                 )
+                abl_best: tuple[str, float, float, float] | None = None  # (suffix, base_lp, her_lp, delta)
+                quant_dominated: tuple[str, float, float] | None = None  # heavy tier where delta ~<= 0
+                for sfx in _suffixes:
+                    if f"base_{sfx}" not in img_vars or f"heretic_{sfx}" not in img_vars:
+                        continue
+                    lp_b, _, _ = _summary_mean(img_vars[f"base_{sfx}"].get("te_swap", {}), "lpips")
+                    lp_h, _, _ = _summary_mean(img_vars[f"heretic_{sfx}"].get("te_swap", {}), "lpips")
+                    if lp_b is None or lp_h is None:
+                        continue
+                    delta = lp_h - lp_b
+                    if abl_best is None or delta > abl_best[3]:
+                        abl_best = (sfx, lp_b, lp_h, delta)
+                    heavy = sfx in ("int4", "nvfp4") or "q4" in sfx or "q3" in sfx
+                    if heavy and (quant_dominated is None or lp_h > quant_dominated[2]):
+                        quant_dominated = (sfx, lp_b, lp_h)
+                heretic_note = ""
+                if abl_best is not None and abl_best[3] > 0.02:
+                    heretic_note = (
+                        f"; the abliteration adds up to +{abl_best[3]:.3f} LPIPS on top of clean "
+                        f"quants (heretic_{abl_best[0]} {abl_best[2]:.3f} vs base_{abl_best[0]} "
+                        f"{abl_best[1]:.3f}) — above band via the abliteration shift (H1), "
+                        "not via quantization"
+                    )
+                if quant_dominated is not None:
+                    sfx, lp_b, lp_h = quant_dominated
+                    heretic_note += (
+                        f"; the heavy tier is quantization-dominated (heretic_{sfx} {lp_h:.3f} ≈ base_{sfx} {lp_b:.3f})"
+                    )
                 add(
                     "H2",
                     "Visible image divergence has a dose threshold: base-family int4/Q3 above, "
