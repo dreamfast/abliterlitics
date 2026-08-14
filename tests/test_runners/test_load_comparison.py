@@ -338,3 +338,75 @@ class TestValidation:
         )
         # Should succeed — the output is shell-safe
         assert result.returncode == 0
+
+
+class TestTebenchImageMetrics:
+    """Phase-4 image-metric settings exports + schema lockstep (lesson #28a)."""
+
+    def test_img_defaults(self, comparison_dir: Path) -> None:
+        _write_comparison(
+            comparison_dir,
+            settings={"tebench": {"backend": "zimage"}},
+        )
+        env = _run_load(str(comparison_dir / "comparison.json"), str(comparison_dir))
+        assert env["TEBENCH_IMG_CLIP_MODEL"] == "ViT-L-14"
+        assert env["TEBENCH_IMG_CLIP_PRETRAINED"] == "openai"
+        assert env["TEBENCH_IMG_REFERENCE"] == "base_int8"
+        assert env["TEBENCH_IMG_FLOOR_PAIR"] == "base_int8,base_fp8"
+
+    def test_img_overrides(self, comparison_dir: Path) -> None:
+        _write_comparison(
+            comparison_dir,
+            settings={
+                "tebench": {
+                    "backend": "zimage",
+                    "img_clip_model": "ViT-B-32",
+                    "img_clip_pretrained": "laion2b_s34b_b79k",
+                    "img_reference": "base_gguf_f16",
+                    "img_floor_pair": ["base_gguf_f16", "base_int8"],
+                }
+            },
+        )
+        env = _run_load(str(comparison_dir / "comparison.json"), str(comparison_dir))
+        assert env["TEBENCH_IMG_CLIP_MODEL"] == "ViT-B-32"
+        assert env["TEBENCH_IMG_CLIP_PRETRAINED"] == "laion2b_s34b_b79k"
+        assert env["TEBENCH_IMG_REFERENCE"] == "base_gguf_f16"
+        assert env["TEBENCH_IMG_FLOOR_PAIR"] == "base_gguf_f16,base_int8"
+
+    def test_unknown_tebench_key_rejected_by_schema(self, comparison_dir: Path) -> None:
+        """Lesson #28a: a key the runner reads must exist in comparison.schema.json.
+
+        This guards the OTHER direction: keys NOT in the schema are rejected,
+        so adding a reader without a schema entry fails here, not in Docker.
+        """
+        jsonschema = pytest.importorskip("jsonschema")
+
+        schema = json.loads((Path(__file__).resolve().parents[2] / "comparison.schema.json").read_text())
+        bad = {
+            "name": "test-comp",
+            "base": "models/base-model",
+            "variants": {"v1": {"path": "models/v1"}},
+            "settings": {"tebench": {"backend": "zimage", "img_nonexistent_key": 1}},
+        }
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(bad, schema)
+
+    def test_img_keys_accepted_by_schema(self) -> None:
+        jsonschema = pytest.importorskip("jsonschema")
+
+        schema = json.loads((Path(__file__).resolve().parents[2] / "comparison.schema.json").read_text())
+        good = {
+            "name": "test-comp",
+            "base": "models/base-model",
+            "variants": {"v1": {"path": "models/v1"}},
+            "settings": {
+                "tebench": {
+                    "backend": "zimage",
+                    "img_clip_model": "ViT-L-14",
+                    "img_clip_pretrained": "openai",
+                    "img_reference": "base_int8",
+                    "img_floor_pair": ["base_int8", "base_fp8"],
+                }
+            },
+        }
+        jsonschema.validate(good, schema)  # must not raise

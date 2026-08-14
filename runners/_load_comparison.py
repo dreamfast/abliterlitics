@@ -216,6 +216,11 @@ def main() -> None:
         print(f"export TEBENCH_DEVICE={shlex.quote(str(tebench.get('device', 'cpu')))}")
         print(f"export TEBENCH_NUM_BOOTSTRAP={shlex.quote(str(tebench.get('n_boot', 1000)))}")
         print(f"export TEBENCH_PROMPT_SUITE={shlex.quote(str(tebench.get('prompt_suite', 'default')))}")
+        print(f"export TEBENCH_IMG_CLIP_MODEL={shlex.quote(str(tebench.get('img_clip_model', 'ViT-L-14')))}")
+        print(f"export TEBENCH_IMG_CLIP_PRETRAINED={shlex.quote(str(tebench.get('img_clip_pretrained', 'openai')))}")
+        print(f"export TEBENCH_IMG_REFERENCE={shlex.quote(str(tebench.get('img_reference', 'base_int8')))}")
+        floor_pair = tebench.get("img_floor_pair", ["base_int8", "base_fp8"])
+        print(f"export TEBENCH_IMG_FLOOR_PAIR={shlex.quote(','.join(str(x) for x in floor_pair))}")
         te_image = tebench.get("te_image", "abliterlitics-te:1.1.0")
         print(f"export TE_IMAGE={shlex.quote(te_image)}")
     else:

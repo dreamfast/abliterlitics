@@ -304,8 +304,110 @@ class TestImportAllIdempotent:
         import_comparison(conn, str(comp_dir))
 
         stages = get_all_stages(conn, "stage-test")
-        # Should have 2 models × 6 stages = 12 rows
-        assert len(stages) == 12
+        # Should have 2 models x 7 stages = 14 rows (7th stage "text_encoder"
+        # added by f75aed6; test was stale at 12)
+        assert len(stages) == 14
         assert all(s.status == "pending" for s in stages)
 
+        conn.close()
+
+
+class TestImportTeImgMetrics:
+    """Phase-4 image-space metrics importer (tebench_img_*.json)."""
+
+    @staticmethod
+    def _write_variant_file(results_dir, variant: str) -> None:
+        doc = {
+            "te_results_version": 1,
+            "variant": variant,
+            "reference": "base_int8",
+            "te_swap": {
+                "kind": "te_swap",
+                "n_pairs": 2,
+                "summaries": [
+                    {"metric": "lpips", "n": 2, "mean": 0.12, "ci_low": 0.10, "ci_high": 0.14},
+                    {"metric": "ssim", "n": 2, "mean": 0.88, "ci_low": 0.85, "ci_high": 0.91},
+                ],
+                "anchor_ratios": {"lpips/seed_change": 0.05},
+            },
+            "cross_prompt": {
+                "kind": "cross_prompt",
+                "n_pairs": 2,
+                "summaries": [{"metric": "lpips", "n": 2, "mean": 0.55, "ci_low": 0.5, "ci_high": 0.6}],
+            },
+            "clip_score_delta_mean": -0.4,
+        }
+        (results_dir / f"tebench_img_{variant}.json").write_text(json.dumps(doc))
+
+    @staticmethod
+    def _write_anchors_file(results_dir) -> None:
+        doc = {
+            "te_results_version": 1,
+            "seed_change": {
+                "kind": "seed_change",
+                "n_pairs": 4,
+                "summaries": [{"metric": "lpips", "n": 4, "mean": 2.4, "ci_low": 2.0, "ci_high": 2.8}],
+            },
+            "floor_band": {
+                "kind": "floor_band",
+                "n_pairs": 3,
+                "summaries": [{"metric": "lpips", "n": 3, "mean": 0.02, "ci_low": 0.01, "ci_high": 0.03}],
+            },
+        }
+        (results_dir / "tebench_img_anchors.json").write_text(json.dumps(doc))
+
+    def test_roundtrip(self, tmp_path):
+        from src.db.importers import import_te_img_metrics
+
+        conn = get_db(str(tmp_path / "test.db"))
+        _setup_comparison(conn)
+        results_dir = tmp_path / "text_encoder"
+        results_dir.mkdir()
+        self._write_variant_file(results_dir, "heretic")
+        self._write_anchors_file(results_dir)
+
+        count = import_te_img_metrics(conn, "test-comp", results_dir)
+        assert count == 6  # heretic: lpips+ssim+cross_lpips+clip_delta; anchors: 2
+
+        row = conn.execute(
+            "SELECT metric_value, ci_low, ci_high, anchor_ratio FROM te_img_metrics "
+            "WHERE comparison='test-comp' AND variant='heretic' AND kind='te_swap' AND metric_name='lpips'"
+        ).fetchone()
+        assert row[0] == 0.12 and row[1] == 0.10 and row[2] == 0.14 and row[3] == 0.05
+
+        anchor = conn.execute(
+            "SELECT metric_value FROM te_img_metrics "
+            "WHERE comparison='test-comp' AND variant='__anchor__' AND kind='seed_change' AND metric_name='lpips'"
+        ).fetchone()
+        assert anchor[0] == 2.4
+        conn.close()
+
+    def test_idempotent(self, tmp_path):
+        from src.db.importers import import_te_img_metrics
+
+        conn = get_db(str(tmp_path / "test.db"))
+        _setup_comparison(conn)
+        results_dir = tmp_path / "text_encoder"
+        results_dir.mkdir()
+        self._write_variant_file(results_dir, "heretic")
+        self._write_anchors_file(results_dir)
+        import_te_img_metrics(conn, "test-comp", results_dir)
+        import_te_img_metrics(conn, "test-comp", results_dir)
+        n = conn.execute("SELECT COUNT(*) FROM te_img_metrics WHERE comparison='test-comp'").fetchone()[0]
+        assert n == 6
+        conn.close()
+
+    def test_tebench_files_never_reach_te_results(self, tmp_path):
+        """The te_*.json glob must not parse tebench_* files (Phase-4 plan rule)."""
+        from src.db.importers import import_te_results
+
+        conn = get_db(str(tmp_path / "test.db"))
+        _setup_comparison(conn)
+        results_dir = tmp_path / "text_encoder"
+        results_dir.mkdir()
+        self._write_variant_file(results_dir, "heretic")
+        n = import_te_results(conn, "test-comp", results_dir)
+        assert n == 0
+        rows = conn.execute("SELECT COUNT(*) FROM te_results WHERE comparison='test-comp'").fetchone()[0]
+        assert rows == 0
         conn.close()

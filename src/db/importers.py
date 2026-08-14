@@ -494,6 +494,13 @@ def import_te_results(
     for f in files:
         if f.name == "te_report.json" or f.name == "te_report.md":
             continue  # skip aggregate report, only parse per-variant
+        # Phase-4 battery outputs use the tebench_ prefix and must never be
+        # parsed as conditioning results (their schema differs). The glob
+        # te_*.json does not match tebench_*, but guard explicitly so a
+        # future rename cannot silently corrupt this table.
+        if f.name.startswith("tebench_"):
+            log.debug("Skipping Phase-4 battery file %s (tebench_ prefix)", f.name)
+            continue
         try:
             data = json.loads(f.read_text())
         except (json.JSONDecodeError, OSError) as exc:
@@ -636,6 +643,95 @@ def import_te_ab_images(
     return count
 
 
+def import_te_img_metrics(
+    conn: sqlite3.Connection,
+    comparison_name: str,
+    results_dir: Path,
+) -> int:
+    """Import Phase-4 image-space metric files (tebench_img_*.json) into te_img_metrics.
+
+    Reads tebench_img_<variant>.json (te_swap + cross_prompt buckets, CLIP-score
+    deltas, anchor ratios) and tebench_img_anchors.json (pooled seed_change and
+    floor_band anchors, stored with variant='__anchor__').
+
+    Returns the number of metric rows imported.
+    """
+    files = sorted(results_dir.glob("tebench_img_*.json"))
+    if not files:
+        log.info("No tebench_img_*.json files in %s", results_dir)
+        return 0
+
+    count = 0
+    for f in files:
+        try:
+            data = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Failed to parse %s: %s", f, exc)
+            continue
+
+        is_anchor = f.name == "tebench_img_anchors.json"
+        variant = "__anchor__" if is_anchor else str(data.get("variant", f.stem.replace("tebench_img_", "", 1)))
+        reference = str(data.get("reference", ""))
+        buckets: list[tuple[str, dict]] = (
+            [(k, data[k]) for k in ("seed_change", "floor_band") if k in data]
+            if is_anchor
+            else [(k, data[k]) for k in ("te_swap", "cross_prompt") if k in data]
+        )
+
+        def _insert(
+            kind: str,
+            metric: str,
+            value: float,
+            ci: tuple[float, float] | None,
+            ratio: float | None,
+            *,
+            _variant: str = variant,
+            _reference: str = reference,
+            _f: Path = f,
+        ) -> None:
+            nonlocal count
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO te_img_metrics
+                       (comparison, variant, reference, kind, metric_name, metric_value,
+                        ci_low, ci_high, anchor_ratio, result_path)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        comparison_name,
+                        _variant,
+                        _reference,
+                        kind,
+                        metric,
+                        float(value),
+                        ci[0] if ci else None,
+                        ci[1] if ci else None,
+                        ratio,
+                        str(_f),
+                    ),
+                )
+                count += 1
+            except (sqlite3.Error, ValueError, TypeError) as exc:
+                log.warning("Failed to import te_img_metrics row %s/%s from %s: %s", kind, metric, _f, exc)
+
+        for kind, bucket in buckets:
+            ratios = bucket.get("anchor_ratios", {}) if isinstance(bucket, dict) else {}
+            for s in bucket.get("summaries", []):
+                metric = str(s.get("metric", ""))
+                # anchor_ratio: primary seed-change ratio for te_swap lpips rows;
+                # floor-band ratios are JOIN-able from the __anchor__ rows.
+                ratio = ratios.get("lpips/seed_change") if (kind == "te_swap" and metric == "lpips") else None
+                ci = (s.get("ci_low"), s.get("ci_high")) if s.get("ci_low") is not None else None
+                _insert(kind, metric, s.get("mean", 0.0), ci, ratio)
+
+        if not is_anchor and data.get("clip_score_delta_mean") is not None:
+            _insert("te_swap", "clip_score_delta", float(data["clip_score_delta_mean"]), None, None)
+
+    conn.commit()
+    if count:
+        log.info("Imported %d te_img_metrics rows from %s", count, results_dir)
+    return count
+
+
 def import_all_results(
     conn: sqlite3.Connection,
     comparison_dir: str,
@@ -714,6 +810,12 @@ def import_all_results(
         counts["te_ab_images"] = import_te_ab_images(conn, comparison_name, ab_manifest)
     else:
         log.info("No A/B image manifest at %s", ab_manifest)
+
+    # Phase-4 image-space metrics (LPIPS ladder + CLIP + SSIM/PSNR)
+    if te_dir.exists():
+        img_n = import_te_img_metrics(conn, comparison_name, te_dir)
+        if img_n:
+            counts["te_img_metrics"] = img_n
 
     log.info("Import complete for %s: %s", comparison_name, counts)
     return counts

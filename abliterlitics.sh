@@ -21,6 +21,7 @@ Commands:
   harmbench     Run HarmBench evaluation
   text-encoder  Text-encoder conditioning fidelity analysis (tebench)
   te-report     Generate SVG graphs + HTML report from text-encoder results
+  te-img-metrics Image-space metrics over the A/B set (LPIPS/CLIP/SSIM)
   te-divergence DiT-step divergence analysis (paired sampling trajectories)
   graphs        Generate all graphs from existing results
   report        Generate provenance report from results
@@ -127,6 +128,13 @@ cmd_harmbench() {
 cmd_text_encoder() {
     shift
     bash "${RUNNERS_DIR}/run_text_encoder.sh" $(global_flags) "$@"
+}
+
+cmd_te_img_metrics() {
+    if [[ "${1:-}" == --* ]]; then
+        shift
+    fi
+    bash "${RUNNERS_DIR}/run_te_img_metrics.sh" "$@"
 }
 
 cmd_te_report() {
@@ -358,6 +366,7 @@ case "$COMMAND" in
     text-encoder) cmd_text_encoder "$COMMAND" "$@" ;;
     te)           cmd_text_encoder "$COMMAND" "$@" ;;
     te-report)    cmd_te_report "$@" ;;
+    te-img-metrics) cmd_te_img_metrics "$@" ;;
     te-divergence) cmd_te_divergence "$COMMAND" "$@" ;;
     te-directional) cmd_te_directional "$COMMAND" "$@" ;;
     graphs)    cmd_graphs "${1:-.}" ;;

@@ -279,6 +279,30 @@ CREATE TABLE IF NOT EXISTS te_ab_images (
 CREATE INDEX IF NOT EXISTS idx_te_ab_comp
     ON te_ab_images(comparison, variant);
 
+-- Text-encoder image-space metrics (Phase 4 battery, journal #122).
+-- Long format, one row per (variant, kind, metric). kind = te_swap |
+-- cross_prompt for per-variant files (tebench_img_<variant>.json); pooled
+-- shared anchors (tebench_img_anchors.json) use variant='__anchor__' with
+-- kind = seed_change | floor_band. anchor_ratio expresses a te_swap mean in
+-- units of the matching anchor mean (lpips/seed_change, lpips/floor_band).
+CREATE TABLE IF NOT EXISTS te_img_metrics (
+    comparison     TEXT NOT NULL,
+    variant        TEXT NOT NULL,
+    reference      TEXT NOT NULL DEFAULT '',
+    kind           TEXT NOT NULL,
+    metric_name    TEXT NOT NULL,
+    metric_value   REAL NOT NULL,
+    ci_low         REAL,
+    ci_high        REAL,
+    anchor_ratio   REAL,
+    result_path    TEXT,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (comparison, variant, kind, metric_name),
+    FOREIGN KEY (comparison) REFERENCES comparisons(name) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_te_img_comp
+    ON te_img_metrics(comparison, variant);
+
 -- ============================================================
 -- Views: Latest classification per response
 -- ============================================================

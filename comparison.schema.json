@@ -168,6 +168,27 @@
             "device": {"type": "string", "default": "cpu"},
             "n_boot": {"type": "integer", "default": 1000},
             "prompt_suite": {"type": "string", "default": "default"},
+            "img_clip_model": {
+              "type": "string",
+              "default": "ViT-L-14",
+              "description": "open_clip model for image-space metrics (CLIP-score + image-embedding distance)."
+            },
+            "img_clip_pretrained": {
+              "type": "string",
+              "default": "openai",
+              "description": "open_clip pretrained tag for img_clip_model."
+            },
+            "img_reference": {
+              "type": "string",
+              "description": "Reference variant for image-space TE-swap pairs — a near-lossless base quant (e.g. base_int8). Defaults to base_int8."
+            },
+            "img_floor_pair": {
+              "type": "array",
+              "items": {"type": "string"},
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "Two near-lossless base quants defining the quant-floor band in image space. Defaults to [base_int8, base_fp8]."
+            },
             "te_image": {
               "type": "string",
               "description": "Docker image override for text-encoder stage. Defaults to abliterlitics-te:1.0.0."
