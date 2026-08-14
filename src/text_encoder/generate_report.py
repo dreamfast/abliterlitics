@@ -1106,10 +1106,15 @@ def _ab_section(
             _warm[img["variant"]].append(ms)
 
     def _ms_mean(vals: list[int]) -> str:
-        return f"{statistics.mean(vals):.0f}" if vals else "-"
+        if not vals:
+            return "-"
+        m = statistics.mean(vals)
+        return f"{m:.0f} ({m / 1000:.3f} s)"
 
     def _ms_stdev(vals: list[int]) -> str:
         return f"\u00b1{statistics.stdev(vals):.0f}" if len(vals) > 1 else ""
+
+    base_vram = manifest.get("timing", {}).get("base", {}).get("vram", {}).get("vram_used_mb")
 
     timing_rows: list[str] = []
     for var_name in sorted(manifest.get("timing", {})):
@@ -1117,14 +1122,21 @@ def _ab_section(
         cold_ms = _cold.get(var_name, [])
         warm_ms = _warm.get(var_name, [])
         ref_cls = ' class="ref-var"' if var_name.startswith("base_") else ""
-        delta_s = f"{statistics.mean(cold_ms) - statistics.mean(warm_ms):.0f}" if cold_ms and warm_ms else "-"
+        delta_ms = statistics.mean(cold_ms) - statistics.mean(warm_ms) if cold_ms and warm_ms else None
+        delta_s = f"{delta_ms:.0f} ({delta_ms / 1000:.3f} s)" if delta_ms is not None else "-"
+        vram = t.get("vram", {})
+        vram_used = vram.get("vram_used_mb")
+        torch_alloc = vram.get("torch_vram_mb")
+        vram_s = f"{vram_used:.0f}" if vram_used is not None else "-"
+        vs_base = f"{vram_used - base_vram:+.0f}" if (vram_used is not None and base_vram is not None) else "-"
+        torch_s = f"{torch_alloc:.0f}" if torch_alloc is not None else "-"
         timing_rows.append(
             f"<tr><td{ref_cls}>{html.escape(_display(var_name))}</td>"
-            f"<td>{html.escape(t.get('te_name', '').split('/')[-1])}</td>"
             f"<td>{html.escape(t.get('loader', ''))}</td>"
-            f"<td>{_ms_mean(cold_ms)}</td><td>{len(cold_ms)}</td>"
-            f"<td>{_ms_mean(warm_ms)} {_ms_stdev(warm_ms)}</td><td>{len(warm_ms)}</td>"
-            f"<td>{delta_s}</td></tr>"
+            f"<td>{_ms_mean(cold_ms)}</td>"
+            f"<td>{_ms_mean(warm_ms)} {_ms_stdev(warm_ms)}</td>"
+            f"<td>{delta_s}</td>"
+            f"<td>{vram_s}</td><td>{vs_base}</td><td>{torch_s}</td></tr>"
         )
 
     timing_html = ""

@@ -606,6 +606,29 @@ def import_te_ab_images(
                     count += 1
                 except (sqlite3.Error, ValueError, TypeError) as exc:
                     log.warning("Failed to import A/B timing row for %s: %s", variant, exc)
+        # VRAM profiling pass (--vram-only): peak VRAM after TE cold load
+        vram = timing.get("vram", {})
+        for metric, value in vram.items():
+            if value is None:
+                continue
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO te_ab_images
+                       (comparison, variant, te_name, loader, label, category, pass,
+                        metric_name, metric_value, image_path, seed)
+                       VALUES (?, ?, ?, ?, '__vram__', NULL, NULL, ?, ?, NULL, NULL)""",
+                    (
+                        comparison_name,
+                        variant,
+                        timing.get("te_name", ""),
+                        timing.get("loader", ""),
+                        f"vram_{metric}",
+                        float(value),
+                    ),
+                )
+                count += 1
+            except (sqlite3.Error, ValueError, TypeError) as exc:
+                log.warning("Failed to import A/B vram row for %s: %s", variant, exc)
 
     conn.commit()
     if count:

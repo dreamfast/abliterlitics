@@ -38,6 +38,23 @@ import yaml
 log = logging.getLogger(__name__)
 
 POLL_INTERVAL = 2.0
+
+
+def _query_vram(api_url: str) -> dict[str, float]:
+    """Capture VRAM usage from ComfyUI's /system_stats (cuda:0 device).
+
+    vram_used = total GPU VRAM consumed (includes all resident models);
+    torch_alloc = PyTorch-committed VRAM (higher for GGUF which materializes
+    dequantized tensors).
+    """
+    d = _api(api_url, "/system_stats")
+    dev = d.get("devices", [{}])[0]
+    return {
+        "vram_used_mb": round((dev.get("vram_total", 0) - dev.get("vram_free", 0)) / 2**20, 1),
+        "torch_vram_mb": round(dev.get("torch_vram_total", 0) / 2**20, 1),
+    }
+
+
 POLL_TIMEOUT = 900.0  # 15 min per image (Z-Image Turbo: ~5-10s, generous)
 
 # Node ids in the exported workflows (verified against zimage_ab_api.json
@@ -254,6 +271,12 @@ def main() -> None:
     p.add_argument("--negative", default="", help="Negative prompt (empty for turbo cfg=1)")
     p.add_argument("--variants", default="", help="Comma-separated filter (default: all with te_file)")
     p.add_argument("--skip-existing", action="store_true")
+    p.add_argument(
+        "--vram-only",
+        action="store_true",
+        help="Fast VRAM profiling: one cold image per variant, record peak VRAM. "
+        "Merges into the existing manifest timing entries.",
+    )
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
 
@@ -303,6 +326,49 @@ def main() -> None:
     manifest_path = out_dir / "manifest.json"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
+
+    # --- VRAM profiling fast path: one image per variant, record peak VRAM ---
+    if args.vram_only:
+        log.info("VRAM profiling pass: %d variants, 1 image each", len(jobs))
+        for name, te_name in jobs:
+            loader_kind = "gguf" if te_name.lower().endswith(".gguf") else "safetensors"
+            clip_node_id, base_wf = workflows[loader_kind]
+            wf = patch_workflow(
+                base_wf,
+                clip_node_id,
+                te_name=te_name,
+                positive="a red circle on white background, minimal test",
+                negative="",
+                seed=args.seed,
+                filename_prefix=f"abliterlitics-vram/{name}",
+            )
+            if args.dry_run:
+                log.info("[dry-run] %s vram probe (te=%s)", name, te_name)
+                continue
+            before = _query_vram(args.api_url)
+            data, perf = queue_and_fetch(args.api_url, wf, te_node_id=clip_node_id)
+            after = _query_vram(args.api_url)
+            vram = {**after, "delta_mb": round(after["vram_used_mb"] - before["vram_used_mb"], 1)}
+            log.info(
+                "VRAM %s: used=%.0fMB torch=%.0fMB gen=%dms (te=%s)",
+                name,
+                vram["vram_used_mb"],
+                vram["torch_vram_mb"],
+                perf.get("server_gen_ms", 0),
+                te_name,
+            )
+            manifest.setdefault("timing", {}).setdefault(name, {}).update(
+                {
+                    "variant": name,
+                    "te_name": te_name,
+                    "loader": loader_kind,
+                    "vram": vram,
+                }
+            )
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(json.dumps(manifest, indent=2))
+        log.info("=== VRAM profiling complete ===")
+        return
 
     done: set[str] = {e["key"] for e in manifest.get("images", [])}
 
@@ -354,6 +420,10 @@ def main() -> None:
                     dt,
                     len(data) // 1024,
                 )
+                # Capture VRAM after cold-pass first image (peak from TE load)
+                vram_cap: dict[str, float] | None = None
+                if pass_name == "cold" and len(per_image) == 1:
+                    vram_cap = _query_vram(args.api_url)
                 manifest.setdefault("images", []).append(
                     {
                         "key": key,
@@ -363,6 +433,7 @@ def main() -> None:
                         "pass": pass_name,
                         "gen_seconds": round(dt, 2),
                         "perf": perf,
+                        "vram": vram_cap,
                         "category": pr["category"],
                         "label": pr.get("label", ""),
                         "prompt": pr["text"],
