@@ -72,6 +72,12 @@ def parse_args() -> argparse.Namespace:
         default="noise,rank1,taboo,heretic_alpha,order_shuffle,embed_shuffle,null",
         help="Comma-separated condition families to run",
     )
+    p.add_argument(
+        "--merge",
+        action="store_true",
+        help="Merge into an existing tebench_controls.json instead of replacing it "
+        "(required when adding bracket conditions post-hoc; refuses on metadata mismatch)",
+    )
     return p.parse_args()
 
 
@@ -260,6 +266,40 @@ def main() -> int:
         "conditions": {},
     }
 
+    # --merge: union with an existing run's conditions (dose bracket top-up).
+    out_path = Path(args.results_dir) / "tebench_controls.json"
+    if args.merge:
+        if not out_path.exists():
+            log.warning("--merge passed but %s does not exist; writing fresh", out_path)
+        else:
+            prior = json.loads(out_path.read_text())
+            same_setup = (
+                prior.get("base") == results["base"]
+                and prior.get("heretic") == results["heretic"]
+                and prior.get("dit") == results["dit"]
+                and len(prior.get("max_dose_mse", [])) == len(results["max_dose_mse"])
+                and all(
+                    abs(float(a) - float(b)) <= 1e-6 * max(1.0, abs(float(a)))
+                    for a, b in zip(prior["max_dose_mse"], results["max_dose_mse"], strict=True)
+                )
+            )
+            if not same_setup:
+                raise SystemExit(
+                    "--merge refused: existing tebench_controls.json was produced with a "
+                    "different base/heretic/DIT or dose reference — delete it or drop --merge"
+                )
+            overlap = sorted(set(prior.get("conditions", {})) & set(conditions))
+            if overlap:
+                log.warning("--merge will overwrite existing conditions: %s", ", ".join(overlap))
+            results["conditions"] = {**prior.get("conditions", {})}
+            results["dose_steps"] = sorted({*(float(x) for x in prior.get("dose_steps", [])), *dose_steps})
+            results["alphas"] = sorted({*(float(x) for x in prior.get("alphas", [])), *alphas})
+            log.info(
+                "Merging into existing battery (%d prior conditions, %d new)",
+                len(prior.get("conditions", {})),
+                len(conditions),
+            )
+
     for name, make in conditions.items():
         log.info("=== Condition %s ===", name)
         var_ctxs = make(base_ctxs)
@@ -285,7 +325,6 @@ def main() -> int:
             summary["mean_final_latent_div"],
             summary["div_control_ratio"] * 100,
         )
-        out_path = Path(args.results_dir) / "tebench_controls.json"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(results, indent=2))
 

@@ -172,6 +172,114 @@ sampling; the anchors make the magnitude interpretable.</p>
 
 
 # ---------------------------------------------------------------------------
+# CLIP prompt-adherence section (Phase 5, P8)
+# ---------------------------------------------------------------------------
+
+
+def _noise_equivalent_dose(noise_doses: list[tuple[float, float]], target_div: float) -> float | None:
+    """Interpolate the noise dose whose divergence matches ``target_div``.
+
+    Linear interpolation on a log-dose axis (the ladder is near-linear in
+    log-dose). Returns None when ``target_div`` sits outside the measured
+    rungs — extrapolation would overstate precision (P9 honesty rule).
+    """
+    if len(noise_doses) < 2 or target_div <= 0:
+        return None
+    import math
+
+    for (s0, d0), (s1, d1) in zip(noise_doses, noise_doses[1:], strict=False):
+        lo, hi = min(d0, d1), max(d0, d1)
+        if lo <= target_div <= hi:
+            if d1 == d0:
+                return s0
+            # invert div(s) linearly along log-dose
+            ls0, ls1 = math.log(s0), math.log(s1)
+            t = (target_div - d0) / (d1 - d0)
+            return math.exp(ls0 + t * (ls1 - ls0))
+    return None
+
+
+def _clip_adherence_section(img_vars: dict[str, dict[str, Any]]) -> str:
+    """Does the encoder change hurt WHAT the image shows, or only HOW it looks?
+
+    CLIP-score = similarity(image, prompt). The ladder answers "how different
+    is the picture"; this section answers "is the picture still ABOUT the
+    prompt". Pre-registered P8: everything except the visible-damage tiers
+    stays within ±1.5 CLIP points; visible tiers drop beyond ±2.
+    """
+    with_clip = {
+        name: doc for name, doc in img_vars.items() if isinstance(doc.get("clip_scores"), dict) and doc["clip_scores"]
+    }
+    if not with_clip:
+        return ""
+    ref_name = next(iter(with_clip.values())).get("reference", "reference")
+    ref_scores = [float(cs["reference"]) for cs in next(iter(with_clip.values()))["clip_scores"].values()]
+    ref_mean = sum(ref_scores) / len(ref_scores) if ref_scores else None
+
+    rows: list[str] = []
+    n_ok = 0
+    n_visible = 0
+    for name in sorted(with_clip):
+        doc = with_clip[name]
+        scores = doc["clip_scores"]
+        deltas = [float(cs["delta"]) for cs in scores.values()]
+        mean_d = sum(deltas) / len(deltas) if deltas else 0.0
+        n_out = sum(1 for d in deltas if abs(d) > 2.0)
+        # P8 classification (pre-registered): |mean| <= 1.5 in-band, > 2 visible
+        if abs(mean_d) > 2.0:
+            cls, label = ' class="dmg-high"', "adherence visibly degraded"
+            n_visible += 1
+        elif abs(mean_d) <= 1.5:
+            cls, label = ' class="dmg-low"', "in band"
+            n_ok += 1
+        else:
+            cls, label = "", "borderline"
+        rows.append(
+            f"<tr{cls}><td>{name}</td><td>{mean_d:+.2f}</td>"
+            f"<td>{min(deltas):+.2f} … {max(deltas):+.2f}</td>"
+            f"<td>{n_out}/{len(deltas)}</td>"
+            f"<td>{label}</td></tr>"
+        )
+
+    if n_visible == 0 and n_ok == len(with_clip):
+        verdict = (
+            "<p class='verdict-yes'>✅ <b>P8 holds</b>: every encoder's prompt adherence stays in the "
+            "±1.5 CLIP-point band — the renders move, but they stay about the prompt.</p>"
+        )
+    elif n_visible == 0:
+        verdict = (
+            "<p class='verdict-yes'>✅ <b>P8 holds</b>: no encoder crosses the ±2 visible-degradation "
+            "threshold (borderline cases noted).</p>"
+        )
+    else:
+        names_vis = [
+            name
+            for name, doc in sorted(with_clip.items())
+            if abs(sum(float(cs["delta"]) for cs in doc["clip_scores"].values()) / len(doc["clip_scores"])) > 2.0
+        ]
+        verdict = (
+            f"<p class='verdict-part'>⚠️ <b>P8 partially holds</b>: visible adherence loss only in "
+            f"the {', '.join(names_vis)} tier(s) — matching the perceptual ladder's visible band.</p>"
+        )
+
+    ref_line = f" (reference {ref_name} scores {ref_mean:.1f} on average, for scale)" if ref_mean is not None else ""
+    return f"""
+<h2 id="sec-clip">Prompt adherence (CLIP)</h2>
+<p>CLIP-score similarity between each rendered image and its prompt, relative
+to the reference encoder's render of the same prompt{ref_line}. This is the
+capability check that pairs with the perceptual ladder: LPIPS says how
+different the image looks, CLIP says whether it still depicts what was asked.
+Deltas are in CLIP points; the pre-registered band (P8) is ±1.5, visible
+degradation beyond ±2.</p>
+{verdict}
+<table>
+<tr><th>Variant</th><th>CLIP-score Δ (mean)</th><th>per-prompt range</th>
+<th>prompts beyond ±2</th><th>P8 class</th></tr>
+{chr(10).join(rows)}
+</table>"""
+
+
+# ---------------------------------------------------------------------------
 # Controls & anchor ladder section
 # ---------------------------------------------------------------------------
 
@@ -239,6 +347,29 @@ def _controls_section(controls: dict[str, Any] | None) -> str:
             "P5 INCONCLUSIVE: no magnitude-matched dose pair exists in this battery "
             "(heretic_a1 is ~75× lighter than the nearest noise dose)."
         )
+    # Phase 5 (P9): noise-equivalent dose of the real heretic edit, via the
+    # low-dose bracket — per unit conditioning MSE, is the structured
+    # abliteration edit less disruptive than unstructured Gaussian noise?
+    if "heretic_a1" in conds and len(noise_doses) >= 2:
+        her_div = conds["heretic_a1"]["summary"]["mean_final_latent_div"]
+        dose = _noise_equivalent_dose(noise_doses, her_div)
+        if dose is not None:
+            notes.append(
+                f"P9 NOISE-EQUIVALENT DOSE: the real heretic edit ({her_div:.5f}) deflects sampling "
+                f"as much as Gaussian noise at <b>{dose:.2f}× its own conditioning MSE</b> "
+                "(interpolated on the dose ladder, log-dose axis) — per unit MSE the structured "
+                "abliteration edit is "
+                + (
+                    f"<b>{1 / dose:.1f}× LESS image-disruptive</b> than unstructured noise."
+                    if dose < 1.0
+                    else "at least as disruptive as unstructured noise (P9 refuted)."
+                )
+            )
+        else:
+            notes.append(
+                "P9 INCONCLUSIVE: the real heretic edit's divergence sits outside the measured "
+                "noise-dose ladder (add rungs below 0.05× or above the top dose)."
+            )
     if "order_shuffle" in conds and "embed_shuffle" in conds:
         o = conds["order_shuffle"]["summary"]["mean_final_latent_div"]
         e = conds["embed_shuffle"]["summary"]["mean_final_latent_div"]
@@ -560,6 +691,7 @@ def build_phase4_sections(results_dir: Path) -> str:
     parts = [
         _executive_summary(anchors, img_vars, controls, attn, disc),
         _img_section(anchors, img_vars, results_dir),
+        _clip_adherence_section(img_vars),
         _controls_section(controls),
         _attention_section(attn),
         _word_readout_section(attn),

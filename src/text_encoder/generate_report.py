@@ -1744,6 +1744,7 @@ Results: {html.escape(str(results_dir))} · te_results_version: {TE_RESULTS_VERS
 <li><a href="#sec-directional">Directional analysis</a></li>
 <li><a href="#sec-divergence">DiT-step divergence</a></li>
 <li><a href="#sec-img">Image-space perceptual ladder</a></li>
+<li><a href="#sec-clip">Prompt adherence (CLIP)</a></li>
 <li><a href="#sec-controls">Counterfactual controls &amp; anchor ladder</a></li>
 <li><a href="#sec-attention">Attention readout</a></li>{words_toc}
 <li><a href="#sec-discriminability">Inter-prompt discriminability</a></li>

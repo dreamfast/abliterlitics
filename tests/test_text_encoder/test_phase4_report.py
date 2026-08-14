@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from src.text_encoder.phase4_report import (
     _controls_section,
@@ -222,3 +225,84 @@ class TestBuildPhase4:
         (tmp_path / "tebench_img_heretic.json").write_text(json.dumps(_mk_img_doc("heretic", 0.15)))
         anchors, variants = load_img_metrics(tmp_path)
         assert anchors is not None and "heretic" in variants
+
+
+class TestPhase5ClipAdherence:
+    def _img_vars(self) -> dict[str, dict[str, Any]]:
+        def doc(delta: float) -> dict[str, Any]:
+            return {
+                "reference": "base_int8",
+                "clip_score_delta_mean": delta,
+                "clip_scores": {
+                    f"p{i}": {"variant": 28.0 + delta, "reference": 28.0, "delta": delta} for i in range(5)
+                },
+            }
+
+        return {"base_int8": doc(0.0), "heretic": doc(-0.4), "base_int4": doc(-3.1)}
+
+    def test_p8_section_renders_and_classifies(self) -> None:
+        from src.text_encoder.phase4_report import _clip_adherence_section
+
+        html = _clip_adherence_section(self._img_vars())
+        assert "sec-clip" in html
+        assert "P8 partially holds" in html  # only int4 is visible, flagged as tier
+        assert "in band" in html and "visibly degraded" in html
+
+    def test_p8_holds_when_all_in_band(self) -> None:
+        from src.text_encoder.phase4_report import _clip_adherence_section
+
+        vars_ = self._img_vars()
+        del vars_["base_int4"]
+        html = _clip_adherence_section(vars_)
+        assert "P8 holds" in html and "partially" not in html
+
+    def test_empty_when_no_clip(self) -> None:
+        from src.text_encoder.phase4_report import _clip_adherence_section
+
+        assert _clip_adherence_section({"base": {"te_swap": {}}}) == ""
+
+
+class TestNoiseEquivalentDose:
+    def test_interpolates_between_rungs(self) -> None:
+        from src.text_encoder.phase4_report import _noise_equivalent_dose
+
+        ladder = [(0.05, 0.010), (0.1, 0.014), (0.15, 0.018), (0.25, 0.0237)]
+        dose = _noise_equivalent_dose(ladder, 0.014)
+        assert dose == pytest.approx(0.1)
+        mid = _noise_equivalent_dose(ladder, 0.016)
+        assert 0.1 < mid < 0.15
+
+    def test_none_outside_bracket(self) -> None:
+        from src.text_encoder.phase4_report import _noise_equivalent_dose
+
+        ladder = [(0.05, 0.010), (0.1, 0.014), (0.25, 0.0237)]
+        assert _noise_equivalent_dose(ladder, 0.005) is None  # below
+        assert _noise_equivalent_dose(ladder, 0.05) is None  # above
+
+    def test_p9_note_gated_on_bracket(self) -> None:
+        from src.text_encoder.phase4_report import _controls_section
+
+        def cond(div: float) -> dict[str, Any]:
+            return {
+                "summary": {
+                    "mean_final_latent_div": div,
+                    "noise_control_final": 0.152,
+                    "div_control_ratio": div / 0.152,
+                }
+            }
+
+        base_conds = {
+            "noise_0.05x": cond(0.012),
+            "noise_0.1x": cond(0.014),
+            "noise_0.15x": cond(0.017),
+            "noise_1x": cond(0.032),
+            "heretic_a1": cond(0.0155),
+            "heretic_a10": cond(0.0324),
+        }
+        html = _controls_section({"conditions": base_conds})
+        assert "P9 NOISE-EQUIVALENT DOSE" in html
+        assert "LESS image-disruptive" in html  # interpolated dose < 1.0
+        # without a bracket the note must be absent
+        no_bracket = {k: v for k, v in base_conds.items() if k not in ("noise_0.05x", "noise_0.1x", "noise_0.15x")}
+        html2 = _controls_section({"conditions": no_bracket})
+        assert "P9 NOISE-EQUIVALENT DOSE" not in html2
