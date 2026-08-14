@@ -114,9 +114,10 @@ class TestVerdictSection:
             "heretic_int8": _mk_img_doc("heretic_int8", 0.29),
             "base_nvfp4": _mk_img_doc("base_nvfp4", 0.28),
             # round-2 fixture: matched pairs for per-tier deltas — including
-            # a QUANTIZATION-DOMINATED heavy tier (heretic_int4 BELOW base_int4)
+            # a QUANTIZATION-DOMINATED heavy tier (|heretic_int4 - base_int4|
+            # within the ±0.02 guard, mirroring real data -0.005)
             "base_int8": _mk_img_doc("base_int8", 0.15),
-            "base_int4": _mk_img_doc("base_int4", 0.50),
+            "base_int4": _mk_img_doc("base_int4", 0.455),
         }
         controls = {
             "conditions": {

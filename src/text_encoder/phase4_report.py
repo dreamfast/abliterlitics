@@ -447,7 +447,14 @@ def _verdict_section(
                     if abl_best is None or delta > abl_best[3]:
                         abl_best = (sfx, lp_b, lp_h, delta)
                     heavy = sfx in ("int4", "nvfp4") or "q4" in sfx or "q3" in sfx
-                    if heavy and (quant_dominated is None or lp_h > quant_dominated[2]):
+                    # select the heavy tier whose delta is CLOSEST TO ZERO —
+                    # "quantization-dominated" claims the ablation contributes
+                    # ~nothing there; require |delta| <= 0.02 before labeling
+                    if (
+                        heavy
+                        and abs(delta) <= 0.02
+                        and (quant_dominated is None or abs(delta) < abs(quant_dominated[2] - quant_dominated[1]))
+                    ):
                         quant_dominated = (sfx, lp_b, lp_h)
                 heretic_note = ""
                 if abl_best is not None and abl_best[3] > 0.02:
@@ -763,56 +770,86 @@ prompt embedding and measured how the sampler responds, to learn what real sabot
 
 
 def _word_readout_section(attn: dict[str, dict[str, Any]]) -> str:
-    """Decode the attention readout back into words and diff base vs variant.
+    """What the DiT reads, in words — prompt-order rows with mass highlighting.
 
-    The capture stores, per prompt, the mean text-readout distribution for
-    BOTH sides (base + variant) and the token strings per position — so this
-    section needs no extra runs. Answers: for the same prompt, which words
-    does the DiT look at more / less under this encoder?
+    Presentation (user design): rows keep the prompt's word order (never
+    re-sorted); row brightness + in-cell bars encode attention mass (share of
+    the prompt budget); delta is green (gained) / red (lost); chat-template
+    scaffolding collapses to one dimmed row. The capture stores per-prompt
+    readout distributions for BOTH sides plus the token strings, so no extra
+    runs are needed.
     """
+    from src.text_encoder.attention_metrics import word_rows_ordered
+
     with_words = {k: d for k, d in attn.items() if d.get("has_word_readout") and d.get("per_prompt")}
     if not with_words:
         return ""
-    from src.text_encoder.attention_metrics import word_diff
+
+    def _mass_cell(m: float, max_m: float, bar_cls: str) -> str:
+        pct = m * 100
+        width = min(100.0, m / max(max_m, 1e-9) * 100.0)
+        return (
+            f'<div class="mcell"><div class="{bar_cls}" style="width:{width:.0f}%"></div><span>{pct:.1f}%</span></div>'
+        )
 
     blocks: list[str] = []
     for name in sorted(with_words):
         doc = with_words[name]
-        pp_rows: list[str] = []
+        pp_tables: list[str] = []
         for pp in doc["per_prompt"]:
             toks = pp.get("tokens", [])
             b = pp.get("base_mean_readout", [])
             v = pp.get("variant_mean_readout", [])
             if not toks or not b or not v:
                 continue
-            rows = word_diff(toks, b, v, top_k=12)
-            if not rows:
+            rows_b = word_rows_ordered(toks, b)
+            rows_v = word_rows_ordered(toks, v)
+            if not rows_b:
                 continue
-            tr = "".join(
-                f"<tr><td>{str(r['word'])[:28]}</td><td>{float(r['base']) * 100:.1f}%</td>"
-                f"<td>{float(r['variant']) * 100:.1f}%</td>"
-                f"<td>{float(r['delta']) * 100:+.1f}pp</td></tr>"
-                for r in rows
-            )
+            v_by_label: dict[str, float] = {}
+            for label, m, _kind in rows_v:
+                v_by_label[label] = v_by_label.get(label, 0.0) + m
+            max_m = max(max(mb, v_by_label.get(label, 0.0)) for label, mb, _kind in rows_b)
+            trs: list[str] = []
+            for label, mb, kind in rows_b:
+                mv = v_by_label.get(label, 0.0)
+                delta = (mv - mb) * 100
+                heat = min(0.55, max(mb, mv) / max(max_m, 1e-9) * 0.55)
+                cls = "" if kind == "word" else "wr-chat"
+                style = f' style="background:rgba(76,114,176,{heat:.2f})"' if kind == "word" else ""
+                d_col = "#27ae60" if delta > 0.15 else ("#c0392b" if delta < -0.15 else "#888")
+                trs.append(
+                    f'<tr class="{cls}"{style}><td style="text-align:left">{label}</td>'
+                    f"<td>{_mass_cell(mb, max_m, 'mbar')}</td>"
+                    f"<td>{_mass_cell(mv, max_m, 'mbar2')}</td>"
+                    f'<td><span style="color:{d_col}">{delta:+.1f}pp</span></td></tr>'
+                )
             prompt_short = pp.get("prompt", "")[:110]
-            pp_rows.append(f"<tr><td colspan=4 class='meta'>{prompt_short}…</td></tr>{tr}")
-        if pp_rows:
+            pp_tables.append(
+                f"<tr><td colspan=4 class='meta' style='text-align:left'>{prompt_short}…</td></tr>" + "".join(trs)
+            )
+        if pp_tables:
             blocks.append(
-                f"<details class='glossary'><summary><b>{name}</b> — top word-readout shifts "
-                f"(mean JSD {float(doc.get('jsd_mean_all', 0)):.5f})</summary>"
-                "<table><tr><th>word</th><th>base TE mass</th><th>variant TE mass</th><th>Δ</th></tr>"
-                + "".join(pp_rows)
-                + "</table></details>"
+                f"<details class='glossary' open><summary><b>{name}</b> — word readout in prompt order "
+                f"(mean attention JSD {float(doc.get('jsd_mean_all', 0)):.5f})</summary>"
+                "<table><tr><th style='text-align:left'>word (prompt order)</th>"
+                "<th>base encoder</th><th>this encoder</th><th>Δ</th></tr>" + "".join(pp_tables) + "</table></details>"
             )
     if not blocks:
         return ""
-    return f"""
+    intro = """
 <h2 id="sec-words">What the DiT reads, in words</h2>
-<p>The attention readout decoded back into prompt words: for the SAME prompt,
-how much attention mass each word receives from the image tokens under the
-base encoder vs this encoder (mean over sampling steps and layers). Δ is in
-percentage points of total attention. This is the direct answer to "does the
-modified encoder change what the image model looks at?" — a healthy encoder
-shows tiny, diffuse shifts; a sabotaged one would move mass off content
-words (or onto padding).</p>
-{chr(10).join(blocks)}"""
+<p>The attention readout decoded back into the prompt's words, <b>rows in prompt order</b>:
+row brightness and bar length encode how much attention each word receives — blue bar =
+base encoder, orange bar = this encoder (bars relative to this prompt's most-read word) —
+and Δ is the change in percentage points of the prompt budget (green = gained attention,
+red = lost). Chat-template scaffolding collapses into one dimmed row.</p>
+<p class="explainer"><b>How to read this:</b> the image model receives the prompt through two
+channels — <i>where it looks</i> (this table) and <i>what it receives</i> (the embedding content
+behind each word, measured in the conditioning tables). The channels move independently:
+the abliterated encoder leaves this table nearly unchanged (same gaze, slightly different
+content — its image changes flow through the content channel), while int4 scrambles both.
+Also note the prompt as a whole only receives a few percent of total attention in this
+architecture (the rest is image-to-image); the rows share out that prompt budget.</p>
+"""
+    return intro + chr(10).join(blocks)

@@ -72,6 +72,9 @@ IMG_REFERENCE="${TEBENCH_IMG_REFERENCE:-base_int8}"
 IMG_CLIP_MODEL="${TEBENCH_IMG_CLIP_MODEL:-ViT-L-14}"
 IMG_CLIP_PRETRAINED="${TEBENCH_IMG_CLIP_PRETRAINED:-openai}"
 IMG_FLOOR_PAIR="${TEBENCH_IMG_FLOOR_PAIR:-base_int8,base_fp8}"
+# GPU 0 (5090) when free — LPIPS/CLIP are small (~3GB) and coexist with the
+# ComfyUI stack; CPU fallback via TE_IMG_DEVICE=cpu for busy-GPU periods.
+IMG_DEVICE="${TE_IMG_DEVICE:-cuda}"
 
 if [[ "${DRY_RUN}" -eq 1 ]]; then
     log "DRY-RUN: would score ${MANIFEST} (ref=${IMG_REFERENCE}, clip=${IMG_CLIP_MODEL}/${IMG_CLIP_PRETRAINED})"
@@ -80,9 +83,16 @@ fi
 
 mkdir -p "${ABL_ROOT}/.cache/hf" "${ABL_ROOT}/.cache/torch"
 
-log "Scoring A/B images for ${COMPARISON_NAME} (ref=${IMG_REFERENCE})"
+log "Scoring A/B images for ${COMPARISON_NAME} (ref=${IMG_REFERENCE}, device=${IMG_DEVICE})"
 
-docker_run_cpu "${TE_IMAGE}" \
+RUN_FN=docker_run_cpu
+RUN_EXTRA=()
+if [[ "${IMG_DEVICE}" == "cuda" ]]; then
+    RUN_FN=docker_run
+    RUN_EXTRA=("0")
+fi
+
+"${RUN_FN}" "${RUN_EXTRA[@]}" "${TE_IMAGE}" \
     -v "${MANIFEST}:/manifest.json:ro" \
     -v "${RESULTS_DIR}:/results" \
     -v "${ABL_ROOT}:/app:ro" \
@@ -97,6 +107,7 @@ docker_run_cpu "${TE_IMAGE}" \
         --floor-pair "${IMG_FLOOR_PAIR}" \
         --clip-model "${IMG_CLIP_MODEL}" \
         --clip-pretrained "${IMG_CLIP_PRETRAINED}" \
+        --device "${IMG_DEVICE}" \
         "${EXTRA_ARGS[@]}"
 
 log "Image metrics complete: ${RESULTS_DIR}/tebench_img_*.json"

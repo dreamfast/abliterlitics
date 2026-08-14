@@ -214,3 +214,62 @@ def word_diff(
         rows.append({"word": w, "base": bm, "variant": vm, "delta": delta})
     rows.sort(key=lambda r: abs(float(r["delta"])), reverse=True)
     return rows[:top_k]
+
+
+# ---------------------------------------------------------------------------
+# Ordered word rows (prompt-order presentation — Phase 4 report redesign)
+# ---------------------------------------------------------------------------
+
+# Chat-template scaffolding tokens (Qwen/Z-Image llama_template) — rendered as
+# one dimmed row, never mixed into content words.
+CHAT_TOKENS = {"<|im_start|>", "<|im_end|>", "<|endoftext|>", "user", "assistant", "system", "Ċ"}
+
+
+def word_rows_ordered(tokens: list[str], mass: list[float]) -> list[tuple[str, float, str]]:
+    """Group BPE tokens into word rows IN PROMPT ORDER (positional, no re-sorting).
+
+    Each row: (label, mass_fraction, kind) with kind in {"word", "chat", "pad"}.
+    - Consecutive non-space BPE pieces glue into one word row.
+    - Consecutive chat-template tokens merge into ONE "[chat ...]" row.
+    - Pad positions merge into one "[pad]" row. Masses normalized over the
+      token span first (shares of the PROMPT attention budget).
+    """
+    n = min(len(tokens), len(mass))
+    if n == 0:
+        return []
+    total = sum(mass[:n]) or 1.0
+    norm = [m / total for m in mass[:n]]
+    rows: list[tuple[str, float, str]] = []
+    cur: tuple[str, float, str] | None = None
+
+    def _flush() -> None:
+        nonlocal cur
+        if cur is not None:
+            rows.append(cur)
+            cur = None
+
+    for tok, m in zip(tokens[:n], norm, strict=False):
+        t = tok.strip()
+        is_pad = (not t) or tok in ("<pad>", "<|pad|>")
+        is_chat = (tok.startswith("<") and tok.endswith(">")) or tok in CHAT_TOKENS
+        if is_pad or is_chat:
+            _flush()
+            kind = "pad" if is_pad else "chat"
+            label = (
+                "[pad]"
+                if is_pad
+                else ("[chat template]" if rows and rows[-1][2] != "chat" or not rows else "[chat template]")
+            )
+            # merge into a trailing row of the same kind
+            if rows and rows[-1][2] == kind:
+                rows[-1] = (rows[-1][0], rows[-1][1] + m, kind)
+            else:
+                rows.append((label, m, kind))
+        elif tok.startswith(" ") or cur is None:
+            _flush()
+            cur = (t, m, "word")
+        else:
+            assert cur is not None
+            cur = (cur[0] + t, cur[1] + m, "word")
+    _flush()
+    return rows

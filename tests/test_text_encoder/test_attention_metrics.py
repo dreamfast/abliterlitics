@@ -148,3 +148,47 @@ class TestWordReadout:
 
         assert group_words([], []) == []
         assert word_diff(["a"], [], []) == []
+
+
+class TestWordRowsOrdered:
+    def test_prompt_order_preserved(self) -> None:
+        from src.text_encoder.attention_metrics import word_rows_ordered
+
+        toks = [
+            "<|im_start|>",
+            "user",
+            "Ċ",
+            "a",
+            " golden",
+            " retrie",
+            "ver",
+            " catching",
+            " a",
+            " fr",
+            "is",
+            "bee",
+            "<|im_end|>",
+            "<pad>",
+        ]
+        mass = [0.30, 0.10, 0.02, 0.01, 0.05, 0.04, 0.04, 0.06, 0.01, 0.08, 0.04, 0.04, 0.09, 0.12]
+        rows = word_rows_ordered(toks, mass)
+        labels = [lab for lab, _, k in rows if k == "word"]
+        assert labels == ["a", "golden", "retriever", "catching", "a", "frisbee"]  # order + BPE glue
+        kinds = [k for _, _, k in rows]
+        assert kinds[0] == "chat" and kinds[-1] in ("chat", "pad")
+        assert sum(m for _, m, _ in rows) == pytest.approx(1.0)
+
+    def test_leading_and_trailing_chat_merge_separately(self) -> None:
+        from src.text_encoder.attention_metrics import word_rows_ordered
+
+        toks = ["<|im_start|>", "user", " a", " red", " square", "<|im_end|>", "Ċ"]
+        mass = [0.2, 0.1, 0.05, 0.1, 0.1, 0.35, 0.1]
+        rows = word_rows_ordered(toks, mass)
+        chat_rows = [r for r in rows if r[2] == "chat"]
+        assert len(chat_rows) == 2  # not merged across content words
+        assert rows[0][2] == "chat" and rows[-1][2] == "chat"
+
+    def test_empty(self) -> None:
+        from src.text_encoder.attention_metrics import word_rows_ordered
+
+        assert word_rows_ordered([], []) == []
