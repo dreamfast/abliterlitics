@@ -61,6 +61,17 @@ host_to_container() {
     fi
 }
 
+map_list_to_container() {
+    # Map EACH comma-separated host path individually, rejoin with commas.
+    local joined=""
+    local item
+    IFS=',' read -ra _items <<< "$1"
+    for item in "${_items[@]}"; do
+        joined="${joined:+${joined},}$(host_to_container "${item}")"
+    done
+    echo "${joined}"
+}
+
 # Resolve variant list -> files + names, skipping existing unless --force
 files=""
 names=""
@@ -102,13 +113,12 @@ docker_run "$GPU" "$TE_IMAGE" \
     -- \
     /app/src/text_encoder/run_discriminability.py \
         --base "$(host_to_container "$TEBENCH_BASE_TE_FILE")" \
-        --variants "$(host_to_container "${files}")" \
+        --variants "$(map_list_to_container "${files}")" \
         --variant-names "${names}" \
         --dit "$(host_to_container "$TEBENCH_DIT_FILE")" \
         --cache-dir /te_cache \
         --results-dir /results \
         --device cuda \
         --n-steps "${N_STEPS}" \
-        --layer-sample "${LAYER_SAMPLE}"
 
 log "Discriminability complete: ${RESULTS_DIR}/tebench_discriminability_*.json"

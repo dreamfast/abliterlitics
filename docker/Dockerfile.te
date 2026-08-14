@@ -15,8 +15,8 @@ ENV PIP_CACHE_DIR=/root/.cache/pip
 # - torchsde, filelock, blake3, simpleeval: assorted comfy imports
 # - scipy, pyyaml: tebench metrics + prompt suite
 # - lpips, open_clip_torch: Phase-4 image-space metrics (LPIPS ladder +
-#   CLIP-score; journal #122). open_clip downloads weights at first use —
-#   mount .cache/hf or pre-warm via run_img_metrics --warm-clip.
+#   CLIP-score; journal #122). Weights download at first use inside the
+#   container — the runners mount .cache/hf + .cache/torch so they persist.
 RUN pip3 install --no-cache-dir \
     "numpy>=1.25.0" \
     einops \

@@ -80,14 +80,12 @@ def main() -> int:
 
     def _spread(ctxs: list[torch.Tensor]) -> float:
         """Mean pairwise final-latent relative divergence across prompts."""
-        g = torch.Generator(device="cpu").manual_seed(args.seed)
         finals = []
         for i, ctx in enumerate(ctxs):
             # SAME noise per prompt index across TEs (seeded by index):
             # differences in finals are due to conditioning only
             gi = torch.Generator(device="cpu").manual_seed(args.seed + i)
             x0 = torch.randn(1, 16, args.latent_hw, args.latent_hw, generator=gi).to(args.device).to(torch.bfloat16)
-            del g
             finals.append(_trajectory(ctx, x0).flatten())
         n = len(finals)
         divs = []

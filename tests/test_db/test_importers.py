@@ -411,3 +411,76 @@ class TestImportTeImgMetrics:
         rows = conn.execute("SELECT COUNT(*) FROM te_results WHERE comparison='test-comp'").fetchone()[0]
         assert rows == 0
         conn.close()
+
+
+class TestImportPhase4Tables:
+    """Controls / attention / discriminability importers (Phase 4)."""
+
+    def _write_files(self, results_dir) -> None:
+        (results_dir / "tebench_controls.json").write_text(
+            json.dumps(
+                {
+                    "conditions": {
+                        "noise_1x": {
+                            "summary": {
+                                "mean_final_latent_div": 0.03,
+                                "noise_control_final": 1.2,
+                                "div_control_ratio": 0.025,
+                            }
+                        },
+                        "null": {
+                            "summary": {
+                                "mean_final_latent_div": 0.4,
+                                "noise_control_final": 1.2,
+                                "div_control_ratio": 0.33,
+                            }
+                        },
+                    }
+                }
+            )
+        )
+        (results_dir / "tebench_attention_heretic.json").write_text(
+            json.dumps({"variant_name": "heretic", "jsd_mean_all": 0.012, "jsd_per_layer": {"3": 0.02, "9": 0.05}})
+        )
+        (results_dir / "tebench_discriminability_heretic.json").write_text(
+            json.dumps({"variant_name": "heretic", "base_spread": 0.9, "variant_spread": 0.89, "spread_ratio": 0.99})
+        )
+
+    def test_roundtrip_and_idempotent(self, tmp_path):
+        from src.db.importers import import_te_attention, import_te_controls, import_te_discriminability
+
+        conn = get_db(str(tmp_path / "test.db"))
+        _setup_comparison(conn)
+        rd = tmp_path / "text_encoder"
+        rd.mkdir()
+        self._write_files(rd)
+
+        assert import_te_controls(conn, "test-comp", rd) == 2
+        assert import_te_attention(conn, "test-comp", rd) == 1
+        assert import_te_discriminability(conn, "test-comp", rd) == 1
+
+        # idempotent
+        import_te_controls(conn, "test-comp", rd)
+        import_te_attention(conn, "test-comp", rd)
+        import_te_discriminability(conn, "test-comp", rd)
+        assert conn.execute("SELECT COUNT(*) FROM te_controls WHERE comparison='test-comp'").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM te_attention WHERE comparison='test-comp'").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM te_discriminability WHERE comparison='test-comp'").fetchone()[0] == 1
+
+        peak = conn.execute(
+            "SELECT jsd_peak_layer, jsd_peak_value FROM te_attention WHERE comparison='test-comp' AND variant='heretic'"
+        ).fetchone()
+        assert peak[0] == 9 and peak[1] == 0.05
+        conn.close()
+
+    def test_missing_files_zero(self, tmp_path):
+        from src.db.importers import import_te_attention, import_te_controls, import_te_discriminability
+
+        conn = get_db(str(tmp_path / "test.db"))
+        _setup_comparison(conn)
+        rd = tmp_path / "text_encoder"
+        rd.mkdir()
+        assert import_te_controls(conn, "test-comp", rd) == 0
+        assert import_te_attention(conn, "test-comp", rd) == 0
+        assert import_te_discriminability(conn, "test-comp", rd) == 0
+        conn.close()

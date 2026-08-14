@@ -65,7 +65,6 @@ heretic_te_var="VARIANT_TE_FILE_${heretic_slug}"
 heretic_te_host="${!heretic_te_var:-}"
 [[ -z "${heretic_te_host}" || ! -f "${heretic_te_host}" ]] && { error "No te_file for variant ${HERETIC}"; exit 1; }
 
-MODELS_HOST_ROOT="$(dirname "$(dirname "$TEBENCH_DIT_FILE")")"
 COMFYUI_HOST_PATH="${TEBENCH_COMFYUI_PATH:-/home/maxx/comfyui-docker/comfyui}"
 
 host_to_container() {
@@ -81,6 +80,17 @@ host_to_container() {
     fi
 }
 
+map_list_to_container() {
+    # Map EACH comma-separated host path individually, rejoin with commas.
+    local joined=""
+    local item
+    IFS=',' read -ra _items <<< "$1"
+    for item in "${_items[@]}"; do
+        joined="${joined:+${joined},}$(host_to_container "${item}")"
+    done
+    echo "${joined}"
+}
+
 dose_args=""
 if [[ -n "${DOSE_VARIANTS}" ]]; then
     files=""
@@ -91,7 +101,7 @@ if [[ -n "${DOSE_VARIANTS}" ]]; then
         [[ -z "${f}" || ! -f "${f}" ]] && { error "No te_file for dose variant ${v}"; exit 1; }
         files="${files:+${files},}${f}"
     done
-    dose_args="--dose-variants $(host_to_container "${files}")"
+    dose_args="--dose-variants $(map_list_to_container "${files}")"
 fi
 
 if [[ "${DRY_RUN}" -eq 1 ]]; then

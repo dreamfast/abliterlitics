@@ -281,3 +281,30 @@ class TestMetersOnline:
         s_red = meter.clip_score(red, "a photo of a red square")
         s_blue = meter.clip_score(red, "a photo of a blue ocean")
         assert s_red > s_blue
+
+
+class TestResolvePath:
+    """_resolve_path across the mixed manifest path conventions (deepseek-R6)."""
+
+    def test_as_is(self, tmp_path):
+        from src.text_encoder.run_img_metrics import _resolve_path
+
+        f = tmp_path / "a.webp"
+        f.write_bytes(b"x")
+        assert _resolve_path(str(f), tmp_path) == f
+
+    def test_ab_images_tail_under_results(self, tmp_path):
+        from src.text_encoder.run_img_metrics import _resolve_path
+
+        (tmp_path / "ab_images" / "base").mkdir(parents=True)
+        f = tmp_path / "ab_images" / "base" / "img.webp"
+        f.write_bytes(b"x")
+        # container-style absolute path that does not exist as-is
+        got = _resolve_path("/results/te-zimage/text_encoder/ab_images/base/img.webp", tmp_path)
+        assert got == f
+
+    def test_missing_returns_candidate(self, tmp_path):
+        from src.text_encoder.run_img_metrics import _resolve_path
+
+        got = _resolve_path("/nonexistent/path.webp", tmp_path)
+        assert str(got) == "/nonexistent/path.webp"

@@ -27,7 +27,7 @@ def _per_prompt_mse(base: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
     return ((base - other) ** 2).mean(dim=(1, 2))
 
 
-def _match_mse(delta: torch.Tensor, target_mse: torch.Tensor, dim: int = -1) -> torch.Tensor:
+def _match_mse(delta: torch.Tensor, target_mse: torch.Tensor) -> torch.Tensor:
     """Scale per-prompt deltas so each prompt's MSE equals its target.
 
     delta: [n, L, d]; target_mse: [n]. Returns scaled delta.

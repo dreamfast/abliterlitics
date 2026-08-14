@@ -4,9 +4,12 @@ Phase 4 (T3.2). Pushes synthesized conditioning (perturb.py) through the same
 paired-trajectory harness as run_dit_divergence, producing the anchor ladder
 and dose-response controls:
 
-  noise_<dose>     Gaussian at matched MSE (>=5 doses, log-spaced 0.25x..2x max)
+  noise_<dose>     Gaussian at matched MSE (>=5 doses, 0.25x..2x max-variant)
   rank1_<dose>     fixed random direction (structured-but-meaningless control)
-  taboo_<dose>     taboo-direction injection (norm-matched)
+  taboo_<dose>     taboo-direction injection (norm-matched — NOTE: "1x" here
+                   matches the heretic delta's mean per-token NORM, not the
+                   noise family's MSE; cross-family "1x" labels are NOT the
+                   same perturbation magnitude (deepseek-R7))
   heretic_a<alpha> alpha-scaled REAL heretic delta (0.5/1/2/10)
   order_shuffle    Spingarn syntax-destruction
   embed_shuffle    Spingarn meaning-destruction (derangement)
@@ -35,6 +38,8 @@ from pathlib import Path
 from typing import Any
 
 import torch
+
+from src.text_encoder import TE_RESULTS_VERSION
 
 log = logging.getLogger(__name__)
 
@@ -239,7 +244,7 @@ def main() -> int:
         conditions["null"] = _mk_null()
 
     results: dict[str, Any] = {
-        "te_results_version": 1,
+        "te_results_version": TE_RESULTS_VERSION,
         "analysis": "control_battery",
         "backend": "zimage",
         "base": args.base,
