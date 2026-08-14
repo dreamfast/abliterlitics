@@ -129,7 +129,7 @@ class TestWordReadout:
         words = dict(group_words(toks, mass))
         assert words["a"] == pytest.approx(0.35)  # duplicates merged
         assert words["photo"] == pytest.approx(0.20)
-        assert words["‹pad›"] == pytest.approx(0.05)  # pad label merged
+        assert words["<pad>"] == pytest.approx(0.05)  # consecutive pads merged
         assert sum(words.values()) == pytest.approx(1.0)
 
     def test_word_diff_ranks_by_delta(self) -> None:
