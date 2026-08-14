@@ -1730,6 +1730,7 @@ Results: {html.escape(str(results_dir))} · te_results_version: {TE_RESULTS_VERS
 <nav class="toc">
 <b>Contents</b>
 <ol>
+<li><a href="#sec-summary-plain">Executive summary (plain English)</a></li>
 <li><a href="#sec-ab">A/B image evidence (interactive)</a></li>
 <li><a href="#sec-gguf">GGUF quantization ladder</a></li>
 <li><a href="#sec-decomp">Quantization vs abliteration decomposition</a></li>

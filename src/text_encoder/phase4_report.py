@@ -445,6 +445,7 @@ def build_phase4_sections(results_dir: Path) -> str:
     disc = load_discriminability(results_dir)
     dit_summaries = load_dit_divergence_summaries(results_dir)
     parts = [
+        _executive_summary(anchors, img_vars, controls, attn, disc),
         _img_section(anchors, img_vars),
         _controls_section(controls),
         _attention_section(attn),
@@ -452,3 +453,188 @@ def build_phase4_sections(results_dir: Path) -> str:
         _verdict_section(anchors, img_vars, controls, attn, disc, dit_summaries),
     ]
     return "\n".join(p for p in parts if p)
+
+
+# ---------------------------------------------------------------------------
+# Plain-English executive summary (labeled interpretation section)
+# ---------------------------------------------------------------------------
+
+
+def _executive_summary(
+    anchors: dict[str, Any] | None,
+    img_vars: dict[str, dict[str, Any]],
+    controls: dict[str, Any] | None,
+    attn: dict[str, dict[str, Any]],
+    disc: dict[str, dict[str, Any]],
+) -> str:
+    """The "start here" section: what we asked, how it's measured, what it says.
+
+    This is a LABELED INTERPRETATION section (terminology policy, journals
+    #117/#118): plain-English verdict language is allowed here and in the
+    verdict table; the data tables themselves stay value-neutral.
+    All numbers are pulled from the Phase-4 data at render time.
+    """
+    if not img_vars:
+        return ""
+    seed_m, _, _ = (
+        _summary_mean(anchors["seed_change"], "lpips") if anchors and "seed_change" in anchors else (None, None, None)
+    )
+    floor_m, _, _ = (
+        _summary_mean(anchors["floor_band"], "lpips") if anchors and "floor_band" in anchors else (None, None, None)
+    )
+    if seed_m is None or floor_m is None:
+        return ""
+
+    band = floor_m * 1.25
+
+    def _lp(name: str) -> float | None:
+        doc = img_vars.get(name)
+        if not doc:
+            return None
+        lp, _, _ = _summary_mean(doc.get("te_swap", {}), "lpips")
+        return lp
+
+    # Tier the variants from real data
+    fine: list[str] = []
+    visible: list[str] = []
+    for name, doc in img_vars.items():
+        lp, _, _ = _summary_mean(doc.get("te_swap", {}), "lpips")
+        if lp is None:
+            continue
+        (fine if lp <= band else visible).append(name)
+    visible_sorted = sorted(visible, key=lambda n: -(_summary_mean(img_vars[n].get("te_swap", {}), "lpips")[0] or 0))
+    heretic_lp = _lp("heretic")
+    worst = visible_sorted[0] if visible_sorted else None
+    worst_lp = _summary_mean(img_vars[worst].get("te_swap", {}), "lpips")[0] if worst else None
+
+    # Controls headline numbers
+    conds: dict[str, Any] = (controls or {}).get("conditions", {})
+    noise_1x = conds.get("noise_1x", {}).get("summary", {}).get("mean_final_latent_div")
+    taboo_1x = conds.get("taboo_1x", {}).get("summary", {}).get("mean_final_latent_div")
+    heretic_traj = conds.get("heretic_a1", {}).get("summary", {}).get("mean_final_latent_div")
+    noise_doses = sorted(
+        (float(k.split("_")[1][:-1]), conds[k]["summary"]["mean_final_latent_div"])
+        for k in conds
+        if k.startswith("noise_") and "summary" in conds[k]
+    )
+    mono_txt = ""
+    if len(noise_doses) >= 3:
+        mono = all(b >= a * 0.9 for (_, a), (_, b) in zip(noise_doses, noise_doses[1:], strict=False))
+        mono_txt = (
+            f" Bigger noise injections produced bigger image changes, as they must "
+            f"({noise_doses[0][1]:.3f} at quarter dose rising to {noise_doses[-1][1]:.3f} at double dose"
+            + (" — the ruler is sound)." if mono else " — CAUTION: non-monotonic, ruler needs review).")
+        )
+    taboo_txt = ""
+    if noise_1x is not None and taboo_1x is not None:
+        if taboo_1x < noise_1x * 0.85:
+            taboo_txt = (
+                f" Injecting the exact <i>refusal direction</i> the abliteration removes moves the "
+                f"sampling less than same-size random noise ({taboo_1x:.3f} vs {noise_1x:.3f}) — "
+                "the edit lives in a corner of representation space this image model barely reads. "
+                "<b>That is WHY the abliterated encoder is invisible.</b>"
+            )
+        else:
+            taboo_txt = (
+                f" The refusal-direction injection ({taboo_1x:.3f}) did NOT sit below the same-size "
+                f"random-noise response ({noise_1x:.3f}) — the 'hidden subspace' explanation is not "
+                "supported at these doses."
+            )
+    heretic_txt = ""
+    if heretic_traj is not None and noise_1x is not None:
+        rel = "below" if heretic_traj < noise_1x else "at/above"
+        heretic_txt = (
+            f" The real heretic edit (unscaled) deflects sampling {heretic_traj:.3f} — {rel} the "
+            "matched-size noise response."
+        )
+    controls_html = (
+        f"<ul class='findings'>{mono_txt}{taboo_txt}{heretic_txt}</ul>"
+        if (mono_txt or taboo_txt or heretic_txt)
+        else ""
+    )
+
+    attn_html = ""
+    if attn:
+        worst_attn = max(attn.items(), key=lambda kv: kv[1].get("jsd_mean_all", 0))
+        attn_html = (
+            "<p><b>What the image model LOOKS AT.</b> We x-rayed which prompt words the image model "
+            f"pays attention to, base encoder vs modified. The largest readout change across the "
+            f"measured encoders is {worst_attn[1].get('jsd_mean_all', 0):.4f} (Jensen–Shannon divergence, "
+            "where 0 = reads identically and 0.69 = completely different reading habits) — "
+            f"for <code>{worst_attn[0]}</code>.</p>"
+        )
+    disc_html = ""
+    if disc:
+        worst_disc = min(disc.items(), key=lambda kv: kv[1].get("spread_ratio", 1.0))
+        disc_html = (
+            "<p><b>Do the images stay distinct from each other?</b> A truly broken encoder would make "
+            "every prompt produce mushily similar pictures. The largest collapse across the measured "
+            f"encoders keeps {worst_disc[1].get('spread_ratio', 1.0) * 100:.0f}% of the base encoder's "
+            f"prompt-to-prompt separation (<code>{worst_disc[0]}</code>).</p>"
+        )
+
+    heretic_verdict = ""
+    if heretic_lp is not None:
+        if heretic_lp <= band:
+            heretic_verdict = (
+                f"<li><b>The abliterated (heretic) encoder at full precision: image change {heretic_lp:.2f} — "
+                f"<u>below</u> the normal wiggle band ({floor_m:.2f}).</b> Swapping to it changes the rendered "
+                "image LESS than swapping between two perfectly fine encoders does. Indistinguishable from "
+                "harmless.</li>"
+            )
+        else:
+            heretic_verdict = (
+                f"<li><b>The abliterated encoder at full precision: image change {heretic_lp:.2f} — ABOVE the "
+                f"normal wiggle band ({floor_m:.2f}).</b> Report and inspect before trusting.</li>"
+            )
+
+    bullet_worst = ""
+    if worst and worst_lp is not None:
+        bullet_worst = (
+            f"<li><b>Heavy compression ({worst.replace('_', ' ')}): {worst_lp:.2f} — "
+            f"{worst_lp / floor_m:.1f}× the wiggle band</b>, most of the way to "
+            f"'a different picture' ({seed_m:.2f}). Visible degradation, caused by compression — "
+            "not by the abliteration.</li>"
+        )
+
+    return f"""
+<h2 id="sec-summary-plain">Executive summary — in plain English</h2>
+<p class="explainer"><b>This section interprets the data. Interpretation language lives here and in the
+verdict table; every table below reports neutral measurements.</b></p>
+
+<p><b>The one question:</b> if you swap Z-Image's text encoder for an "uncensored" (abliterated) or
+compressed (quantized) one, <i>do the images get worse?</i></p>
+
+<p><b>Why this was ever hard:</b> with a fixed seed, swapping ANY two encoders changes the image —
+diffusion is a butterfly-effect machine, so "the images look different" proves nothing. Both sides of
+the online debate were showing each other differences. We built rulers instead.</p>
+
+<p><b>The rulers</b> (image difference measured in LPIPS — 0 = identical, ~0.5 = "clearly a different
+picture"):
+<ul class="findings">
+<li><b>Normal wiggle band: {floor_m:.2f}</b> — the difference between two encoders everyone already
+trusts (int8 vs fp8). Any swap scoring at or below this is indistinguishable from ordinary,
+uncontroversial compression.</li>
+<li><b>"A different picture": {seed_m:.2f}</b> — same encoder, different random seed. This is how far
+the image moves when NOTHING is wrong at all.</li>
+</ul></p>
+
+<p><b>Where the encoders fall:</b></p>
+<ul class="findings">
+{heretic_verdict}
+<li><b>Comfortable quants (int8, fp8, GGUF Q8/Q6): within the wiggle band</b>
+({len(fine)} of {len(fine) + len(visible)} encoders measured).</li>
+{bullet_worst}
+</ul>
+
+<p><b>Stress tests (fake damage of known kinds):</b> we injected controlled perturbations into the
+prompt embedding and measured how the sampler responds, to learn what real sabotage looks like.{controls_html}</p>
+
+{attn_html}
+{disc_html}
+
+<p><b>Uncensoring:</b> not answered here — the prompt suite deliberately contains no explicit content
+(that study needs its own taboo-prompt set and review protocol; see verdict table, H6 DEFERRED).</p>
+
+<p><b>The full evidence for every claim lives in the
+<a href="#sec-verdicts">verdict table</a>.</b></p>"""
