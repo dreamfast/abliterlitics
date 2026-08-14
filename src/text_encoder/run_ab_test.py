@@ -40,6 +40,38 @@ log = logging.getLogger(__name__)
 POLL_INTERVAL = 2.0
 
 
+def free_models(api_url: str, timeout_s: float = 180.0, threshold_mb: float = 4000.0) -> bool:
+    """Unload ALL models via ComfyUI's /free endpoint and WAIT for eviction.
+
+    /free is asynchronous: returning immediately lets the next queued prompt
+    race ahead of the unload and run against still-cached models (fake
+    "cold"). We poll /system_stats until total VRAM drops below
+    ``threshold_mb`` (loaded state is 15-20GB; idle CUDA context ~1GB).
+
+    Returns True if eviction confirmed within the timeout.
+    """
+    try:
+        # unload ONLY - free_memory (allocator purge) makes the next generation
+        # pathologically slow (17-257s observed) from allocator re-growth, which
+        # poisons the cold-start measurement we are trying to take.
+        _api(api_url, "/free", {"unload_models": True})
+    except Exception as exc:  # noqa: BLE001 - free is best-effort
+        log.warning("/free failed (cold start not guaranteed): %s", exc)
+        return False
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout_s:
+        try:
+            v = _query_vram(api_url)["vram_used_mb"]
+            if v < threshold_mb:
+                log.info("Models evicted in %.1fs (vram %.0fMB)", time.monotonic() - t0, v)
+                return True
+        except Exception:  # noqa: BLE001 - transient stats errors
+            pass
+        time.sleep(1.0)
+    log.warning("Eviction not confirmed within %.0fs - proceeding anyway", timeout_s)
+    return False
+
+
 def _query_vram(api_url: str) -> dict[str, float]:
     """Capture VRAM usage from ComfyUI's /system_stats (cuda:0 device).
 
@@ -272,6 +304,12 @@ def main() -> None:
     p.add_argument("--variants", default="", help="Comma-separated filter (default: all with te_file)")
     p.add_argument("--skip-existing", action="store_true")
     p.add_argument(
+        "--cold-free",
+        action="store_true",
+        help="Call ComfyUI /free (unload all models) before each variant's cold pass "
+        "for deterministic cold-start timing (includes DiT+VAE+TE disk load).",
+    )
+    p.add_argument(
         "--vram-only",
         action="store_true",
         help="Fast VRAM profiling: one cold image per variant, record peak VRAM. "
@@ -318,6 +356,7 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     manifest: dict[str, Any] = {
         "seed": args.seed,
+        "cold_free": bool(args.cold_free),
         "workflow": str(Path(args.workflow)),
         "api_url": args.api_url,
         "prompt_suite": str(args.prompt_suite),
@@ -345,10 +384,17 @@ def main() -> None:
             if args.dry_run:
                 log.info("[dry-run] %s vram probe (te=%s)", name, te_name)
                 continue
+            if args.cold_free:
+                free_models(args.api_url)
             before = _query_vram(args.api_url)
             data, perf = queue_and_fetch(args.api_url, wf, te_node_id=clip_node_id)
             after = _query_vram(args.api_url)
-            vram = {**after, "delta_mb": round(after["vram_used_mb"] - before["vram_used_mb"], 1)}
+            vram = {
+                **after,
+                "delta_mb": round(after["vram_used_mb"] - before["vram_used_mb"], 1),
+                "cold_start_ms": perf.get("server_gen_ms"),
+                "cold_free": bool(args.cold_free),
+            }
             log.info(
                 "VRAM %s: used=%.0fMB torch=%.0fMB gen=%dms (te=%s)",
                 name,
@@ -385,6 +431,8 @@ def main() -> None:
         clip_node_id, base_wf = workflows[loader_kind]
         timing: dict[str, Any] = {"variant": name, "te_name": te_name, "loader": loader_kind, "passes": {}}
         for pass_name in ("cold", "warm"):
+            if pass_name == "cold" and args.cold_free:
+                free_models(args.api_url)
             pass_t0 = time.monotonic()
             per_image: list[float] = []
             for pr in suite:

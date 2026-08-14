@@ -4,12 +4,24 @@ Text-encoder report generator - SVG graphs + self-contained HTML report.
 
 Reads te_<variant>.json results (written by run_analysis.py) and produces:
 - te_layer_profile.svg   - per-layer MSE (log) with the consumption-point marker.
-                           THE money chart: shows where abliteration damage lands
-                           relative to what the DiT reads.
-- te_damage_ranking.svg  - damage in quant-floor units by stage, with the
-                           "one quantization step" reference line.
+                            THE money chart: shows where the abliteration shift lands
+                            relative to what the DiT reads.
+- te_damage_ranking.svg  - divergence in quant-floor units by stage, with the
+                            "one quantization step" reference line. (Filename kept
+                            for artifact stability; the chart itself says divergence.)
 - te_category_gradient.svg - per-category MSE on the DiT-input stream
-                           (taboo-concentration of transmitted damage).
+                            (taboo-concentration of transmitted divergence).
+
+TERMINOLOGY (journal #117/#118 - three-tier, intent-aware):
+- "divergence"  - the raw, value-neutral measurement (MSE / CKA / cosine).
+                  All user-facing tables and charts report divergence.
+- "quantization error" - divergence caused by compression alone (unintended).
+- "abliteration shift" - divergence caused by the abliteration edit at matched
+                  quant (the intended intervention - NOT "damage").
+- "damage"      - reserved for collateral, unintended divergence with visible
+                  functional consequence. No table column is labeled damage.
+JSON field names (damage_quant_units, damage_semantic_units) are schema-stable
+and intentionally unchanged; the display layer translates to this terminology.
 - te_layer_heatmap.svg   - variants x layers heatmap of log10 MSE.
 - te_report.html         - self-contained HTML (SVGs embedded base64) with
                            tables + auto-generated key findings.
@@ -45,7 +57,7 @@ BACKEND_CONSUMED_LAYER: dict[str, int | None] = {
     "ltx2": None,  # aggregates ALL layers through the projection - no single point
 }
 
-# Streams shown in the damage-ranking chart (the transmission pipeline).
+# Streams shown in the divergence-ranking chart (the transmission pipeline).
 PIPELINE_STREAMS = ["consumed_hidden", "cap_embedded", "refined_context", "video_proj", "audio_proj"]
 
 COLORS = ["#4c72b0", "#dd8452", "#55a868", "#c44e52", "#8172b3", "#937860", "#da8bc3", "#8c8c8c"]
@@ -109,7 +121,7 @@ def load_results(results_dir: Path) -> list[dict[str, Any]]:
 def _is_reference_variant(var: dict[str, Any]) -> bool:
     """Non-abliterated quantizations of the base (noise-floor references).
 
-    Convention: variants named base_* - the pure-quant damage measurements.
+    Convention: variants named base_* - the pure-quantization-error measurements.
     """
     return bool(var["name"].startswith("base_"))
 
@@ -249,7 +261,7 @@ def graph_layer_profile(variants: list[dict[str, Any]], out: Path) -> None:
     ax.set_yscale("log")
     ax.set_xlabel("encoder layer")
     ax.set_ylabel("MSE vs base (log)")
-    ax.set_title(f"Per-layer conditioning damage - {backend}")
+    ax.set_title(f"Per-layer conditioning divergence - {backend}")
     ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=9)
     fig.tight_layout()
     fig.savefig(out, format="svg")
@@ -258,16 +270,16 @@ def graph_layer_profile(variants: list[dict[str, Any]], out: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Graph 2: damage ranking by pipeline stage
+# Graph 2: divergence ranking by pipeline stage
 # ---------------------------------------------------------------------------
 
 
 def graph_damage_ranking(variants: list[dict[str, Any]], out: Path) -> None:
-    """Transmitted damage at the DiT input, grouped and log-scaled.
+    """Transmitted divergence at the DiT input, grouped and log-scaled.
 
     Readability redesign: one bar per variant (the headline refined_context
-    stream - earlier pipeline stages live in the damage table), grouped by
-    family×container with separator lines, log x-axis (damage spans 0.001×
+    stream - earlier pipeline stages live in the divergence table), grouped by
+    family×container with separator lines, log x-axis (divergence spans 0.001×
     to 800×), and a stable family palette matching the ladder graph.
     """
     floor_label = variants[0].get("floor", "fakequant_int8")
@@ -279,7 +291,7 @@ def graph_damage_ranking(variants: list[dict[str, Any]], out: Path) -> None:
             rows.append((var, sr["damage_quant_units"]))
 
     if not rows:
-        log.warning("No damage data - skipping %s", out.name)
+        log.warning("No divergence data - skipping %s", out.name)
         return
 
     def _bar_color(var: dict[str, Any]) -> str:
@@ -329,8 +341,8 @@ def graph_damage_ranking(variants: list[dict[str, Any]], out: Path) -> None:
                     color="#555555",
                     style="italic",
                 )
-    ax.set_xlabel(f"DiT-input damage ({floor_label} floor units, log)")
-    ax.set_title("Transmitted damage at the DiT input (lower = more faithful)")
+    ax.set_xlabel(f"DiT-input divergence ({floor_label} floor units, log)")
+    ax.set_title("Transmitted divergence at the DiT input (lower = more faithful)")
     fig.tight_layout()
     fig.savefig(out, format="svg")
     plt.close(fig)
@@ -351,7 +363,7 @@ def _di_input_stream(var: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def graph_category_gradient(variants: list[dict[str, Any]], out: Path) -> None:
-    """Damage by prompt category, split into base/heretic panels.
+    """Divergence by prompt category, split into base/heretic panels.
 
     One bar group per category; base quants (the noise floor) on the left
     panel, abliterated variants on the right; family palette matches the
@@ -407,7 +419,7 @@ def graph_category_gradient(variants: list[dict[str, Any]], out: Path) -> None:
     axes[0].set_yscale("log")
     # No per-series legends: with 12 variants per panel the legend is pure
     # clutter and the figure's story is the category GRADIENT (taboo
-    # concentration), not per-variant identification - the damage table,
+    # concentration), not per-variant identification - the divergence table,
     # ranking graph, and heatmap carry identity.
     axes[0].annotate(
         f"{len(ref_panel)} base quants (grey)",
@@ -425,7 +437,7 @@ def graph_category_gradient(variants: list[dict[str, Any]], out: Path) -> None:
         color="#666666",
         va="top",
     )
-    fig.suptitle(f"Damage by prompt category - DiT-input stream ({stream_name})", fontsize=12)
+    fig.suptitle(f"Divergence by prompt category - DiT-input stream ({stream_name})", fontsize=12)
     fig.tight_layout()
     fig.savefig(out, format="svg")
     plt.close(fig)
@@ -481,7 +493,7 @@ def graph_layer_heatmap(variants: list[dict[str, Any]], out: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Graph 5: GGUF quantization ladder (damage vs bits-per-weight)
+# Graph 5: GGUF quantization ladder (divergence vs bits-per-weight)
 # ---------------------------------------------------------------------------
 
 # Safetensors quants plotted as open reference markers at NOMINAL bpw
@@ -498,9 +510,9 @@ _SAFETENSORS_NOMINAL_BPW = {
 
 
 def graph_gguf_ladder(variants: list[dict[str, Any]], out: Path) -> None:
-    """Damage (log y) vs bits-per-weight for GGUF containers + quant anchors."""
+    """Divergence (log y) vs bits-per-weight for GGUF containers + quant anchors."""
     by_name = {v["name"]: v for v in variants}
-    gguf_base: list[tuple[float, float, str]] = []  # (bpw, damage, label)
+    gguf_base: list[tuple[float, float, str]] = []  # (bpw, divergence, label)
     gguf_heretic: list[tuple[float, float, str]] = []
     safetensors: list[tuple[float, float, str]] = []
 
@@ -587,8 +599,8 @@ def graph_gguf_ladder(variants: list[dict[str, Any]], out: Path) -> None:
     ax.text(15.9, 1.15, "one quant step", color="#e74c3c", fontsize=9, ha="right")
     ax.set_yscale("log")
     ax.set_xlabel("bits per weight (GGUF: measured from file; safetensors: nominal)")
-    ax.set_ylabel("DiT-input damage (quant-floor units, log)")
-    ax.set_title("GGUF quantization ladder - conditioning damage vs compression")
+    ax.set_ylabel("DiT-input divergence (quant-floor units, log)")
+    ax.set_title("GGUF quantization ladder - conditioning divergence vs compression")
     ax.grid(True, which="both", alpha=0.25)
     ax.legend(fontsize=9, loc="best")
     fig.tight_layout()
@@ -622,7 +634,7 @@ def _load_divergence_steps(results_dir: Path) -> dict[str, dict[str, Any]]:
 def graph_divergence_steps(steps_data: dict[str, dict[str, Any]], out: Path) -> None:
     """Mean per-step latent divergence curves, grouped family colors.
 
-    Answers 'does the damage compound, cancel, or plateau across sampling?'
+    Answers 'does the divergence compound, cancel, or plateau across sampling?'
     Log y: latent divergence grows over ~3 orders of magnitude from step 2
     to the final step while staying far below the noise-control anchor.
     """
@@ -667,7 +679,7 @@ def graph_divergence_steps(steps_data: dict[str, dict[str, Any]], out: Path) -> 
     ax.set_yscale("log")
     ax.set_xlabel("Euler step")
     ax.set_ylabel("latent divergence vs base (log)")
-    ax.set_title("Per-step divergence - does conditioning damage compound or plateau?")
+    ax.set_title("Per-step divergence - does conditioning divergence compound or plateau?")
     ax.grid(True, which="both", alpha=0.25)
     # Legend outside right; ~27 series - compact font
     ax.legend(fontsize=7, loc="center left", bbox_to_anchor=(1.01, 0.5), ncol=2)
@@ -710,11 +722,11 @@ def _table_rows(variants: list[dict[str, Any]]) -> str:
                 if _is_reference_variant(var)
                 else html.escape(_display(var["name"]))
             )
-            # Damage with CI when available
+            # Divergence with CI when available
             dmg_ci = sr.get("damage_quant_ci")
             if dmg_s not in ("N/A", "-") and dmg_ci:
                 dmg_s = f"{dmg_s} <span class='ci'>[{dmg_ci[0]:.2f}, {dmg_ci[1]:.2f}]</span>"
-            # Semantic units: pooled damage / meaning-change distance
+            # Semantic units: pooled divergence / meaning-change distance
             sem = sr.get("damage_semantic_units")
             sem_s = f"{sem:.2%}" if sem is not None else "-"
             rows.append(
@@ -815,10 +827,11 @@ def _decomposition_section(variants: list[dict[str, Any]]) -> str:
         return ""
     return f"""
 <h2 id="sec-decomp">Quantization vs abliteration decomposition</h2>
-<p>Damage at the DiT input, in quant-floor units. Pure quant = base
+<p>Divergence at the DiT input, in quant-floor units. Pure quant = base
 quantization vs BF16 base (1.0× by construction when the floor IS that
-file). Pure ablation = abliterated vs base at matched quant (isolates the
-abliteration edit). Combined = abliterated quant vs BF16 base. A missing
+file). Pure ablation (the abliteration shift) = abliterated vs base at
+matched quant (isolates the abliteration edit). Combined = abliterated
+quant vs BF16 base. A missing
 column means that run wasn't performed.</p>
 <table>
 <tr><th>Variant</th><th>Pure quant</th><th>Pure ablation</th><th>Combined</th></tr>
@@ -854,7 +867,7 @@ def _gguf_qtype_mix(hist: dict[str, Any] | None) -> str:
 
 
 def _gguf_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str, Any]]) -> str:
-    """GGUF quantization ladder - damage vs bits-per-weight for GGUF containers.
+    """GGUF quantization ladder - divergence vs bits-per-weight for GGUF containers.
 
     Rows are primary runs: base_gguf_* vs the global BF16 base, heretic_gguf_*
     vs their matched base_gguf_* (pure ablation at quant). bpw and the qtype
@@ -904,14 +917,14 @@ def _gguf_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str
         blocks.extend(r[1] for r in rows_heretic)
     return f"""
 <h2 id="sec-gguf">GGUF quantization ladder</h2>
-<p>Damage for llama.cpp GGUF containers (ComfyUI-GGUF qwen3 path: vendored
+<p>Divergence for llama.cpp GGUF containers (ComfyUI-GGUF qwen3 path: vendored
 city96 block dequant, eager bf16 storage - same rounding ComfyUI's lazy
 dequant applies at bf16 compute). base_gguf rows measure the pure container
 vs the BF16 safetensors base; heretic_gguf rows measure pure ablation at
 matched quant. bpw is measured from the file (storage bytes × 8 / params).
 The rightmost column is the DiT's response vs the noise-control anchor.</p>
 <table>
-<tr><th>Variant</th><th>Qtype mix</th><th>bpw</th><th>DiT-input damage</th><th>Semantic</th><th>DiT response</th></tr>
+<tr><th>Variant</th><th>Qtype mix</th><th>bpw</th><th>DiT-input divergence</th><th>Semantic</th><th>DiT response</th></tr>
 {chr(10).join(blocks)}
 </table>"""
 
@@ -1148,7 +1161,7 @@ freshly loaded into VRAM). Warm = <code>te_cached</code> True (model reused from
 cache). Delta = the practical cost of a TE swap in a running session. Stdev
 over warm images demonstrates generation-time consistency.</p>
 <table>
-<tr><th>Variant</th><th>TE file</th><th>Loader</th><th>Cold (ms)</th><th>n</th><th>Warm (ms ± stdev)</th><th>n</th><th>TE swap cost (ms)</th></tr>
+<tr><th>Variant</th><th>Loader</th><th>Cold (ms)</th><th>Warm (ms ± stdev)</th><th>Swap cost</th><th>VRAM used</th><th>vs base</th><th>torch alloc</th></tr>
 {chr(10).join(timing_rows)}
 </table>"""
 
@@ -1167,7 +1180,7 @@ over warm images demonstrates generation-time consistency.</p>
 <p>Paired generations from the fixed seed {manifest.get("seed", "?")} through the
 real ComfyUI stack (Z-Image Turbo, 9 steps, cfg 1, euler/simple). Pick two
 variants and hover over the image to reveal: <b>left of the divider = variant
-A, right = variant B</b>. Identical-looking images at very different damage
+A, right = variant B</b>. Identical-looking images at very different divergence
 levels demonstrate DiT robustness; visible differences localize what the
 conditioning perturbation actually changed.</p>
 <noscript><p class="meta">Enable JavaScript for the interactive comparator.</p></noscript>
@@ -1256,7 +1269,7 @@ def _ab_caption_html(
         lines.append(f"<span class='ci'>vs {html.escape(ref)}</span>")
     m: list[str] = []
     if dmg is not None:
-        m.append(f"damage {dmg:.1f}×")
+        m.append(f"divergence {dmg:.1f}×")
     div = divergence.get(var_name, {}).get("div_control_ratio")
     if div is not None:
         m.append(f"DiT {div * 100:.1f}%")
@@ -1278,7 +1291,7 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
     consumed = BACKEND_CONSUMED_LAYER.get(backend)
 
     # CKA/MSE disconnect (methodological highlight): geometry-preserving
-    # damage. Scan non-dual variants for high MSE with CKA still >= 0.98.
+    # divergence. Scan non-dual variants for high MSE with CKA still >= 0.98.
     disconnect = []
     for var in variants:
         if var["name"].endswith("__vs_base"):
@@ -1296,8 +1309,8 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
         gguf_ct = sum(1 for n in disconnect_names if "_gguf_" in n)
         findings.append(
             f"<b>CKA/MSE disconnect</b>: {len(disconnect)} variants (incl. {gguf_ct} GGUF) exceed "
-            f"50× quant-floor MSE damage at the DiT input while CKA stays ≥ 0.98 - worst: "
-            f"<b>{html.escape(_display(worst[0]))}</b> at {worst[1]:.0f}× damage with CKA {worst[2]:.4f}. "
+            f"50× quant-floor MSE divergence at the DiT input while CKA stays ≥ 0.98 - worst: "
+            f"<b>{html.escape(_display(worst[0]))}</b> at {worst[1]:.0f}× divergence with CKA {worst[2]:.4f}. "
             "The perturbation destroys magnitude alignment but preserves representational "
             "geometry - consistent with the DiT's weak response to it."
         )
@@ -1319,7 +1332,7 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
             worst_rung: tuple[float, Any] = max(measured, key=lambda t: t[1])
             lo_bpws = [b for b, d in measured if d == best_rung[1]]
             findings.append(
-                f"<b>GGUF ladder (base containers, {len(measured)} rungs)</b>: pure-container DiT-input damage "
+                f"<b>GGUF ladder (base containers, {len(measured)} rungs)</b>: pure-container DiT-input divergence "
                 f"spans <b>{best_rung[1]:.2f}×</b> (bpw {max(lo_bpws):.1f}) to <b>{worst_rung[1]:.0f}×</b> "
                 f"(bpw {worst_rung[0]:.1f}) quant floor - the full ladder is in the GGUF section below."
             )
@@ -1331,7 +1344,7 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
         heretic_ab = [d for d in heretic_ab if d is not None]
         if heretic_ab:
             findings.append(
-                f"<b>GGUF × heretic</b>: pure-ablation damage at matched quant spans "
+                f"<b>GGUF × heretic</b>: pure-ablation shift at matched quant spans "
                 f"<b>{min(heretic_ab):.1f}×–{max(heretic_ab):.1f}×</b> quant floor across the {len(heretic_ab)} "
                 f"rungs - decomposition table + ladder graph show the quant/abliteration interaction."
             )
@@ -1349,11 +1362,11 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
             # Pure quantization floor: how much the quant alone perturbs conditioning
             if dmg_val is not None:
                 findings.append(
-                    f"<b>{html.escape(_display(var['name']))}</b> (pure quantization): DiT-input damage "
-                    f"{dmg_val:.2f}× quant floor - the reference damage level for its quant format."
+                    f"<b>{html.escape(_display(var['name']))}</b> (pure quantization): DiT-input divergence "
+                    f"{dmg_val:.2f}× quant floor - the reference error level for its quant format."
                 )
             continue
-        # Peak layer damage
+        # Peak layer divergence
         layer_data = [
             (idx, sr["metrics"]["mse"], sr.get("damage_quant_units"))
             for sr in var["streams"].values()
@@ -1365,11 +1378,11 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
             if at_consumed and peak[2] is not None and at_consumed[2] is not None:
                 filt = peak[2] / at_consumed[2] if at_consumed[2] > 0 else float("inf")
                 findings.append(
-                    f"<b>{html.escape(_display(var['name']))}</b>: peak damage {peak[2]:.1f}× quant floor at "
-                    f"layer {peak[0]}; the DiT reads layer {consumed}, where damage is "
-                    f"{at_consumed[2]:.2f}× - a <b>{filt:.0f}× lower-damage</b> layer than the encoder's peak."
+                    f"<b>{html.escape(_display(var['name']))}</b>: peak divergence {peak[2]:.1f}× quant floor at "
+                    f"layer {peak[0]}; the DiT reads layer {consumed}, where divergence is "
+                    f"{at_consumed[2]:.2f}× - a <b>{filt:.0f}× lower-divergence</b> layer than the encoder's peak."
                 )
-        # DiT-input damage + taboo ratio
+        # DiT-input divergence + taboo ratio
         sr = var["streams"].get("refined_context") or var["streams"].get("cap_embedded")
         if sr and sr.get("per_category"):
             pc = sr["per_category"]
@@ -1378,7 +1391,7 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
                 sem = sr.get("damage_semantic_units")
                 sem_txt = f"; {sem:.2%} of a meaning-change" if sem is not None else ""
                 findings.append(
-                    f"<b>{html.escape(_display(var['name']))}</b>: DiT-input damage "
+                    f"<b>{html.escape(_display(var['name']))}</b>: DiT-input divergence "
                     f"{_fmt(sr.get('damage_quant_units'))}× quant step{sem_txt}; taboo-concentration "
                     f"(extreme vs innocent MSE) = <b>{ext / inn:.1f}×</b>."
                 )
@@ -1459,19 +1472,19 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path, 
             (
                 "layer_profile",
                 svgs["layer_profile"],
-                "Where the damage lands vs where the DiT reads",
+                "Where the divergence lands vs where the DiT reads",
                 "Each line is one variant's per-layer MSE vs the base model (log y-axis). "
                 "Grey dashed lines are pure base quantizations (the noise floor every variant "
                 "must be compared against); colored lines are abliterated variants. The green "
-                "vertical line marks layer 34, the layer Z-Image actually reads. Abliteration "
-                "damage concentrates in late layers (30+), while the consumed layer stays near "
+                "vertical line marks layer 34, the layer Z-Image actually reads. The abliteration "
+                "shift concentrates in late layers (30+), while the consumed layer stays near "
                 "the quantization floor.",
             ),
             (
                 "damage_ranking",
                 svgs["damage_ranking"],
-                "Transmitted damage at the DiT input, grouped by family (log scale)",
-                "One bar per variant: MSE damage at the DiT input, expressed in units of one "
+                "Transmitted divergence at the DiT input, grouped by family (log scale)",
+                "One bar per variant: MSE divergence at the DiT input, expressed in units of one "
                 "int8 quantization step of the base model (log x-axis). The red dashed line at "
                 "1.0 marks the perturbation a known-good int8 compression introduces: bars left "
                 "of it are indistinguishable from ordinary quantization, bars right of it are "
@@ -1481,19 +1494,19 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path, 
                 "category_gradient",
                 svgs["category_gradient"],
                 "Taboo-concentration: base quants vs abliterated panels",
-                "MSE damage split by prompt category (log y-axis), same scale both panels. "
+                "MSE divergence split by prompt category (log y-axis), same scale both panels. "
                 "Left panel (pure base quants) is roughly flat: quantization is content-blind. "
                 "Right panel (abliterated variants) slopes upward toward violent/sexual/extreme "
-                "prompts: the abliteration edit concentrates damage where the refusal direction "
+                "prompts: the abliteration edit concentrates its shift where the refusal direction "
                 "lives instead of perturbing all content equally.",
             ),
             (
                 "layer_heatmap",
                 svgs["layer_heatmap"],
-                "Full per-layer damage map (log10 MSE)",
+                "Full per-layer divergence map (log10 MSE)",
                 "Each cell is log10 of the MSE between that variant's layer activation "
                 "(mean-pooled per prompt) and the base model's. Every +1 on the color scale "
-                "means 10x more damage: black cells (about -6) are numerically identical, "
+                "means 10x more divergence: black cells (about -6) are numerically identical, "
                 "yellow (about +2) is a large squared error. The bright column at layer 35 in "
                 "the heretic rows is the abliteration edit itself, which targets the final "
                 "layers; the DiT reads layer 34, one row of blocks to the left of the bright "
@@ -1502,8 +1515,8 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path, 
             (
                 "gguf_ladder",
                 svgs["gguf_ladder"],
-                "GGUF quantization ladder (damage vs bits-per-weight)",
-                "DiT-input damage vs compression, log y-axis. Grey circles: base GGUF "
+                "GGUF quantization ladder (divergence vs bits-per-weight)",
+                "DiT-input divergence vs compression, log y-axis. Grey circles: base GGUF "
                 "containers measured against the BF16 base (the pure cost of that quant). "
                 "Red squares: heretic containers measured against the BF16 base (quant plus "
                 "abliteration combined). Open diamonds: safetensors quants at their nominal "
@@ -1630,7 +1643,7 @@ Results: {html.escape(str(results_dir))} · te_results_version: {TE_RESULTS_VERS
 <li><a href="#sec-decomp">Quantization vs abliteration decomposition</a></li>
 <li><a href="#sec-directional">Directional analysis</a></li>
 <li><a href="#sec-divergence">DiT-step divergence</a></li>
-<li><a href="#sec-damage">Pipeline damage table</a></li>
+<li><a href="#sec-damage">Pipeline divergence table</a></li>
 <li><a href="#sec-visuals">Visualizations</a></li>
 <li><a href="#sec-summary">Summary of findings</a></li>
 <li><a href="#sec-methodology">Methodology</a></li>
@@ -1642,19 +1655,37 @@ Results: {html.escape(str(results_dir))} · te_results_version: {TE_RESULTS_VERS
 {decomposition}
 {directional}
 {divergence}
-<h2 id="sec-damage">Pipeline damage table</h2>
+<h2 id="sec-damage">Pipeline divergence table</h2>
 <p class="explainer">What this measures: for every variant, the table compares its conditioning
 tensors against the reference model's at each pipeline stage. <b>CKA (linear)</b> asks whether
 the representational geometry is preserved (1.0 = same structure, insensitive to magnitude
 changes). <b>Cos (all)</b> is the mean cosine similarity between paired per-prompt vectors
-(1.0 = same direction). <b>MSE</b> is the raw mean squared difference. <b>Damage (quant
+(1.0 = same direction). <b>MSE</b> is the raw mean squared difference. <b>Divergence (quant
 units)</b> re-expresses that MSE in units of one int8 quantization step of the base model, so
-numbers are comparable across stages and formats; <b>Dmg (semantic)</b> expresses it as a
+numbers are comparable across stages and formats; <b>Div (semantic)</b> expresses it as a
 fraction of a full meaning-change (defined under Methodology).</p>
+<details class="glossary"><summary>Terminology: divergence, error, shift, damage (click to expand)</summary>
+<dl>
+<dt>divergence<dd>the raw, value-neutral measurement: how far one encoder's conditioning
+tensors move from the reference's. Every table column and chart in this report measures
+divergence. Divergence alone is not a defect - any two different encoder files diverge.</dd></dt>
+<dt>quantization error<dd>divergence caused by compression alone (base quant vs BF16 base).
+Unintended by construction - the fair target for words like "error" or "degradation".</dd></dt>
+<dt>abliteration shift<dd>divergence caused by the abliteration edit at matched quant
+(heretic_X vs base_X). This is the <i>intended</i> intervention - the product, not a defect.</dd></dt>
+<dt>damage<dd>reserved for collateral, unintended divergence with visible functional
+consequence (e.g. prompt-adherence loss at the lowest quants). No table column is labeled
+"damage"; where findings speak of damage they cite the anchor ratios that justify the word.</dd></dt>
+<dt>anchors<dd>every divergence is scaled against something concrete: <b>one quant step</b>
+(the perturbation a known-good int8 compression introduces), <b>one meaning-change</b> (how
+far conditioning moves when the prompt describes an unrelated scene), and <b>one seed change</b>
+(how far the final latent moves when only the noise differs - the "different image" level).</dd></dt>
+</dl>
+</details>
 <details class="glossary"><summary>Stream and stage names (click to expand)</summary>
 <dl>
 <dt>layer_00 ... layer_35 <dd>stage <code>raw_hidden</code>: the mean-pooled hidden state of
-that text-encoder layer. These rows build the per-layer damage profile.</dd></dt>
+that text-encoder layer. These rows build the per-layer divergence profile.</dd></dt>
 <dt>consumed_hidden <dd>stage <code>raw_hidden</code>: the full token-sequence output of layer
 34 (second-to-last of 36 layers, index -2), the exact tensor Z-Image's conditioning pipeline
 consumes. Not pooled: every token position counts.</dd></dt>
@@ -1663,11 +1694,11 @@ cap_embedder (RMSNorm plus a 2560 to 3840 linear projection). The first tensor i
 diffusion model's own coordinate space.</dd></dt>
 <dt>refined_context <dd>stage <code>connector_out</code>: after the DiT's context_refiner (two
 transformer blocks, with ComfyUI's pad-to-32 applied). This is the tensor that enters
-cross-attention: literally what the DiT sees, and the headline stream for damage.</dd></dt>
+cross-attention: literally what the DiT sees, and the headline stream for divergence.</dd></dt>
 </dl>
 </details>
 <table>
-<tr><th>Variant</th><th>vs reference</th><th>Stage</th><th>Stream</th><th>CKA (linear)</th><th>Cos (all)</th><th>MSE</th><th>Damage (quant units)</th><th>Dmg (semantic)</th></tr>
+<tr><th>Variant</th><th>vs reference</th><th>Stage</th><th>Stream</th><th>CKA (linear)</th><th>Cos (all)</th><th>MSE</th><th>Divergence (quant units)</th><th>Div (semantic)</th></tr>
 {_table_rows(variants)}
 </table>
 
@@ -1679,10 +1710,10 @@ cross-attention: literally what the DiT sees, and the headline stream for damage
 
 <div class="foot" id="sec-methodology">
 <b>Methodology.</b>
-<b>Methodology.</b> Conditioning tensors are captured with ComfyUI's own model classes at three
+Conditioning tensors are captured with ComfyUI's own model classes at three
 pipeline stages (raw hidden states → projection → connector/refiner). Fidelity is measured by
-CKA (representational similarity) and MSE; the headline number expresses MSE damage in units of
-<b>one quantization step of the noise floor</b> ({floor_label}) (damage &lt; 1 = below the perturbation
+CKA (representational similarity) and MSE; the headline number expresses MSE divergence in units of
+<b>one quantization step of the noise floor</b> ({floor_label}) (divergence &lt; 1 = below the perturbation
 a known-good compression would introduce). Prompt suite is stratified
 (innocent / mild / violent / sexual / extreme / multilingual). Pad positions are excluded.
 <br/><b>Semantic unit definition.</b> "One meaning-change" is the mean squared
