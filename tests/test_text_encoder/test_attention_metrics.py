@@ -118,3 +118,33 @@ class TestSummarize:
         for key in ("jsd", "kl_sym", "entropy_base", "entropy_variant", "top3_jaccard", "top5_rbo", "top10_rbo"):
             assert key in m
         assert m["jsd"] > 0.0
+
+
+class TestWordReadout:
+    def test_group_words_bpe_and_pads(self) -> None:
+        from src.text_encoder.attention_metrics import group_words
+
+        toks = ["a", " photo", " of", " a", " red", " square", "<pad>", "<pad>"]
+        mass = [0.30, 0.20, 0.10, 0.05, 0.25, 0.05, 0.03, 0.02]
+        words = dict(group_words(toks, mass))
+        assert words["a"] == pytest.approx(0.35)  # duplicates merged
+        assert words["photo"] == pytest.approx(0.20)
+        assert words["‹pad›"] == pytest.approx(0.05)  # pad label merged
+        assert sum(words.values()) == pytest.approx(1.0)
+
+    def test_word_diff_ranks_by_delta(self) -> None:
+        from src.text_encoder.attention_metrics import word_diff
+
+        toks = ["a", " red", " square"]
+        base = [0.5, 0.3, 0.2]
+        var = [0.5, 0.1, 0.4]
+        rows = word_diff(toks, base, var, top_k=3)
+        assert rows[0]["word"] == "square" or rows[0]["word"] == "red"
+        deltas = [abs(float(r["delta"])) for r in rows]
+        assert deltas == sorted(deltas, reverse=True)
+
+    def test_empty(self) -> None:
+        from src.text_encoder.attention_metrics import group_words, word_diff
+
+        assert group_words([], []) == []
+        assert word_diff(["a"], [], []) == []

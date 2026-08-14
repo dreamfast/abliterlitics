@@ -54,6 +54,45 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _token_strings(comfyui_loaded: bool, prompts: list[str]) -> dict[str, list[str]]:
+    """Token string per conditioning position for each prompt (defensive).
+
+    Returns {} when the tokenizer is unavailable — callers fall back to
+    position indices. Positions beyond the real token count are labeled
+    "<pad>" (pad-to-32 padding in the Z-Image conditioning path).
+    """
+    out: dict[str, list[str]] = {}
+    if not comfyui_loaded:
+        return out
+    try:
+        import comfy.text_encoders.z_image as zte
+
+        tok = zte.ZImageTokenizer()
+        for p in prompts:
+            res = tok.tokenize_with_weights(p)
+            ids: list[int] = []
+
+            def _flat(x: object, sink: list[int]) -> None:
+                if isinstance(x, bool):
+                    return
+                if isinstance(x, int):
+                    sink.append(x)
+                elif isinstance(x, (list, tuple)):
+                    for y in x:
+                        _flat(y, sink)
+
+            _flat(res[0], ids)  # SD-style: nested per-chunk id lists
+            toks: list[str] = []
+            dec = getattr(tok.tokenizer, "id_to_token", None)
+            for i in ids:
+                raw = str(dec(i)) if callable(dec) else f"tok#{i}"
+                toks.append(raw.replace("Ġ", " "))
+            out[p] = toks
+    except Exception as exc:  # noqa: BLE001 - display-only, must never kill the run
+        log.warning("tokenizer decode unavailable (%s) — word view falls back to indices", exc)
+    return out
+
+
 def main() -> int:
     args = parse_args()
     from src.text_encoder.backends import comfyui_loader
@@ -112,7 +151,10 @@ def main() -> int:
     for vfile, vname in zip(variant_files, names, strict=True):
         var_ctxs = _load_consumed_from_cache(cache_dir, vfile, args.device, ctx_scope, prompts, categories)
         per_prompt_metrics: list[dict[str, Any]] = []
+        token_strings = _token_strings(True, prompts)
         for pi, (ctx_b, ctx_v) in enumerate(zip(base_ctxs, var_ctxs, strict=True)):
+            recs_b_all: list[dict[str, Any]] = []
+            recs_v_all: list[dict[str, Any]] = []
             x0 = torch.randn(1, 16, args.latent_hw, args.latent_hw, generator=g).to(args.device).to(torch.bfloat16)
             xb, xv = x0.clone(), x0.clone()
             step_layer: dict[tuple[int, int], dict[str, float]] = {}
@@ -128,6 +170,8 @@ def main() -> int:
                 dt = s_next - s
                 xb = (xb.float() + vb.float() * dt).to(torch.bfloat16)
                 xv = (xv.float() + vv.float() * dt).to(torch.bfloat16)
+                recs_b_all.extend(recs_b)
+                recs_v_all.extend(recs_v)
                 if i % args.layer_sample and i != args.n_steps - 1:
                     continue  # sampled layers except always-last step
                 for rb, rv in zip(recs_b, recs_v, strict=False):
@@ -135,11 +179,21 @@ def main() -> int:
                         continue
                     m = summarize_readout(rb, rv)
                     step_layer[(i, rb["call"])] = m
+            # Word-readout persistence: mean text-readout per side across
+            # captured (step, layer) records — decoded to token strings by
+            # the report layer for the "what words does the DiT read" diff.
+            import torch as _t
+
+            base_mean = _t.stack([r["text_readout"] for r in recs_b_all]).mean(dim=0) if recs_b_all else None
+            var_mean = _t.stack([r["text_readout"] for r in recs_v_all]).mean(dim=0) if recs_v_all else None
             per_prompt_metrics.append(
                 {
                     "prompt": prompts[pi],
                     "category": categories[pi],
                     "step_layer": {f"{s}_{ly}": m for (s, ly), m in sorted(step_layer.items())},
+                    "base_mean_readout": [round(float(x), 6) for x in base_mean] if base_mean is not None else [],
+                    "variant_mean_readout": [round(float(x), 6) for x in var_mean] if var_mean is not None else [],
+                    "tokens": token_strings.get(prompts[pi], []),
                 }
             )
             log.info("%s prompt %d/%d: %d (step,layer) pairs captured", vname, pi + 1, len(prompts), len(step_layer))
@@ -171,6 +225,7 @@ def main() -> int:
                 {k: v for k, v in pp.items() if k != "step_layer"} | {"n_pairs": len(pp["step_layer"])}
                 for pp in per_prompt_metrics
             ],
+            "has_word_readout": bool(token_strings),
         }
         out_path = results_dir / f"tebench_attention_{vname}.json"
         out_path.write_text(json.dumps(doc, indent=2))

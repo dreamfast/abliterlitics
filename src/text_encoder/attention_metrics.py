@@ -148,3 +148,69 @@ def summarize_readout(
         out[f"top{k}_jaccard"] = ov["jaccard"]
         out[f"top{k}_rbo"] = ov["rbo"]
     return out
+
+
+# ---------------------------------------------------------------------------
+# Word-level readout diff (pure)
+# ---------------------------------------------------------------------------
+
+
+def group_words(tokens: list[str], mass: list[float]) -> list[tuple[str, float]]:
+    """Group BPE token masses into word masses (order-preserving).
+
+    A token starting with whitespace (post-Ġ decode) starts a new word;
+    otherwise it continues the previous word. Special/pad tokens (angle
+    brackets) and empty token lists are passed through as their own rows.
+    Masses are normalized to sum 1 over the given length first (defensive).
+    """
+    if not tokens:
+        return []
+    n = min(len(tokens), len(mass))
+    if n == 0:
+        return []
+    total = sum(mass[:n]) or 1.0
+    norm = [m / total for m in mass[:n]]
+    words: list[tuple[str, float]] = []
+    for tok, m in zip(tokens[:n], norm, strict=False):
+        t = tok.strip()
+        is_special = tok.startswith("<") and tok.endswith(">") or not t
+        if is_special:
+            label = t if t else "‹pad›"
+            words.append((label, m))
+        elif tok.startswith(" ") and words:
+            words.append((t, m))
+        elif words:
+            w, prev = words[-1]
+            words[-1] = (w + t, prev + m)
+        else:
+            words.append((t, m))
+    # merge duplicate labels (repeated words / consecutive pads) by summing
+    merged: dict[str, float] = {}
+    order: list[str] = []
+    for w, m in words:
+        if w not in merged:
+            order.append(w)
+        merged[w] = merged.get(w, 0.0) + m
+    return [(w, merged[w]) for w in order]
+
+
+def word_diff(
+    tokens: list[str],
+    base_mass: list[float],
+    variant_mass: list[float],
+    top_k: int = 15,
+) -> list[dict[str, float | str]]:
+    """Rank words by |variant mass − base mass| — what the DiT reads differently.
+
+    Returns rows sorted by absolute delta, each: {word, base, variant, delta}.
+    """
+    b = group_words(tokens, base_mass)
+    v = group_words(tokens, variant_mass)
+    v_map = dict(v)
+    rows: list[dict[str, float | str]] = []
+    for w, bm in b:
+        vm = v_map.get(w, 0.0)
+        delta: float = vm - bm
+        rows.append({"word": w, "base": bm, "variant": vm, "delta": delta})
+    rows.sort(key=lambda r: abs(float(r["delta"])), reverse=True)
+    return rows[:top_k]

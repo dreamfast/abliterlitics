@@ -449,6 +449,7 @@ def build_phase4_sections(results_dir: Path) -> str:
         _img_section(anchors, img_vars),
         _controls_section(controls),
         _attention_section(attn),
+        _word_readout_section(attn),
         _discriminability_section(disc),
         _verdict_section(anchors, img_vars, controls, attn, disc, dit_summaries),
     ]
@@ -638,3 +639,64 @@ prompt embedding and measured how the sampler responds, to learn what real sabot
 
 <p><b>The full evidence for every claim lives in the
 <a href="#sec-verdicts">verdict table</a>.</b></p>"""
+
+
+# ---------------------------------------------------------------------------
+# Word-level readout section — what WORDS does the DiT read differently?
+# ---------------------------------------------------------------------------
+
+
+def _word_readout_section(attn: dict[str, dict[str, Any]]) -> str:
+    """Decode the attention readout back into words and diff base vs variant.
+
+    The capture stores, per prompt, the mean text-readout distribution for
+    BOTH sides (base + variant) and the token strings per position — so this
+    section needs no extra runs. Answers: for the same prompt, which words
+    does the DiT look at more / less under this encoder?
+    """
+    with_words = {k: d for k, d in attn.items() if d.get("has_word_readout") and d.get("per_prompt")}
+    if not with_words:
+        return ""
+    from src.text_encoder.attention_metrics import word_diff
+
+    blocks: list[str] = []
+    for name in sorted(with_words):
+        doc = with_words[name]
+        pp_rows: list[str] = []
+        for pp in doc["per_prompt"]:
+            toks = pp.get("tokens", [])
+            b = pp.get("base_mean_readout", [])
+            v = pp.get("variant_mean_readout", [])
+            if not toks or not b or not v:
+                continue
+            rows = word_diff(toks, b, v, top_k=12)
+            if not rows:
+                continue
+            tr = "".join(
+                f"<tr><td>{str(r['word'])[:28]}</td><td>{float(r['base']) * 100:.1f}%</td>"
+                f"<td>{float(r['variant']) * 100:.1f}%</td>"
+                f"<td>{float(r['delta']) * 100:+.1f}pp</td></tr>"
+                for r in rows
+            )
+            prompt_short = pp.get("prompt", "")[:110]
+            pp_rows.append(f"<tr><td colspan=4 class='meta'>{prompt_short}…</td></tr>{tr}")
+        if pp_rows:
+            blocks.append(
+                f"<details class='glossary'><summary><b>{name}</b> — top word-readout shifts "
+                f"(mean JSD {float(doc.get('jsd_mean_all', 0)):.5f})</summary>"
+                "<table><tr><th>word</th><th>base TE mass</th><th>variant TE mass</th><th>Δ</th></tr>"
+                + "".join(pp_rows)
+                + "</table></details>"
+            )
+    if not blocks:
+        return ""
+    return f"""
+<h2 id="sec-words">What the DiT reads, in words</h2>
+<p>The attention readout decoded back into prompt words: for the SAME prompt,
+how much attention mass each word receives from the image tokens under the
+base encoder vs this encoder (mean over sampling steps and layers). Δ is in
+percentage points of total attention. This is the direct answer to "does the
+modified encoder change what the image model looks at?" — a healthy encoder
+shows tiny, diffuse shifts; a sabotaged one would move mass off content
+words (or onto padding).</p>
+{chr(10).join(blocks)}"""
