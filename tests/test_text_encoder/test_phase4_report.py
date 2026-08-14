@@ -50,16 +50,16 @@ def _mk_anchors(seed_lpips: float = 0.5, floor_lpips: float = 0.19) -> dict:
 
 
 class TestImgSection:
-    def test_renders_with_anchors(self) -> None:
+    def test_renders_with_anchors(self, tmp_path) -> None:
         anchors = _mk_anchors()
-        html = _img_section(anchors, {"heretic": _mk_img_doc("heretic", 0.15)})
+        html = _img_section(anchors, {"heretic": _mk_img_doc("heretic", 0.15)}, tmp_path)
         assert "sec-img" in html
         assert "0.500" in html and "0.190" in html  # anchors
         assert "0.150" in html  # heretic lpips
         assert "Damage" not in html
 
-    def test_empty_variants(self) -> None:
-        assert _img_section(_mk_anchors(), {}) == ""
+    def test_empty_variants(self, tmp_path) -> None:
+        assert _img_section(_mk_anchors(), {}, tmp_path) == ""
 
 
 class TestControlsSection:
@@ -93,7 +93,6 @@ class TestControlsSection:
         assert "sec-controls" in html
         assert "null" in html and "heretic_a1" in html
         assert "monotonic as pre-registered" in html  # P4 pass
-        assert "BELOW the noise curve" in html  # P5 (heretic 0.05 < max noise 0.15)
         assert "meaning destruction dominates" in html  # P6 (0.9 > 1.5*0.1)
         # ladder ordering: null row before noise rows
         assert html.index(">null<") < html.index(">noise_0.25x<")
@@ -109,6 +108,11 @@ class TestVerdictSection:
             "heretic": _mk_img_doc("heretic", heretic_lp),
             "heretic_int4": _mk_img_doc("heretic_int4", int4_lp),
             "base_gguf_q8_0": _mk_img_doc("base_gguf_q8_0", q8_lp),
+            # hy3-C1 regression: abliterated quants must NOT leak into the
+            # base-family clean tier via substring matching
+            "heretic_gguf_q8_0": _mk_img_doc("heretic_gguf_q8_0", 0.30),
+            "heretic_int8": _mk_img_doc("heretic_int8", 0.29),
+            "base_nvfp4": _mk_img_doc("base_nvfp4", 0.28),
         }
         controls = {
             "conditions": {
@@ -137,11 +141,44 @@ class TestVerdictSection:
         h1_row = html[html.index("H1") : html.index("H2")]
         assert "REFUTED" in h1_row
 
-    def test_h2_threshold(self) -> None:
+    def test_h2_threshold_base_only_tier(self) -> None:
         anchors, img_vars, controls = self._ctx(heretic_lp=0.15, int4_lp=0.45, q8_lp=0.19)
         html = _verdict_section(anchors, img_vars, controls, {}, {}, {})
         h2_row = html[html.index("H2") : html.index("H3")]
-        assert "SUPPORTED" in h2_row  # int4 0.45 > band, q8 0.19 <= band
+        assert "SUPPORTED" in h2_row  # base q8 0.19 <= band; int4 0.45 > band
+        # hy3-C1: heretic rows (0.30 > band) must NOT flip the verdict; the
+        # evidence must disclose they carry the abliteration shift (H1)
+        assert "abliterated quants reach 0.450" in h2_row
+        assert "not via quantization" in h2_row
+
+    def test_h2_refuted_when_base_tier_fails(self) -> None:
+        anchors, img_vars, controls = self._ctx(heretic_lp=0.15, int4_lp=0.45, q8_lp=0.45)
+        html = _verdict_section(anchors, img_vars, controls, {}, {}, {})
+        h2_row = html[html.index("H2") : html.index("H3")]
+        assert "REFUTED" in h2_row  # base q8 0.45 above band -> P2 genuinely fails
+
+    def test_exec_summary_no_invisible_claim_when_above_band(self) -> None:
+        from src.text_encoder.phase4_report import _executive_summary
+
+        anchors = _mk_anchors()
+        img_vars = {
+            "heretic": _mk_img_doc("heretic", 0.50),
+            "base_nvfp4": _mk_img_doc("base_nvfp4", 0.28),
+        }
+        controls = {
+            "conditions": {
+                "noise_1x": {"summary": {"mean_final_latent_div": 0.03}},
+                "heretic_a10": {"summary": {"mean_final_latent_div": 0.033}},
+            }
+        }
+        html = _executive_summary(anchors, img_vars, controls, {}, {})
+        assert "invisible" not in html  # deepseek-C1: no unqualified invisibility claim
+        assert "small-edit effect" in html
+
+    def test_h7_not_run(self) -> None:
+        html = _verdict_section(None, {}, None, {}, {}, {})
+        h7_row = html[html.index("H7") :]
+        assert "NOT RUN" in h7_row
 
     def test_h6_always_deferred(self) -> None:
         html = _verdict_section(None, {}, None, {}, {}, {})

@@ -68,25 +68,22 @@ def _token_strings(comfyui_loaded: bool, prompts: list[str]) -> dict[str, list[s
         import comfy.text_encoders.z_image as zte
 
         tok = zte.ZImageTokenizer()
+        # Attribute chain (probed empirically): ZImageTokenizer.__dict__['qwen3_4b']
+        # = Qwen3Tokenizer(SDTokenizer); its .tokenizer = SLOW transformers
+        # Qwen2Tokenizer — no id_to_token, use convert_ids_to_tokens (batch).
+        inner = tok.__dict__.get("qwen3_4b")
+        hf_tok = getattr(inner, "tokenizer", None) if inner is not None else None
+        dec = getattr(hf_tok, "convert_ids_to_tokens", None) if hf_tok is not None else None
         for p in prompts:
+            # ZImageTokenizer API (mirrors backends/z_image.py tokenize()):
+            # dict keyed by clip field -> per-chunk list of (id, weight) tuples
             res = tok.tokenize_with_weights(p)
-            ids: list[int] = []
-
-            def _flat(x: object, sink: list[int]) -> None:
-                if isinstance(x, bool):
-                    return
-                if isinstance(x, int):
-                    sink.append(x)
-                elif isinstance(x, (list, tuple)):
-                    for y in x:
-                        _flat(y, sink)
-
-            _flat(res[0], ids)  # SD-style: nested per-chunk id lists
-            toks: list[str] = []
-            dec = getattr(tok.tokenizer, "id_to_token", None)
-            for i in ids:
-                raw = str(dec(i)) if callable(dec) else f"tok#{i}"
-                toks.append(raw.replace("Ġ", " "))
+            ids = [t[0] for t in res["qwen3_4b"][0]]
+            if callable(dec):
+                raws: list[str] = [str(r) for r in dec(ids)]
+                toks = [r.replace("Ġ", " ") for r in raws]
+            else:
+                toks = [f"tok#{i}" for i in ids]
             out[p] = toks
     except Exception as exc:  # noqa: BLE001 - display-only, must never kill the run
         log.warning("tokenizer decode unavailable (%s) — word view falls back to indices", exc)

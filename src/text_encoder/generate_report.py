@@ -47,7 +47,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from src.text_encoder import TE_RESULTS_VERSION
-from src.text_encoder.phase4_report import build_phase4_sections, load_dit_divergence_summaries, load_img_metrics
+from src.text_encoder.phase4_report import (
+    build_phase4_sections,
+    load_attention,
+    load_dit_divergence_summaries,
+    load_img_metrics,
+)
 
 log = logging.getLogger(__name__)
 
@@ -1616,6 +1621,7 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path, 
         if p.exists()
     )
     phase4 = build_phase4_sections(results_dir)
+    words_avail = any(d.get("has_word_readout") for d in load_attention(results_dir).values())
     response_curve_fig = ""
     rc_path = out.parent / "te_response_curve.svg"
     if rc_path.exists():
@@ -1628,6 +1634,7 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path, 
             "cloud means the DiT's sampling absorbs the perturbation (pre-registered null, P7). "
             "Orange dashed: quant-floor band (two known-good encoders). Green dashed: seed change.</span></figcaption></figure>"
         )
+    words_toc = '\n<li><a href="#sec-words">What the DiT reads, in words</a></li>' if words_avail else ""
     findings = "\n".join(f"<li>{f}</li>" for f in _key_findings(variants, backend))
     decomposition = _decomposition_section(variants)
     divergence_data = _load_divergence(results_dir)
@@ -1738,8 +1745,7 @@ Results: {html.escape(str(results_dir))} · te_results_version: {TE_RESULTS_VERS
 <li><a href="#sec-divergence">DiT-step divergence</a></li>
 <li><a href="#sec-img">Image-space perceptual ladder</a></li>
 <li><a href="#sec-controls">Counterfactual controls &amp; anchor ladder</a></li>
-<li><a href="#sec-attention">Attention readout</a></li>
-<li><a href="#sec-words">What the DiT reads, in words</a></li>
+<li><a href="#sec-attention">Attention readout</a></li>{words_toc}
 <li><a href="#sec-discriminability">Inter-prompt discriminability</a></li>
 <li><a href="#sec-verdicts">Verdict table (the solid answer)</a></li>
 <li><a href="#sec-damage">Pipeline divergence table</a></li>

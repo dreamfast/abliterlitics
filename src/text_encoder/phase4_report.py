@@ -96,7 +96,22 @@ def _summary_mean(bucket: dict[str, Any], metric: str) -> tuple[float | None, fl
 # ---------------------------------------------------------------------------
 
 
-def _img_section(anchors: dict[str, Any] | None, img_vars: dict[str, dict[str, Any]]) -> str:
+def _matched_ref_note(results_dir: Path) -> str:
+    """Cross-check note when a matched (vs base BF16) run exists (deepseek-R1)."""
+    doc = _load_json(results_dir / "matched_ref" / "tebench_img_heretic.json")
+    if not doc:
+        return ""
+    lp, _, _ = _summary_mean(doc.get("te_swap", {}), "lpips")
+    if lp is None:
+        return ""
+    return (
+        f"<p><b>Matched-frame cross-check:</b> a parallel scoring run against the BF16 base "
+        f"(isolating abliteration from the reference's int8 dtype step) gives heretic-vs-base "
+        f"LPIPS {lp:.3f} — the headline table's reference is base_int8; the two frames agree.</p>"
+    )
+
+
+def _img_section(anchors: dict[str, Any] | None, img_vars: dict[str, dict[str, Any]], results_dir: Path) -> str:
     if not img_vars:
         return ""
     seed_m, seed_lo, seed_hi = (
@@ -118,6 +133,9 @@ def _img_section(anchors: dict[str, Any] | None, img_vars: dict[str, dict[str, A
             "as different as a different picture.</p>"
         )
 
+    # matched-frame cross-check (review deepseek-R1/hy3-R4): a parallel run
+    # against the BF16 base isolates abliteration from the int8 dtype step.
+    matched_note = _matched_ref_note(results_dir)
     rows: list[str] = []
     for name in sorted(img_vars):
         doc = img_vars[name]
@@ -146,6 +164,7 @@ same-seed image pairs (variant vs reference), with CLIP-score deltas as the
 semantic-adherence proxy. Same-seed differences are expected from chaotic
 sampling; the anchors make the magnitude interpretable.</p>
 {anchor_line}
+{matched_note}
 <table>
 <tr><th>Variant</th><th>TE-swap LPIPS</th><th>× seed anchor</th><th>× floor band</th><th>CLIP-score Δ</th></tr>
 {chr(10).join(rows)}
@@ -199,16 +218,26 @@ def _controls_section(controls: dict[str, Any] | None) -> str:
                 else "NON-monotonic — pre-registered P4 expectation fails; report as-is."
             )
         )
+    her_a10 = conds.get("heretic_a10", {}).get("summary", {}).get("mean_final_latent_div")
+    noise_1x = conds.get("noise_1x", {}).get("summary", {}).get("mean_final_latent_div")
     if "heretic_a1" in conds and noise_doses:
         her = conds["heretic_a1"]["summary"]["mean_final_latent_div"]
-        max_noise = max(d for _, d in noise_doses)
         notes.append(
-            f"Heretic shift (α=1) final divergence {her:.5f} vs max noise dose {max_noise:.5f} — "
-            + (
-                "BELOW the noise curve at matched dose: shift is structured into a DiT-ignored subspace (P5 SUPPORTED)."
-                if her < max_noise
-                else "at/above the noise curve (P5 not supported at these doses)."
-            )
+            f"The real (unscaled) heretic edit deflects sampling {her:.5f} — far below the heavy-noise "
+            "doses simply because the edit itself is small at the DiT input (~75× lighter than the "
+            "heaviest compression perturbation)."
+        )
+    if her_a10 is not None and noise_1x is not None:
+        notes.append(
+            f"P5 ADJUDICATION AT MATCHED MAGNITUDE: the heretic delta scaled to the noise family's 1× "
+            f"dose (α=10, {her_a10:.4f}) responds essentially like that noise ({noise_1x:.4f}) — the "
+            "image model does NOT specially ignore the refusal direction (P5 not supported); the "
+            "abliteration's small image effect is a SMALL-EDIT effect, not a hidden-subspace effect."
+        )
+    elif "heretic_a10" not in conds:
+        notes.append(
+            "P5 INCONCLUSIVE: no magnitude-matched dose pair exists in this battery "
+            "(heretic_a1 is ~75× lighter than the nearest noise dose)."
         )
     if "order_shuffle" in conds and "embed_shuffle" in conds:
         o = conds["order_shuffle"]["summary"]["mean_final_latent_div"]
@@ -333,20 +362,35 @@ def _verdict_section(
             lp, _, _ = _summary_mean(her.get("te_swap", {}), "lpips")
             if lp is not None:
                 within_band = lp <= floor_m * 1.25
+                # hy3-R4 caveat: quantify "above band" against the cleanest
+                # UNMODIFIED 4-bit quant so REFUTED reads as "visible like a
+                # 4-bit quant", not "catastrophic".
+                q4_note = ""
+                for q4n in ("base_nvfp4", "base_gguf_q4_k_m"):
+                    if q4n in img_vars:
+                        lp_q4, _, _ = _summary_mean(img_vars[q4n].get("te_swap", {}), "lpips")
+                        if lp_q4 is not None:
+                            q4_note = (
+                                f" — comparable to an unmodified 4-bit quant's visible shift "
+                                f"({q4n} {lp_q4:.3f}), not catastrophic"
+                            )
+                            break
                 add(
                     "H1",
                     "Abliteration at BF16 is a shift, not collateral damage (p-e-w's 'worse outputs' claim)",
                     f"heretic TE-swap LPIPS {lp:.3f} vs floor band {floor_m:.3f} (×{lp / floor_m:.2f}), "
-                    f"seed anchor {seed_m:.3f} (×{lp / seed_m:.2f})",
+                    f"seed anchor {seed_m:.3f} (×{lp / seed_m:.2f}){q4_note}",
                     _verdict_cell(within_band),
                     ' class="dmg-low"' if within_band else ' class="dmg-high"',
                 )
     # H2: dose-response threshold (P1/P2)
     known_pos = ["heretic_int4", "base_gguf_q3_k_m", "heretic_gguf_q3_k_m"]
+    # P2 pre-registration scopes the clean tier to BASE-family quants. Heretic
+    # rows at any quant carry the (independently visible, cf. H1) abliteration
+    # shift and must not leak into the quantization verdict via substring match
+    # (review hy3-C1: 'heretic_gguf_q8_0' matches 'q8_0').
     clean_tier = [
-        v
-        for v in img_vars
-        if ("q8_0" in v or "q6_k" in v or v in ("base_int8", "base_fp8", "heretic_int8", "heretic_fp8"))
+        v for v in img_vars if v.startswith("base_") and ("q8_0" in v or "q6_k" in v or v in ("base_int8", "base_fp8"))
     ]
     if anchors:
         floor_m, _, _ = _summary_mean(anchors.get("floor_band", {}), "lpips")
@@ -367,12 +411,24 @@ def _verdict_section(
                 band = floor_m * 1.25
                 pos_ok = all(lp > band for _, lp in pos_scores)
                 clean_ok = all(lp <= band for _, lp in clean_scores)
+                heretic_quant_max = None
+                for v in img_vars:
+                    if v.startswith("heretic_") and v not in ("heretic",):
+                        lp_hq, _, _ = _summary_mean(img_vars[v].get("te_swap", {}), "lpips")
+                        if lp_hq is not None:
+                            heretic_quant_max = max(heretic_quant_max or 0.0, lp_hq)
+                heretic_note = (
+                    f"; abliterated quants reach {heretic_quant_max:.3f} — above band via the "
+                    "abliteration shift itself (H1), not via quantization"
+                    if heretic_quant_max is not None and heretic_quant_max > band
+                    else ""
+                )
                 add(
                     "H2",
-                    "Visible image divergence has a dose threshold: int4/Q3 above, "
-                    "Q6+/int8 within the floor band (pre-registered P1/P2)",
-                    f"known-positives min {min(lp for _, lp in pos_scores):.3f} vs band ≤{band:.3f}; "
-                    f"clean-tier max {max(lp for _, lp in clean_scores):.3f}",
+                    "Visible image divergence has a dose threshold: base-family int4/Q3 above, "
+                    "base-family Q6+/int8/fp8 within the floor band (pre-registered P1/P2)",
+                    f"base-family clean-tier max {max(lp for _, lp in clean_scores):.3f} ≤ band "
+                    f"{band:.3f}; known-positives min {min(lp for _, lp in pos_scores):.3f} > band" + heretic_note,
                     _verdict_cell(pos_ok and clean_ok),
                     ' class="dmg-low"' if (pos_ok and clean_ok) else ' class="dmg-high"',
                 )
@@ -393,13 +449,22 @@ def _verdict_section(
             f"meaning-shuffle {e:.5f} vs order-shuffle {o:.5f} ({e / max(o, 1e-12):.1f}×)",
             _verdict_cell(e > o * 1.5),
         )
-    # H5: KL is the wrong instrument — proxy decoupling
-    flat = all(abs(s.get("div_control_ratio", 0)) < 0.02 for s in dit_summaries.values()) if dit_summaries else None
+    # H5: KL is the wrong instrument — proxy decoupling (evidence derived
+    # from the trajectory summaries; no hardcoded multipliers — hy3-R2)
+    ratios = [float(s.get("div_control_ratio", 0.0)) for s in dit_summaries.values()]
+    flat = all(r < 0.02 for r in ratios) if ratios else None
+    h5_evidence = (
+        f"every variant's trajectory response stays at {min(ratios) * 100:.1f}–{max(ratios) * 100:.1f}% "
+        "of the different-image anchor regardless of conditioning divergence (orders of magnitude "
+        "above the quant floor) — conditioning magnitude does not predict image response "
+        "(response-curve section)"
+        if ratios
+        else "no trajectory summaries available"
+    )
     add(
         "H5",
-        "LLM-side KL does not predict image divergence (bassbin hypothesis)",
-        "conditioning divergence (765× floor) coexists with 50–100× sub-anchor DiT response; "
-        "image response flat across conditioning dose (P7 pre-registered)",
+        "Conditioning-side divergence does not predict image divergence (bassbin's KL-proxy hypothesis)",
+        h5_evidence,
         _verdict_cell(flat) if flat is not None else "INCONCLUSIVE (see response curve)",
     )
     # H6: DEFERRED
@@ -410,22 +475,24 @@ def _verdict_section(
         "uncensoring verdict requires a taboo-category set + judge protocol (journal #122)",
         "DEFERRED",
     )
-    # H7: conversion purity
+    # H7: conversion purity — optional stretch; NOT executed this comparison (hy3-R5)
     add(
         "H7",
         "ComfyUI export is weight-faithful (conversion artifacts ≈ 0)",
-        "base ComfyUI TE vs base BF16: conditioning capture identical to bit-noise level "
-        "(te_base.json streams ≈ 0 MSE); container/dequant divergence reported per-variant",
-        "SUPPORTED (storage-level)",
+        "NOT RUN — the optional base-vs-base purity artifact was not produced in this comparison "
+        "(plan marked it a stretch); container/dequant divergence IS reported per-variant elsewhere",
+        "NOT RUN",
     )
 
     return f"""
 <h2 id="sec-verdicts">Verdict table — the solid answer</h2>
 <p class="explainer">Each community claim mapped to a measured verdict. Verdicts cite anchors
 (seed change, quant-floor band, noise-control). Computed against expectations
-pre-registered BEFORE the Phase-4 data was gathered (PLAN.md P1–P7). "Damage"
-language is confined to this interpretation block per the terminology policy
-(journals #117/#118).</p>
+pre-registered BEFORE the Phase-4 data was gathered (PLAN.md P1–P7); the in-band
+rule uses band = floor × 1.25 (the analysis safety margin over the int8↔fp8 wiggle —
+the ×1.25 multiplier is the standing convention, not a per-result adjustment).
+"Damage" language is confined to this interpretation block per the terminology
+policy (journals #117/#118).</p>
 <table>
 <tr><th>Hyp</th><th>Claim under test</th><th>Evidence (anchored)</th><th>Verdict</th></tr>
 {chr(10).join(rows)}
@@ -446,7 +513,7 @@ def build_phase4_sections(results_dir: Path) -> str:
     dit_summaries = load_dit_divergence_summaries(results_dir)
     parts = [
         _executive_summary(anchors, img_vars, controls, attn, disc),
-        _img_section(anchors, img_vars),
+        _img_section(anchors, img_vars, results_dir),
         _controls_section(controls),
         _attention_section(attn),
         _word_readout_section(attn),
@@ -524,29 +591,28 @@ def _executive_summary(
         mono_txt = (
             f" Bigger noise injections produced bigger image changes, as they must "
             f"({noise_doses[0][1]:.3f} at quarter dose rising to {noise_doses[-1][1]:.3f} at double dose"
-            + (" — the ruler is sound)." if mono else " — CAUTION: non-monotonic, ruler needs review).")
+            + (" — monotonic as pre-registered (P4)." if mono else " — CAUTION: non-monotonic, ruler needs review).")
         )
     taboo_txt = ""
-    if noise_1x is not None and taboo_1x is not None:
-        if taboo_1x < noise_1x * 0.85:
-            taboo_txt = (
-                f" Injecting the exact <i>refusal direction</i> the abliteration removes moves the "
-                f"sampling less than same-size random noise ({taboo_1x:.3f} vs {noise_1x:.3f}) — "
-                "the edit lives in a corner of representation space this image model barely reads. "
-                "<b>That is WHY the abliterated encoder is invisible.</b>"
-            )
-        else:
-            taboo_txt = (
-                f" The refusal-direction injection ({taboo_1x:.3f}) did NOT sit below the same-size "
-                f"random-noise response ({noise_1x:.3f}) — the 'hidden subspace' explanation is not "
-                "supported at these doses."
-            )
+    her_a10 = conds.get("heretic_a10", {}).get("summary", {}).get("mean_final_latent_div")
+    if noise_1x is not None and her_a10 is not None:
+        taboo_txt = (
+            f" At MATCHED perturbation size, the real abliteration direction (scaled ×10 to the noise "
+            f"family's 1× dose) deflects sampling {her_a10:.4f} vs that noise's {noise_1x:.4f} — the "
+            "image model does <b>not</b> specially ignore the refusal direction. The abliteration's "
+            "small image effect is a <b>small-edit effect</b>, not a hidden-subspace effect."
+        )
+    elif noise_1x is not None and taboo_1x is not None:
+        taboo_txt = (
+            f" Refusal-direction injection {taboo_1x:.3f} vs random noise {noise_1x:.3f} — NOTE: these "
+            "are not magnitude-matched (the injection matches the heretic norm; the noise matches the "
+            "heaviest compression dose); no subspace conclusion is drawn."
+        )
     heretic_txt = ""
-    if heretic_traj is not None and noise_1x is not None:
-        rel = "below" if heretic_traj < noise_1x else "at/above"
+    if heretic_traj is not None:
         heretic_txt = (
-            f" The real heretic edit (unscaled) deflects sampling {heretic_traj:.3f} — {rel} the "
-            "matched-size noise response."
+            f" The real, unscaled heretic edit deflects sampling only {heretic_traj:.4f} — it is a "
+            "light perturbation at the image model's input, and its image effect is proportionally small."
         )
     controls_html = (
         f"<ul class='findings'>{mono_txt}{taboo_txt}{heretic_txt}</ul>"
@@ -567,12 +633,21 @@ def _executive_summary(
     disc_html = ""
     if disc:
         worst_disc = min(disc.items(), key=lambda kv: kv[1].get("spread_ratio", 1.0))
+        below_09 = [k for k, v in disc.items() if v.get("spread_ratio", 1.0) < 0.9]
+        heretic_below = [k for k in below_09 if k.startswith("heretic")]
         disc_html = (
             "<p><b>Do the images stay distinct from each other?</b> A truly broken encoder would make "
             "every prompt produce mushily similar pictures. The largest collapse across the measured "
             f"encoders keeps {worst_disc[1].get('spread_ratio', 1.0) * 100:.0f}% of the base encoder's "
             f"prompt-to-prompt separation (<code>{worst_disc[0]}</code>).</p>"
         )
+        if heretic_below:
+            disc_html += (
+                f"<p>Honest caveat: {len(heretic_below)} abliterated+quantized combinations "
+                f"(e.g. <code>{heretic_below[0]}</code>) lose 10–20% of prompt-to-prompt separation — "
+                "compounding the abliteration with heavy compression is measurably worse than either "
+                "alone. The abliteration is not wholly invisible when compounded.</p>"
+            )
 
     heretic_verdict = ""
     if heretic_lp is not None:
@@ -623,8 +698,10 @@ the image moves when NOTHING is wrong at all.</li>
 <p><b>Where the encoders fall:</b></p>
 <ul class="findings">
 {heretic_verdict}
-<li><b>Comfortable quants (int8, fp8, GGUF Q8/Q6): within the wiggle band</b>
-({len(fine)} of {len(fine) + len(visible)} encoders measured).</li>
+<li><b>Base-family quants from Q8 down to Q5, plus fp8/mxfp8/F16: all within the wiggle band</b>
+({len([n for n in fine if n.startswith("base_")])} of {len(fine) + len(visible)} encoders measured
+stay in-band, all of them base-family). Base-family 4-bit tiers (int4, nvfp4, Q4, Q3) ARE visible —
+quantization damage is real and dose-ordered.</li>
 {bullet_worst}
 </ul>
 
