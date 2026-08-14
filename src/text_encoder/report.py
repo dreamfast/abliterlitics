@@ -1,7 +1,14 @@
 """Report schema + markdown/json rendering for text-encoder analysis.
 
-Produces blog-ready output with MSE-primary damage, CKA-secondary similarity,
-and per-category breakdown.
+Produces blog-ready output with MSE-primary divergence, CKA-secondary
+similarity, and per-category breakdown.
+
+Terminology (journal #117/#118): "divergence" is the value-neutral
+measurement reported here; "quantization error" and "abliteration shift"
+type it by intent; "damage" is reserved for collateral unintended
+divergence and never appears as a column label. JSON field names
+(damage_quant_units, damage_semantic_units) are schema-stable and
+intentionally unchanged.
 """
 
 from __future__ import annotations
@@ -90,7 +97,7 @@ class Report:
         }
 
     def to_markdown(self) -> str:
-        """Render as a markdown table — blog-ready damage report."""
+        """Render as a markdown table — blog-ready divergence report."""
         lines: list[str] = []
         lines.append("# Text-Encoder Conditioning Fidelity Report")
         lines.append("")
@@ -107,7 +114,7 @@ class Report:
             lines.append("")
             lines.append(
                 "| Stream | Stage | CKA (linear) | CKA (RBF) | Cos (all) | "
-                "MSE | L2 | Rank Corr | Damage (quant units) | Dmg (semantic) |"
+                "MSE | L2 | Rank Corr | Divergence (quant units) | Div (semantic) |"
             )
             lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|")
             for sr in v.streams:

@@ -1,23 +1,31 @@
-"""Comparison orchestrator + noise-floor-relative damage computation.
+"""Comparison orchestrator + noise-floor-relative divergence computation.
 
 This module ties the metrics core together: given two ConditioningArtifacts
 (base and variant) plus optional reference-floor artifacts, compute all
-metrics per-stream and express the damage relative to two anchors:
+metrics per-stream and express the divergence relative to two anchors:
 
 1. Quantization floor (primary, stable):
      damage_quant_units = MSE(base, variant) / MSE(base, quant_floor)
-   "damage 0.1 = ten times smaller than one quantization step."
+   "divergence 0.1 = ten times smaller than one quantization step."
+   (JSON field name is schema-stable; the display layer says "divergence".)
 
 2. Semantic ceiling (interpretability anchor):
      damage_semantic_units = pooled_MSE(base, variant) / pairwise_pooled_MSE(base)
    The denominator is the mean conditioning distance between DIFFERENT
-   prompts (a meaning change). "damage 0.01 = the DiT input moves 1% of a
-   meaning change." Pooling is used on both sides so token-aligned damage
+   prompts (a meaning change). "divergence 0.01 = the DiT input moves 1% of a
+   meaning change." Pooling is used on both sides so token-aligned divergence
    and cross-prompt distances live on the same scale.
 
 CKA is reported as a secondary similarity metric (bounded [0, 1]).
 
-Bootstrap CIs (reviewer amendment C4): the damage ratio is resampled JOINTLY
+TERMINOLOGY (journal #117/#118): the value these anchors express is
+"divergence" (raw, value-neutral). Typed by intent it is "quantization
+error" (compression alone) or "abliteration shift" (the intended edit at
+matched quant). "Damage" is reserved for collateral unintended divergence
+with functional consequence - it is a judgment made downstream of these
+numbers, never a column label.
+
+Bootstrap CIs (reviewer amendment C4): the divergence ratio is resampled JOINTLY
 (numerator + denominator on the same prompt indices) via
 ``bootstrap_ratio_ci``; per-prompt metrics (MSE, cosine) get standard
 nonparametric CIs. CKA CIs are omitted (pooled statistic — recomputation
@@ -25,7 +33,7 @@ per resample is O(n^2 d B) and not needed for the headline claims).
 
 Per reviewer amendment C2: the numerical_floor parameter is demoted to an
 optional reported reference (bf16-vs-fp16, not fp32) — it is NOT used in
-the damage formula to avoid loading base in fp32 (which would need ~128GB
+the divergence formula to avoid loading base in fp32 (which would need ~128GB
 RAM for H3 32B).
 """
 
@@ -68,7 +76,7 @@ class StreamReport:
     rank_corr: MetricResult
     damage_quant_units: MetricResult | None = None  # None if no quant floor provided
     semantic_ceiling_mse: float | None = None  # pairwise pooled MSE between distinct base prompts
-    damage_semantic_units: MetricResult | None = None  # pooled damage / semantic ceiling
+    damage_semantic_units: MetricResult | None = None  # pooled divergence / semantic ceiling
     per_category: dict[str, dict[str, float]] = field(default_factory=dict)
     # per_category = {"innocent": {"cka_linear": 0.95, "mse": 0.001, ...}, ...}
 
@@ -188,12 +196,15 @@ def compute_damage(
     mse_base_variant: float,
     mse_base_quant: float,
 ) -> float:
-    """Compute damage in quant-floor units.
+    """Compute divergence in quant-floor units.
 
-    damage = MSE(base, variant) / MSE(base, fake_quant)
+    divergence = MSE(base, variant) / MSE(base, fake_quant)
 
-    A damage of 0.1 = "ten times smaller than the quant floor, almost
-    certainly imperceptible." A damage of 3.4 = "three times worse than
+    (Function name kept for call-site stability; computes the
+    quant-floor-relative divergence that serializes as damage_quant_units.)
+
+    A divergence of 0.1 = "ten times smaller than the quant floor, almost
+    certainly imperceptible." A divergence of 3.4 = "three times larger than
     dropping to fp8."
 
     Returns inf if the quant floor is zero.
@@ -215,18 +226,18 @@ def compare(
     """Compare a variant artifact against a base/reference.
 
     Computes all metrics per matching stream, plus:
-    - damage in quant-floor units (with JOINT bootstrap CI) when a floor is given
-    - semantic ceiling + damage in semantic units (pooled, vs meaning-change)
+    - divergence in quant-floor units (with JOINT bootstrap CI) when a floor is given
+    - semantic ceiling + divergence in semantic units (pooled, vs meaning-change)
     - bootstrap CIs on per-prompt metrics (MSE, cosine)
     - per-category breakdown when categories are non-uniform
 
     Args:
         base: Base (or reference) model artifact — the comparison anchor.
         variant: Variant model artifact (must share prompts/categories).
-        quant_floor: Noise-floor artifact for damage computation.
+        quant_floor: Noise-floor artifact for divergence computation.
                      If None, damage_quant_units is not computed.
         numerical_floor: Optional bf16-vs-fp16 reference (reported but not
-                         used in the damage formula per reviewer C2).
+                         used in the divergence formula per reviewer C2).
         floor_base: The artifact the quant floor is measured AGAINST when
                     it differs from ``base``. Defaults to ``base``.
         n_boot: Bootstrap resamples for CIs (0 disables).
@@ -279,7 +290,7 @@ def compare(
             _, lo_c, hi_c = bootstrap_ci(per_prompt_cos, n_boot=n_boot)
             cos_ci = (lo_c, hi_c)
 
-        # Semantic ceiling + damage in semantic units (pooled representation)
+        # Semantic ceiling + divergence in semantic units (pooled representation)
         base_pooled = pool_mean(base_stream.activations, base_stream.mask)
         semantic_ceiling = _semantic_ceiling_pooled(base_pooled)
         pooled_damage = _pooled_mse(base_stream.activations, var_stream.activations, base_stream.mask)
@@ -293,7 +304,7 @@ def compare(
                 log.debug("Semantic ceiling NaN for stream %s (n<2)", stream_name)
             # NaN or ~0 ceiling: leave semantic fields unset (serializes None)
 
-        # Compute damage if quant floor is provided.
+        # Compute quant-floor divergence if a floor is provided.
         # Denominator is measured against floor_ref (the global base), NOT
         # the comparison base — matched-quant runs (heretic_int8 vs
         # base_int8) would otherwise divide by MSE(base_int8, base_int8)=0.

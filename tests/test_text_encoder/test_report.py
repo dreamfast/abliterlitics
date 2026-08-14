@@ -60,7 +60,9 @@ class TestReport:
         md = report.to_markdown()
         assert "gemma_hidden" in md
         assert "CKA" in md
-        assert "Damage" in md
+        # Journal #117: display layer says "Divergence", never "Damage"
+        assert "Divergence" in md
+        assert "Damage" not in md
 
     def test_to_markdown_per_category(self) -> None:
         report = Report(
