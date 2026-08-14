@@ -24,6 +24,7 @@ import base64
 import html
 import json
 import logging
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -1089,33 +1090,53 @@ def _ab_section(
     js_prompts = json.dumps(prompt_texts)
     js_checks = json.dumps(prompt_checks)
 
+    # Aggregate server_gen_ms by te_cached state for ms-level precision.
+    from collections import defaultdict as _dd
+
+    _cold: dict[str, list[int]] = _dd(list)
+    _warm: dict[str, list[int]] = _dd(list)
+    for img in manifest.get("images", []):
+        perf = img.get("perf") or {}
+        ms = perf.get("server_gen_ms")
+        if ms is None:
+            continue
+        if perf.get("te_cached") is False:
+            _cold[img["variant"]].append(ms)
+        else:
+            _warm[img["variant"]].append(ms)
+
+    def _ms_mean(vals: list[int]) -> str:
+        return f"{statistics.mean(vals):.0f}" if vals else "-"
+
+    def _ms_stdev(vals: list[int]) -> str:
+        return f"\u00b1{statistics.stdev(vals):.0f}" if len(vals) > 1 else ""
+
     timing_rows: list[str] = []
     for var_name in sorted(manifest.get("timing", {})):
         t = manifest["timing"][var_name]
-        passes = t.get("passes", {})
-        cold = passes.get("cold", {})
-        warm = passes.get("warm", {})
+        cold_ms = _cold.get(var_name, [])
+        warm_ms = _warm.get(var_name, [])
         ref_cls = ' class="ref-var"' if var_name.startswith("base_") else ""
+        delta_s = f"{statistics.mean(cold_ms) - statistics.mean(warm_ms):.0f}" if cold_ms and warm_ms else "-"
         timing_rows.append(
             f"<tr><td{ref_cls}>{html.escape(_display(var_name))}</td>"
             f"<td>{html.escape(t.get('te_name', '').split('/')[-1])}</td>"
             f"<td>{html.escape(t.get('loader', ''))}</td>"
-            f"<td>{_fmt(cold.get('first_image_seconds'), '.1f')}</td>"
-            f"<td>{_fmt(warm.get('first_image_seconds'), '.1f')}</td>"
-            f"<td>{_fmt(cold.get('mean_image_seconds'), '.1f')}</td>"
-            f"<td>{_fmt(warm.get('mean_image_seconds'), '.1f')}</td></tr>"
+            f"<td>{_ms_mean(cold_ms)}</td><td>{len(cold_ms)}</td>"
+            f"<td>{_ms_mean(warm_ms)} {_ms_stdev(warm_ms)}</td><td>{len(warm_ms)}</td>"
+            f"<td>{delta_s}</td></tr>"
         )
 
     timing_html = ""
     if timing_rows:
         timing_html = f"""
-<h3>Generation timing (seconds, RTX 5090, 1024px, 9 steps)</h3>
-<p>Cold = first image after the text encoder is freshly loaded into VRAM
-(server-side <code>execution_start→execution_success</code> ms also recorded
-per image in the manifest); warm = first image on the cached model. The
-delta is the practical cost of a TE swap in a running session.</p>
+<h3>Generation timing (RTX 5090, 1024px, 9 steps, server-side ms)</h3>
+<p>Cold = images where ComfyUI's <code>te_cached</code> flag was False (text encoder
+freshly loaded into VRAM). Warm = <code>te_cached</code> True (model reused from
+cache). Delta = the practical cost of a TE swap in a running session. Stdev
+over warm images demonstrates generation-time consistency.</p>
 <table>
-<tr><th>Variant</th><th>TE file</th><th>Loader</th><th>Cold 1st img</th><th>Warm 1st img</th><th>Cold mean</th><th>Warm mean</th></tr>
+<tr><th>Variant</th><th>TE file</th><th>Loader</th><th>Cold (ms)</th><th>n</th><th>Warm (ms ± stdev)</th><th>n</th><th>TE swap cost (ms)</th></tr>
 {chr(10).join(timing_rows)}
 </table>"""
 
