@@ -47,6 +47,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from src.text_encoder import TE_RESULTS_VERSION
+from src.text_encoder.phase4_report import build_phase4_sections, load_dit_divergence_summaries, load_img_metrics
 
 log = logging.getLogger(__name__)
 
@@ -691,6 +692,84 @@ def graph_divergence_steps(steps_data: dict[str, dict[str, Any]], out: Path) -> 
 
 def _svg_data_uri(path: Path) -> str:
     return "data:image/svg+xml;base64," + base64.b64encode(path.read_bytes()).decode()
+
+
+def graph_response_curve(
+    img_vars: dict[str, dict[str, Any]],
+    dit_summaries: dict[str, dict[str, Any]],
+    anchors: dict[str, Any] | None,
+    out: Path,
+) -> None:
+    """Phase-4 money chart (T4.1): image response vs DiT-step divergence.
+
+    x (primary): final-latent divergence from the trajectory harness — the
+    quantity closest to image space (pre-registered P7: conditioning MSE is
+    documented as decoupled; it is the SECONDARY axis and lives in the
+    per-variant tables). y: TE-swap LPIPS. Family colors; pre-registered
+    controls annotated; seed + floor-band anchor lines on y.
+    """
+    pts_base: list[tuple[float, float, str]] = []
+    pts_heretic: list[tuple[float, float, str]] = []
+    for name, doc in img_vars.items():
+        lp = next(
+            (s["mean"] for s in doc.get("te_swap", {}).get("summaries", []) if s["metric"] == "lpips"),
+            None,
+        )
+        div = dit_summaries.get(name, {}).get("mean_final_latent_div")
+        if lp is None or div is None:
+            continue
+        (pts_heretic if name.startswith("heretic") else pts_base).append((div, lp, name))
+    if not pts_base and not pts_heretic:
+        log.info("No joined img/divergence data - skipping %s", out.name)
+        return
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    if pts_base:
+        ax.scatter(
+            [d for d, _, _ in pts_base],
+            [lp for _, lp, _ in pts_base],
+            facecolors="none",
+            edgecolors="#8c8c8c",
+            marker="o",
+            s=60,
+            label="base quants",
+            zorder=3,
+        )
+    if pts_heretic:
+        ax.scatter(
+            [d for d, _, _ in pts_heretic],
+            [lp for _, lp, _ in pts_heretic],
+            color="#c44e52",
+            marker="s",
+            s=45,
+            label="abliterated",
+            zorder=3,
+        )
+    for div, lp, name in pts_base + pts_heretic:
+        if "int4" in name or "q3" in name:
+            ax.annotate(_display(name), (div, lp), textcoords="offset points", xytext=(5, 4), fontsize=7)
+    if anchors:
+        seed_m = next(
+            (s["mean"] for s in anchors.get("seed_change", {}).get("summaries", []) if s["metric"] == "lpips"), None
+        )
+        floor_m = next(
+            (s["mean"] for s in anchors.get("floor_band", {}).get("summaries", []) if s["metric"] == "lpips"), None
+        )
+        if floor_m:
+            ax.axhline(floor_m, color="#e67e22", lw=1.4, ls="--")
+            ax.text(0.02, floor_m, " quant-floor band", color="#e67e22", fontsize=8, va="bottom")
+        if seed_m:
+            ax.axhline(seed_m, color="#2ecc71", lw=1.4, ls="--")
+            ax.text(0.02, seed_m, " seed change (different image)", color="#2ecc71", fontsize=8, va="bottom")
+    ax.set_xlabel("DiT-step final latent divergence (primary axis)")
+    ax.set_ylabel("TE-swap LPIPS (image response)")
+    ax.set_title("Response curve: does the DiT's trajectory divergence predict its images?")
+    ax.grid(True, alpha=0.25)
+    ax.legend(fontsize=9, loc="best")
+    fig.tight_layout()
+    fig.savefig(out, format="svg")
+    plt.close(fig)
+    log.info("Wrote %s", out)
 
 
 def _fmt(v: float | None, spec: str = ".4f") -> str:
@@ -1536,6 +1615,19 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path, 
         )
         if p.exists()
     )
+    phase4 = build_phase4_sections(results_dir)
+    response_curve_fig = ""
+    rc_path = out.parent / "te_response_curve.svg"
+    if rc_path.exists():
+        response_curve_fig = (
+            f'<figure id="fig-response_curve"><img src="{_svg_data_uri(rc_path)}" alt="response_curve"/>'
+            "<figcaption><b>Response curve: trajectory divergence vs image response</b><br/>"
+            "<span class='fig-note'>Each point is one text encoder: x = its final-latent trajectory "
+            "divergence, y = its same-seed image LPIPS vs the reference. If conditioning changes that "
+            "deflect the trajectory also visibly change the image, points rise to the right; a flat "
+            "cloud means the DiT's sampling absorbs the perturbation (pre-registered null, P7). "
+            "Orange dashed: quant-floor band (two known-good encoders). Green dashed: seed change.</span></figcaption></figure>"
+        )
     findings = "\n".join(f"<li>{f}</li>" for f in _key_findings(variants, backend))
     decomposition = _decomposition_section(variants)
     divergence_data = _load_divergence(results_dir)
@@ -1643,6 +1735,11 @@ Results: {html.escape(str(results_dir))} · te_results_version: {TE_RESULTS_VERS
 <li><a href="#sec-decomp">Quantization vs abliteration decomposition</a></li>
 <li><a href="#sec-directional">Directional analysis</a></li>
 <li><a href="#sec-divergence">DiT-step divergence</a></li>
+<li><a href="#sec-img">Image-space perceptual ladder</a></li>
+<li><a href="#sec-controls">Counterfactual controls &amp; anchor ladder</a></li>
+<li><a href="#sec-attention">Attention readout</a></li>
+<li><a href="#sec-discriminability">Inter-prompt discriminability</a></li>
+<li><a href="#sec-verdicts">Verdict table (the solid answer)</a></li>
 <li><a href="#sec-damage">Pipeline divergence table</a></li>
 <li><a href="#sec-visuals">Visualizations</a></li>
 <li><a href="#sec-summary">Summary of findings</a></li>
@@ -1702,6 +1799,8 @@ cross-attention: literally what the DiT sees, and the headline stream for diverg
 {_table_rows(variants)}
 </table>
 
+{phase4}
+{response_curve_fig}
 <h2 id="sec-visuals">Visualizations</h2>
 {embedded}
 
@@ -1765,6 +1864,10 @@ def main() -> None:
     graph_layer_heatmap(variants, out_dir / "te_layer_heatmap.svg")
     graph_gguf_ladder(variants, out_dir / "te_gguf_ladder.svg")
     graph_divergence_steps(_load_divergence_steps(results_dir), out_dir / "te_divergence_steps.svg")
+    _anchors, _img_vars = load_img_metrics(results_dir)
+    graph_response_curve(
+        _img_vars, load_dit_divergence_summaries(results_dir), _anchors, out_dir / "te_response_curve.svg"
+    )
     generate_html(variants, results_dir, out_dir / "te_report.html", split_images=args.split_images)
     log.info("Report generation complete")
 

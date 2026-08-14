@@ -1,0 +1,150 @@
+"""Attention readout metrics — what does the DiT READ from the conditioning?
+
+Pure-tensor core (Phase 4 T2.3). Operates on attention distributions over
+conditioning-token positions captured by attention_capture.py (B0 spike:
+image-query rows x text-key columns, head-mean, per step/layer).
+
+Metrics (per step/layer, base vs variant):
+- JSD (PRIMARY): symmetric, bounded [0, ln2], epsilon-floored for hard zeros
+- KL (secondary): clamped eps=1e-12, symmetrized — direction reported but the
+  symmetric form avoids the P>0/Q=0 infinity trap (hy3-C5)
+- top-k overlap: Jaccard + rank-biased overlap (RBO) of top-k attended tokens
+- entropy: diffusion of the readout distribution
+- mass_on: attention mass on a given token-index subset (keyword analysis)
+
+Convention: distributions are length-L nonneg vectors (not necessarily
+normalized to 1 by the caller; these helpers normalize defensively).
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+
+import torch
+
+log = logging.getLogger(__name__)
+
+EPS = 1e-12
+
+
+def _normalize(p: torch.Tensor) -> torch.Tensor:
+    """Normalize rows of a [..., L] distribution defensively (clamp >= 0, sum 1)."""
+    p = p.clamp(min=0.0)
+    return p / p.sum(dim=-1, keepdim=True).clamp(min=EPS)
+
+
+def jsd(p: torch.Tensor, q: torch.Tensor, eps: float = EPS) -> float:
+    """Jensen-Shannon divergence (nats, bounded [0, ln 2]) between two distributions.
+
+    Epsilon-floored: handles hard zeros on either side (attention rows
+    frequently contain exact zeros from padding).
+    """
+    p = _normalize(p) + eps
+    q = _normalize(q) + eps
+    p = p / p.sum(dim=-1, keepdim=True)
+    q = q / q.sum(dim=-1, keepdim=True)
+    m = 0.5 * (p + q)
+    kl_pm = float((p * (p.log() - m.log())).sum(dim=-1))
+    kl_qm = float((q * (q.log() - m.log())).sum(dim=-1))
+    val = 0.5 * (max(kl_pm, 0.0) + max(kl_qm, 0.0))
+    return min(val, math.log(2.0))
+
+
+def kl_sym(p: torch.Tensor, q: torch.Tensor, eps: float = EPS) -> float:
+    """Symmetrized KL (J-divergence) with clamping: KL(p||q) + KL(q||p).
+
+    Clamped at eps on both sides — the clamp makes the value finite and keeps
+    the metric a divergence (zero iff equal); the raw one-directional KL is
+    intentionally NOT exposed (infinite on support mismatch).
+    """
+    p = _normalize(p) + eps
+    q = _normalize(q) + eps
+    p = p / p.sum(dim=-1, keepdim=True)
+    q = q / q.sum(dim=-1, keepdim=True)
+    kl_pq = float((p * (p.log() - q.log())).sum(dim=-1))
+    kl_qp = float((q * (q.log() - p.log())).sum(dim=-1))
+    return max(kl_pq, 0.0) + max(kl_qp, 0.0)
+
+
+def topk_overlap(
+    p: torch.Tensor,
+    q: torch.Tensor,
+    k: int = 5,
+    rbo_p: float = 0.9,
+) -> dict[str, float]:
+    """Top-k attended-token agreement: Jaccard + rank-biased overlap.
+
+    Jaccard: |top_k(p) & top_k(q)| / |top_k(p) | top_k(q)| in [0, 1].
+    RBO: rank-biased overlap (Webber et al. 2010), indefinite version,
+    in [0, 1] — rewards agreement at the TOP of the ranking.
+    """
+    p = _normalize(p)
+    q = _normalize(q)
+    k = min(k, p.shape[-1])
+    tp = set(torch.topk(p, k).indices.tolist())
+    tq = set(torch.topk(q, k).indices.tolist())
+    jaccard = len(tp & tq) / max(len(tp | tq), 1)
+
+    # RBO over the FULL rankings; when the list is exhausted at ``depth``
+    # (depth >= n) use the FINITE normalization X/S; otherwise the standard
+    # indefinite extrapolation (assume tail agreement 1.0, +p^depth).
+    rp = torch.argsort(p, descending=True).tolist()
+    rq = torch.argsort(q, descending=True).tolist()
+    n = len(rp)
+    depth = min(n, max(k * 4, 20))
+    overlap_runs: list[float] = []
+    seen_p: set[int] = set()
+    seen_q: set[int] = set()
+    for d in range(1, depth + 1):
+        seen_p.add(rp[d - 1])
+        seen_q.add(rq[d - 1])
+        overlap_runs.append(len(seen_p & seen_q) / d)
+    weights = [(1 - rbo_p) * rbo_p ** (d - 1) for d in range(1, depth + 1)]
+    prefix = sum(w * o for w, o in zip(weights, overlap_runs, strict=True))
+    weight_sum = sum(weights)
+    # finite list: no tail to extrapolate; else standard indefinite extension
+    rbo_val = prefix / max(weight_sum, 1e-12) if depth >= n else prefix + rbo_p**depth
+    return {"jaccard": float(jaccard), "rbo": float(min(max(rbo_val, 0.0), 1.0))}
+
+
+def entropy(p: torch.Tensor) -> float:
+    """Shannon entropy (nats) of an attention distribution; 0 for a delta peak."""
+    p = _normalize(p) + EPS
+    p = p / p.sum(dim=-1, keepdim=True)
+    return float(-(p * p.log()).sum(dim=-1))
+
+
+def mass_on(p: torch.Tensor, token_idx: list[int]) -> float:
+    """Total attention mass on a subset of token positions (keyword analysis)."""
+    if not token_idx:
+        return 0.0
+    p = _normalize(p)
+    return float(p[token_idx].sum())
+
+
+def summarize_readout(
+    base: dict[str, torch.Tensor],
+    variant: dict[str, torch.Tensor],
+    ks: tuple[int, ...] = (3, 5, 10),
+) -> dict[str, float]:
+    """Aggregate metrics for one (step, layer) readout pair.
+
+    base/variant: {"text_readout": [L], } — image-query-rows mean attention
+    over text-key columns (head-mean already applied by the capture layer).
+    Returns a flat metric dict: jsd, kl_sym, entropy_base, entropy_variant,
+    topk_{k}_jaccard, topk_{k}_rbo.
+    """
+    p = base["text_readout"]
+    q = variant["text_readout"]
+    out: dict[str, float] = {
+        "jsd": jsd(p, q),
+        "kl_sym": kl_sym(p, q),
+        "entropy_base": entropy(p),
+        "entropy_variant": entropy(q),
+    }
+    for k in ks:
+        ov = topk_overlap(p, q, k=k)
+        out[f"top{k}_jaccard"] = ov["jaccard"]
+        out[f"top{k}_rbo"] = ov["rbo"]
+    return out

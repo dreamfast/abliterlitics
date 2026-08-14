@@ -41,10 +41,10 @@ class TestStageLifecycle:
         conn = get_db(str(tmp_path / "test.db"))
         _setup_comparison(conn)
         count = init_stages(conn, "test-comp", ["base", "variant_a"])
-        assert count == 12  # 2 models × 6 stages
+        assert count == 14  # 2 models x 7 stages (text_encoder added f75aed6)
 
         stages = get_all_stages(conn, "test-comp")
-        assert len(stages) == 12
+        assert len(stages) == 14  # 2 models x 7 stages
         assert all(s.status == "pending" for s in stages)
         conn.close()
 
@@ -138,7 +138,7 @@ class TestStageLifecycle:
         init_stages(conn, "test-comp", ["base"])
 
         stages = get_all_stages(conn, "test-comp")
-        assert len(stages) == 6  # Still 6, not 12
+        assert len(stages) == 7  # Still 7, not 14
         conn.close()
 
 
@@ -201,7 +201,7 @@ class TestPipelineViews:
         init_stages(conn, "test-comp", ["base"])
 
         # Complete all stages
-        for stage in ("weights", "kl", "lm_eval", "harmbench", "graphs", "report"):
+        for stage in ("weights", "kl", "lm_eval", "harmbench", "text_encoder", "graphs", "report"):
             stage_start(conn, "test-comp", "base", stage)
             stage_complete(conn, "test-comp", "base", stage)
 
@@ -210,8 +210,8 @@ class TestPipelineViews:
             "FROM v_pipeline_status WHERE comparison = 'test-comp'"
         ).fetchone()
         assert row[0] == "completed"
-        assert row[1] == 6
-        assert row[2] == 6
+        assert row[1] == 7
+        assert row[2] == 7
         conn.close()
 
     def test_pipeline_status_has_failures(self, tmp_path):

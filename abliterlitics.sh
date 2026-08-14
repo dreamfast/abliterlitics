@@ -22,6 +22,9 @@ Commands:
   text-encoder  Text-encoder conditioning fidelity analysis (tebench)
   te-report     Generate SVG graphs + HTML report from text-encoder results
   te-img-metrics Image-space metrics over the A/B set (LPIPS/CLIP/SSIM)
+  te-controls    Counterfactual conditioning battery (noise/taboo/shuffles/null)
+  te-attention   Attention readout: what the DiT reads per TE
+  te-discriminability Inter-prompt spread per TE (semantic-collapse detector)
   te-divergence DiT-step divergence analysis (paired sampling trajectories)
   graphs        Generate all graphs from existing results
   report        Generate provenance report from results
@@ -128,6 +131,27 @@ cmd_harmbench() {
 cmd_text_encoder() {
     shift
     bash "${RUNNERS_DIR}/run_text_encoder.sh" $(global_flags) "$@"
+}
+
+cmd_te_controls() {
+    if [[ "${1:-}" == --* ]]; then
+        shift
+    fi
+    bash "${RUNNERS_DIR}/run_te_controls.sh" "$@"
+}
+
+cmd_te_attention() {
+    if [[ "${1:-}" == --* ]]; then
+        shift
+    fi
+    bash "${RUNNERS_DIR}/run_te_attention.sh" "$@"
+}
+
+cmd_te_discriminability() {
+    if [[ "${1:-}" == --* ]]; then
+        shift
+    fi
+    bash "${RUNNERS_DIR}/run_te_discriminability.sh" "$@"
 }
 
 cmd_te_img_metrics() {
@@ -367,6 +391,9 @@ case "$COMMAND" in
     te)           cmd_text_encoder "$COMMAND" "$@" ;;
     te-report)    cmd_te_report "$@" ;;
     te-img-metrics) cmd_te_img_metrics "$@" ;;
+    te-controls)    cmd_te_controls "$@" ;;
+    te-attention)   cmd_te_attention "$@" ;;
+    te-discriminability) cmd_te_discriminability "$@" ;;
     te-divergence) cmd_te_divergence "$COMMAND" "$@" ;;
     te-directional) cmd_te_directional "$COMMAND" "$@" ;;
     graphs)    cmd_graphs "${1:-.}" ;;

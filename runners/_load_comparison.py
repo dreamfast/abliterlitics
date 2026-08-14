@@ -221,7 +221,7 @@ def main() -> None:
         print(f"export TEBENCH_IMG_REFERENCE={shlex.quote(str(tebench.get('img_reference', 'base_int8')))}")
         floor_pair = tebench.get("img_floor_pair", ["base_int8", "base_fp8"])
         print(f"export TEBENCH_IMG_FLOOR_PAIR={shlex.quote(','.join(str(x) for x in floor_pair))}")
-        te_image = tebench.get("te_image", "abliterlitics-te:1.1.0")
+        te_image = tebench.get("te_image", "abliterlitics-te:1.2.0")  # keep in sync with common.sh TE_IMAGE default
         print(f"export TE_IMAGE={shlex.quote(te_image)}")
     else:
         # Export empty defaults so runner scripts don't break on unset vars

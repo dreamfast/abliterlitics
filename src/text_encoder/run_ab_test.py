@@ -300,6 +300,22 @@ def main() -> None:
     p.add_argument("--prompt-suite", default="prompts/te_suite.yaml")
     p.add_argument("--prompts-per-category", type=int, default=1, help="0 = take all prompts in the suite")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument(
+        "--seeds",
+        default="",
+        help="Comma-separated seed LIST for multi-seed runs (e.g. '43,44,45'); overrides --seed. "
+        "Used by the Phase-4 seed top-up to build the seed-change LPIPS anchor.",
+    )
+    p.add_argument(
+        "--labels",
+        default="",
+        help="Comma-separated prompt-label filter (subset of the suite, e.g. stress prompts only)",
+    )
+    p.add_argument(
+        "--passes",
+        default="cold,warm",
+        help="Comma-separated passes to run (default cold,warm; top-up uses warm only)",
+    )
     p.add_argument("--negative", default="", help="Negative prompt (empty for turbo cfg=1)")
     p.add_argument("--variants", default="", help="Comma-separated filter (default: all with te_file)")
     p.add_argument("--skip-existing", action="store_true")
@@ -333,6 +349,13 @@ def main() -> None:
     }
     comparison = json.loads(Path(args.comparison).read_text())
     suite = load_prompt_suite(Path(args.prompt_suite), args.prompts_per_category)
+    if args.labels:
+        label_filter = {s.strip() for s in args.labels.split(",") if s.strip()}
+        suite = [pr for pr in suite if (pr.get("label") or sanitize(pr["text"])) in label_filter]
+        if not suite:
+            raise SystemExit(f"--labels filter matched no prompts: {sorted(label_filter)}")
+    seeds = [int(s) for s in args.seeds.split(",") if s.strip()] or [args.seed]
+    pass_list = [s.strip() for s in args.passes.split(",") if s.strip()]
 
     # Variant list from comparison.json (dict form), with the global BASE
     # TE prepended as the "base" A-side anchor (it is not a variant entry).
@@ -351,7 +374,13 @@ def main() -> None:
         te_name = comfy_te_name(te_file, args.models_root)
         jobs.append((name, te_name))
 
-    log.info("A/B plan: %d variants x %d prompts (seed %d)", len(jobs), len(suite), args.seed)
+    log.info(
+        "A/B plan: %d variants x %d prompts x %d seeds %s",
+        len(jobs),
+        len(suite),
+        len(seeds),
+        f"(base {args.seed})" if len(seeds) == 1 else str(seeds),
+    )
 
     out_dir = Path(args.out_dir)
     manifest: dict[str, Any] = {
@@ -430,80 +459,96 @@ def main() -> None:
         loader_kind = "gguf" if te_name.lower().endswith(".gguf") else "safetensors"
         clip_node_id, base_wf = workflows[loader_kind]
         timing: dict[str, Any] = {"variant": name, "te_name": te_name, "loader": loader_kind, "passes": {}}
-        for pass_name in ("cold", "warm"):
-            if pass_name == "cold" and args.cold_free:
-                free_models(args.api_url)
-            pass_t0 = time.monotonic()
-            per_image: list[float] = []
-            for pr in suite:
-                stem = pr.get("label") or sanitize(pr["text"])
-                key = f"{name}::{pr.get('label', pr['category'])}::{pr['text']}"
-                out_path = out_dir / name / f"{stem}__pass-{pass_name}__seed{args.seed}.webp"
-                if args.skip_existing and key in done and out_path.exists():
-                    continue
-                if args.dry_run:
-                    log.info("[dry-run] %s/%s :: %s -> %s (te=%s)", name, pass_name, pr["category"], out_path, te_name)
-                    continue
-                wf = patch_workflow(
-                    base_wf,
-                    clip_node_id,
-                    te_name=te_name,
-                    positive=pr["text"],
-                    negative=args.negative,
-                    seed=args.seed,
-                    filename_prefix=f"abliterlitics-ab/{name}",
-                )
-                t0 = time.monotonic()
-                data, perf = queue_and_fetch(args.api_url, wf, te_node_id=clip_node_id)
-                dt = time.monotonic() - t0
-                per_image.append(dt)
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                out_path.write_bytes(data)
-                log.info(
-                    "%s/%s | %s | %s (%.1fs, %d KB)",
-                    name,
-                    pass_name,
-                    pr["category"],
-                    out_path.name,
-                    dt,
-                    len(data) // 1024,
-                )
-                # Capture VRAM after cold-pass first image (peak from TE load)
-                vram_cap: dict[str, float] | None = None
-                if pass_name == "cold" and len(per_image) == 1:
-                    vram_cap = _query_vram(args.api_url)
-                manifest.setdefault("images", []).append(
-                    {
-                        "key": key,
-                        "variant": name,
-                        "te_name": te_name,
-                        "loader": loader_kind,
-                        "pass": pass_name,
-                        "gen_seconds": round(dt, 2),
-                        "perf": perf,
-                        "vram": vram_cap,
-                        "category": pr["category"],
-                        "label": pr.get("label", ""),
-                        "prompt": pr["text"],
-                        "checks": pr.get("checks", []),
-                        "path": str(out_path),
-                        "seed": args.seed,
+        for seed in seeds:
+            for pass_name in pass_list:
+                if pass_name == "cold" and args.cold_free:
+                    free_models(args.api_url)
+                pass_t0 = time.monotonic()
+                per_image: list[float] = []
+                for pr in suite:
+                    stem = pr.get("label") or sanitize(pr["text"])
+                    key = f"{name}::{pr.get('label', pr['category'])}::{pr['text']}"
+                    out_path = out_dir / name / f"{stem}__pass-{pass_name}__seed{seed}.webp"
+                    if args.skip_existing and key in done and out_path.exists():
+                        continue
+                    if args.dry_run:
+                        log.info(
+                            "[dry-run] %s/%s seed%d :: %s -> %s (te=%s)",
+                            name,
+                            pass_name,
+                            seed,
+                            pr["category"],
+                            out_path,
+                            te_name,
+                        )
+                        continue
+                    wf = patch_workflow(
+                        base_wf,
+                        clip_node_id,
+                        te_name=te_name,
+                        positive=pr["text"],
+                        negative=args.negative,
+                        seed=seed,
+                        filename_prefix=f"abliterlitics-ab/{name}",
+                    )
+                    t0 = time.monotonic()
+                    data, perf = queue_and_fetch(args.api_url, wf, te_node_id=clip_node_id)
+                    dt = time.monotonic() - t0
+                    per_image.append(dt)
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    out_path.write_bytes(data)
+                    log.info(
+                        "%s/%s seed%d | %s | %s (%.1fs, %d KB)",
+                        name,
+                        pass_name,
+                        seed,
+                        pr["category"],
+                        out_path.name,
+                        dt,
+                        len(data) // 1024,
+                    )
+                    # Capture VRAM after cold-pass first image (peak from TE load)
+                    vram_cap: dict[str, float] | None = None
+                    if pass_name == "cold" and len(per_image) == 1:
+                        vram_cap = _query_vram(args.api_url)
+                    manifest.setdefault("images", []).append(
+                        {
+                            "key": key,
+                            "variant": name,
+                            "te_name": te_name,
+                            "loader": loader_kind,
+                            "pass": pass_name,
+                            "gen_seconds": round(dt, 2),
+                            "perf": perf,
+                            "vram": vram_cap,
+                            "category": pr["category"],
+                            "label": pr.get("label", ""),
+                            "prompt": pr["text"],
+                            "checks": pr.get("checks", []),
+                            "path": str(out_path),
+                            "seed": seed,
+                        }
+                    )
+                    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+                    manifest_path.write_text(json.dumps(manifest, indent=2))
+                if per_image:
+                    timing["passes"][pass_name] = {
+                        "first_image_seconds": round(per_image[0], 2),
+                        "mean_image_seconds": round(sum(per_image) / len(per_image), 2),
+                        "n_images": len(per_image),
+                        "pass_wall_seconds": round(time.monotonic() - pass_t0, 2),
                     }
-                )
-                manifest_path.parent.mkdir(parents=True, exist_ok=True)
-                manifest_path.write_text(json.dumps(manifest, indent=2))
-            timing["passes"][pass_name] = {
-                "first_image_seconds": round(per_image[0], 2) if per_image else None,
-                "mean_image_seconds": round(sum(per_image) / len(per_image), 2) if per_image else None,
-                "n_images": len(per_image),
-            }
-            timing["passes"][pass_name]["pass_wall_seconds"] = round(time.monotonic() - pass_t0, 2)
-        manifest.setdefault("timing", {})[name] = timing
+        # Merge into existing timing (top-up runs partial passes — never clobber)
+        existing = manifest.setdefault("timing", {}).get(name)
+        if existing and existing.get("passes"):
+            existing["passes"].update(timing["passes"])
+        else:
+            manifest["timing"][name] = timing
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(json.dumps(manifest, indent=2))
-        cold = timing["passes"]["cold"]["first_image_seconds"]
-        warm = timing["passes"]["warm"]["first_image_seconds"]
-        log.info("Timing %s: cold first-image %ss, warm first-image %ss", name, cold, warm)
+        warm_first = timing["passes"].get("warm", {}).get("first_image_seconds")
+        if warm_first:
+            log.info("Timing %s: warm first-image %ss (this run)", name, warm_first)
 
     log.info("=== A/B generation complete: %d images ===", len(manifest.get("images", [])))
 

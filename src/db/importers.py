@@ -672,7 +672,7 @@ def import_te_img_metrics(
         is_anchor = f.name == "tebench_img_anchors.json"
         variant = "__anchor__" if is_anchor else str(data.get("variant", f.stem.replace("tebench_img_", "", 1)))
         reference = str(data.get("reference", ""))
-        buckets: list[tuple[str, dict]] = (
+        buckets: list[tuple[str, dict[str, Any]]] = (
             [(k, data[k]) for k in ("seed_change", "floor_band") if k in data]
             if is_anchor
             else [(k, data[k]) for k in ("te_swap", "cross_prompt") if k in data]
@@ -729,6 +729,120 @@ def import_te_img_metrics(
     conn.commit()
     if count:
         log.info("Imported %d te_img_metrics rows from %s", count, results_dir)
+    return count
+
+
+def import_te_controls(
+    conn: sqlite3.Connection,
+    comparison_name: str,
+    results_dir: Path,
+) -> int:
+    """Import the Phase-4 control battery (tebench_controls.json) into te_controls."""
+    f = results_dir / "tebench_controls.json"
+    if not f.exists():
+        return 0
+    data = json.loads(f.read_text())
+    count = 0
+    for cond, payload in data.get("conditions", {}).items():
+        s = payload.get("summary", {})
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO te_controls
+                   (comparison, condition, mean_final_latent_div, noise_control_final,
+                    div_control_ratio, result_path)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    comparison_name,
+                    cond,
+                    float(s.get("mean_final_latent_div", 0.0)),
+                    s.get("noise_control_final"),
+                    s.get("div_control_ratio"),
+                    str(f),
+                ),
+            )
+            count += 1
+        except (sqlite3.Error, ValueError, TypeError) as exc:
+            log.warning("Failed to import te_controls row %s: %s", cond, exc)
+    conn.commit()
+    if count:
+        log.info("Imported %d te_controls rows", count)
+    return count
+
+
+def import_te_attention(
+    conn: sqlite3.Connection,
+    comparison_name: str,
+    results_dir: Path,
+) -> int:
+    """Import Phase-4 attention readout files (tebench_attention_*.json)."""
+    files = sorted(results_dir.glob("tebench_attention_*.json"))
+    count = 0
+    for f in files:
+        try:
+            d = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Failed to parse %s: %s", f, exc)
+            continue
+        per_layer = d.get("jsd_per_layer", {})
+        peak_layer = max(per_layer, key=lambda k: per_layer[k], default=None)
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO te_attention
+                   (comparison, variant, jsd_mean_all, jsd_peak_layer, jsd_peak_value, n_layers, result_path)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    comparison_name,
+                    str(d.get("variant_name", f.stem.replace("tebench_attention_", ""))),
+                    float(d.get("jsd_mean_all", 0.0)),
+                    int(peak_layer) if peak_layer is not None else None,
+                    per_layer.get(peak_layer) if peak_layer is not None else None,
+                    len(per_layer),
+                    str(f),
+                ),
+            )
+            count += 1
+        except (sqlite3.Error, ValueError, TypeError) as exc:
+            log.warning("Failed to import te_attention row from %s: %s", f, exc)
+    conn.commit()
+    if count:
+        log.info("Imported %d te_attention rows", count)
+    return count
+
+
+def import_te_discriminability(
+    conn: sqlite3.Connection,
+    comparison_name: str,
+    results_dir: Path,
+) -> int:
+    """Import Phase-4 discriminability files (tebench_discriminability_*.json)."""
+    files = sorted(results_dir.glob("tebench_discriminability_*.json"))
+    count = 0
+    for f in files:
+        try:
+            d = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Failed to parse %s: %s", f, exc)
+            continue
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO te_discriminability
+                   (comparison, variant, base_spread, variant_spread, spread_ratio, result_path)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    comparison_name,
+                    str(d.get("variant_name", f.stem.replace("tebench_discriminability_", ""))),
+                    float(d.get("base_spread", 0.0)),
+                    float(d.get("variant_spread", 0.0)),
+                    float(d.get("spread_ratio", 0.0)),
+                    str(f),
+                ),
+            )
+            count += 1
+        except (sqlite3.Error, ValueError, TypeError) as exc:
+            log.warning("Failed to import te_discriminability row from %s: %s", f, exc)
+    conn.commit()
+    if count:
+        log.info("Imported %d te_discriminability rows", count)
     return count
 
 
@@ -811,11 +925,20 @@ def import_all_results(
     else:
         log.info("No A/B image manifest at %s", ab_manifest)
 
-    # Phase-4 image-space metrics (LPIPS ladder + CLIP + SSIM/PSNR)
+    # Phase-4 battery: image metrics + controls + attention + discriminability
     if te_dir.exists():
         img_n = import_te_img_metrics(conn, comparison_name, te_dir)
         if img_n:
             counts["te_img_metrics"] = img_n
+        ctrl_n = import_te_controls(conn, comparison_name, te_dir)
+        if ctrl_n:
+            counts["te_controls"] = ctrl_n
+        attn_n = import_te_attention(conn, comparison_name, te_dir)
+        if attn_n:
+            counts["te_attention"] = attn_n
+        disc_n = import_te_discriminability(conn, comparison_name, te_dir)
+        if disc_n:
+            counts["te_discriminability"] = disc_n
 
     log.info("Import complete for %s: %s", comparison_name, counts)
     return counts

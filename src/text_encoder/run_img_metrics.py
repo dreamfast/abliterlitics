@@ -29,6 +29,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import numpy
 import torch
 from PIL import Image
 
@@ -61,48 +62,91 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+_REPO_ROOTS = (Path("/app"), Path.cwd())
+
+
+def _resolve_path(p: str, results_dir: Path) -> Path:
+    """Resolve a manifest image path across writer conventions.
+
+    The manifest mixes styles across runs: repo-relative ("comparisons/..."),
+    absolute container ("/results/..."), and absolute host paths. Try, in
+    order: as-is; under each repo root; the ab_images-relative tail under the
+    results dir.
+    """
+    cand = Path(p)
+    if cand.exists():
+        return cand
+    for root in _REPO_ROOTS:
+        joined = root / p.lstrip("/")
+        if joined.exists():
+            return joined
+    if "ab_images/" in p:
+        tail = p.split("ab_images/", 1)[1]
+        under_results = results_dir / "ab_images" / tail
+        if under_results.exists():
+            return under_results
+    return cand  # let the caller's open() raise the real error
+
+
 @lru_cache(maxsize=256)
-def _load_image(path: str) -> tuple[torch.Tensor, Any]:
+def _load_image(path: str, _results_dir_str: str = "") -> tuple[torch.Tensor, Any]:
     """Load an image once -> ([1,3,H,W] in [0,1], PIL.Image).
 
     Cached: each image participates in ~2-3 pairs; 256 slots × ~12MB ≈ 3GB.
     """
-    pil = Image.open(path).convert("RGB")
-    t = torch.from_numpy(torch.asarray(pil, dtype=torch.float32).permute(2, 0, 1) / 255.0).unsqueeze(0)
+    resolved = _resolve_path(path, Path(_results_dir_str)) if _results_dir_str else Path(path)
+    pil = Image.open(resolved).convert("RGB")
+    arr = numpy.asarray(pil, dtype=numpy.float32) / 255.0
+    t = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
     return t, pil
+
+
+class _CachedClipEncoder:
+    """Per-path CLIP preprocessing + embedding cache (the reference image would
+    otherwise be re-encoded once per variant — 27x waste)."""
+
+    def __init__(self, meter: CLIPMeter) -> None:
+        self.meter = meter
+        self._cache: dict[str, torch.Tensor] = {}
+
+    def embedding(self, path: str, pil: Any) -> torch.Tensor:
+        emb = self._cache.get(path)
+        if emb is None:
+            emb = self.meter.encode_image(self.meter.preprocess_pil(pil))
+            self._cache[path] = emb
+        return emb
+
+    def distance(self, path_a: str, pil_a: Any, path_b: str, pil_b: Any) -> float:
+        ea = self.embedding(path_a, pil_a)
+        eb = self.embedding(path_b, pil_b)
+        return float(1.0 - (ea @ eb.T).squeeze().item())
 
 
 def _score_pairs(
     pairs: list[Any],
     kind: str,
     lpips_meter: LPIPSMeter,
-    clip_meter: CLIPMeter | None,
+    clip_cache: _CachedClipEncoder | None,
+    results_dir: Path,
     limit: int = 0,
 ) -> PairScores:
     """Load + score a pair list into a PairScores bucket."""
     scores = PairScores(kind=kind)
     selected = pairs if not limit else pairs[:limit]
+    rs = str(results_dir)
     for pair in selected:
         try:
-            t_a, pil_a = _load_image(pair.path_a)
-            t_b, pil_b = _load_image(pair.path_b)
+            t_a, pil_a = _load_image(pair.path_a, rs)
+            t_b, pil_b = _load_image(pair.path_b, rs)
         except (OSError, ValueError) as exc:
             log.warning("failed to load pair %s/%s: %s", pair.path_a, pair.path_b, exc)
             continue
-        m = {"lpips": 0.0, "psnr_db": 0.0, "ssim": 0.0}
-        m["lpips"] = lpips_meter.score(t_a * 2.0 - 1.0, t_b * 2.0 - 1.0)
-        m["psnr_db"] = psnr(t_a, t_b)
-        m["ssim"] = ssim(t_a, t_b)
-        if clip_meter is not None:
-            m["clip_img_dist"] = clip_meter.img_distance(
-                clip_meter.preprocess_pil(pil_a), clip_meter.preprocess_pil(pil_b)
-            )
         scores.pairs.append(pair)
-        scores.lpips.append(m["lpips"])
-        scores.psnr_db.append(m["psnr_db"])
-        scores.ssim_val.append(m["ssim"])
-        if "clip_img_dist" in m:
-            scores.clip_img_dist.append(m["clip_img_dist"])
+        scores.lpips.append(lpips_meter.score(t_a * 2.0 - 1.0, t_b * 2.0 - 1.0))
+        scores.psnr_db.append(psnr(t_a, t_b))
+        scores.ssim_val.append(ssim(t_a, t_b))
+        if clip_cache is not None:
+            scores.clip_img_dist.append(clip_cache.distance(pair.path_a, pil_a, pair.path_b, pil_b))
     return scores
 
 
@@ -159,8 +203,10 @@ def main() -> int:
     floor_pair = tuple(s.strip() for s in args.floor_pair.split(","))
     lpips_meter = LPIPSMeter(device=args.device)
     clip_meter: CLIPMeter | None = None
+    clip_cache: _CachedClipEncoder | None = None
     if not args.lpips_only:
         clip_meter = CLIPMeter(args.clip_model, args.clip_pretrained, device=args.device)
+        clip_cache = _CachedClipEncoder(clip_meter)
 
     # --- mine pairs -------------------------------------------------------
     from src.text_encoder.image_metrics import (
@@ -185,8 +231,8 @@ def main() -> int:
     t0 = time.monotonic()
 
     # --- score anchors (shared) -------------------------------------------
-    seed_bucket = _score_pairs(seed_change, "seed_change", lpips_meter, clip_meter, args.limit)
-    floor_bucket = _score_pairs(floor_band, "floor_band", lpips_meter, clip_meter, args.limit)
+    seed_bucket = _score_pairs(seed_change, "seed_change", lpips_meter, clip_cache, out_dir, args.limit)
+    floor_bucket = _score_pairs(floor_band, "floor_band", lpips_meter, clip_cache, out_dir, args.limit)
     anchors: dict[str, Any] = {
         "te_results_version": TE_RESULTS_VERSION,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -220,8 +266,8 @@ def main() -> int:
             if pair.label in vs:
                 continue
             try:
-                _, pil_a = _load_image(pair.path_a)
-                _, pil_b = _load_image(pair.path_b)
+                _, pil_a = _load_image(pair.path_a, str(out_dir))
+                _, pil_b = _load_image(pair.path_b, str(out_dir))
             except (OSError, ValueError) as exc:
                 log.warning("clip-score load failed %s: %s", pair.label, exc)
                 continue
@@ -239,8 +285,10 @@ def main() -> int:
 
     n_written = 0
     for variant in sorted(by_variant):
-        swap_bucket = _score_pairs(by_variant[variant], "te_swap", lpips_meter, clip_meter, args.limit)
-        cp_bucket = _score_pairs(cp_by_variant.get(variant, []), "cross_prompt", lpips_meter, clip_meter, args.limit)
+        swap_bucket = _score_pairs(by_variant[variant], "te_swap", lpips_meter, clip_cache, out_dir, args.limit)
+        cp_bucket = _score_pairs(
+            cp_by_variant.get(variant, []), "cross_prompt", lpips_meter, clip_cache, out_dir, args.limit
+        )
         swap_json = _bucket_to_json(swap_bucket, args.n_boot)
         cp_json = _bucket_to_json(cp_bucket, args.n_boot)
         ratios: dict[str, float | None] = {}

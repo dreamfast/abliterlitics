@@ -303,6 +303,49 @@ CREATE TABLE IF NOT EXISTS te_img_metrics (
 CREATE INDEX IF NOT EXISTS idx_te_img_comp
     ON te_img_metrics(comparison, variant);
 
+-- Phase-4 control battery (tebench_controls.json): counterfactual conditioning
+-- through the DiT harness. One row per condition.
+CREATE TABLE IF NOT EXISTS te_controls (
+    comparison     TEXT NOT NULL,
+    condition      TEXT NOT NULL,          -- noise_1x | rank1_1x | taboo_1x | heretic_a1 | order_shuffle | embed_shuffle | null
+    mean_final_latent_div REAL NOT NULL,
+    noise_control_final    REAL,
+    div_control_ratio      REAL,
+    result_path    TEXT,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (comparison, condition),
+    FOREIGN KEY (comparison) REFERENCES comparisons(name) ON DELETE CASCADE
+);
+
+-- Phase-4 attention readout (tebench_attention_<variant>.json): what the DiT
+-- reads from conditioning. One row per variant (aggregate metrics).
+CREATE TABLE IF NOT EXISTS te_attention (
+    comparison     TEXT NOT NULL,
+    variant        TEXT NOT NULL,
+    jsd_mean_all   REAL NOT NULL,
+    jsd_peak_layer INTEGER,
+    jsd_peak_value REAL,
+    n_layers       INTEGER,
+    result_path    TEXT,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (comparison, variant),
+    FOREIGN KEY (comparison) REFERENCES comparisons(name) ON DELETE CASCADE
+);
+
+-- Phase-4 discriminability (tebench_discriminability_<variant>.json):
+-- inter-prompt final-latent spread per TE (semantic-collapse detector).
+CREATE TABLE IF NOT EXISTS te_discriminability (
+    comparison     TEXT NOT NULL,
+    variant        TEXT NOT NULL,
+    base_spread    REAL NOT NULL,
+    variant_spread REAL NOT NULL,
+    spread_ratio   REAL NOT NULL,
+    result_path    TEXT,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (comparison, variant),
+    FOREIGN KEY (comparison) REFERENCES comparisons(name) ON DELETE CASCADE
+);
+
 -- ============================================================
 -- Views: Latest classification per response
 -- ============================================================
