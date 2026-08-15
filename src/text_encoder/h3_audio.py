@@ -49,6 +49,18 @@ def _ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
+def _candidates(transcript: str) -> list[str]:
+    """Transcript tokens with possessive 's stripped ("tomorrow's" -> "tomorrow").
+
+    Whisper frequently attaches possessives that the script writes bare;
+    without stripping, target 'tomorrow' vs token "tomorrow's" scores 0.889
+    and gets miscounted as mispronounced (observed identically on both arms
+    in the real battery — a scoring artifact, not audio damage).
+    """
+    toks = tokenize(transcript)
+    return [t[:-2] if t.endswith("'s") else t for t in toks]
+
+
 def align_target_occurrences(target: str, script: str, transcript: str) -> list[dict[str, Any]]:
     """Align EVERY scripted occurrence of the target to distinct transcript tokens.
 
@@ -63,7 +75,7 @@ def align_target_occurrences(target: str, script: str, transcript: str) -> list[
     n_occ = tokenize(script).count(target.lower())
     if n_occ == 0:
         n_occ = 1  # defensive: score at least once even on script mismatch
-    pool = tokenize(transcript)
+    pool = _candidates(transcript)
     out: list[dict[str, Any]] = []
     for _ in range(n_occ):
         best_i, best_r = -1, 0.0
@@ -139,7 +151,7 @@ def align_target(target: str, transcript: str) -> dict[str, Any]:
       matched (best transcript token or ""), ratio,
       syllables_target, syllables_rendered, syllable_fidelity
     """
-    toks = tokenize(transcript)
+    toks = _candidates(transcript)
     best, best_r = "", 0.0
     for t in toks:
         r = _ratio(target.lower(), t)

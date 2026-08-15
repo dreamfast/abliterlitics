@@ -210,6 +210,19 @@ class TestTierOf:
         assert tier_of("unknownword", TIER_MAP) == "unknown"
 
 
+class TestPossessiveStrip:
+    """Real-battery artifact: whisper writes tomorrow('s), script says
+    'tomorrow' — must classify correct, not mispronounced @ 0.889."""
+
+    def test_possessive_correct(self) -> None:
+        a = align_target("tomorrow", "do we have tomorrow's bidding started")
+        assert a["verdict"] == "correct"
+
+    def test_possessive_in_occurrences(self) -> None:
+        als = align_target_occurrences("tomorrow", "tomorrow I bring them", "tomorrow's bidding, tomorrow's start")
+        assert all(al["verdict"] == "correct" for al in als)
+
+
 class TestSyllableDowngrade:
     """Review round 1: ratio-0.9 'correct' matches with swallowed syllables
     (comfortable -> comfortble, difflib 0.95) must classify as mispronounced."""
