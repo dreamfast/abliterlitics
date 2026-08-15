@@ -1,0 +1,136 @@
+# H3 AUDIO battery prompts (the headline test — p-e-w's "inconceivable" claim).
+# 16 scripted spoken lines; each embeds 1-3 target words from three difficulty
+# tiers. Key rare words repeat within a line to raise per-word sample count.
+# "script" = the exact intended spoken words (ground truth for ASR scoring).
+# "targets" = words scored for fidelity (correct / mispronounced / dropped).
+# Tiers: rare_polysyllabic (the p-e-w black-cat tier), common_polysyllabic,
+# monosyllabic (control — should be inside noise for ANY encoder damage).
+prompts:
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, 35mm anamorphic. A single medium shot in a dim university lecture hall: a middle-aged male professor (S1), warm gravelly timbre, adjusts his glasses at the chalkboard, looks into camera and says: <d>[English] It is utterly inconceivable, colleagues, truly inconceivable, that the committee rejected our proposal again.</d> His shoulders drop; he taps the chalk twice.
+      overall_soundscape: A low ventilation hum; a distant chair creak; the double tap of chalk on slate; his breath between words.
+      non_diegetic_music: N/A
+    category: speech
+    label: prof_inconceivable
+    script: "It is utterly inconceivable, colleagues, truly inconceivable, that the committee rejected our proposal again."
+    targets: [inconceivable]
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, handheld documentary. A young founder (S1), bright energetic voice, stands in a sunlit co-working space, gesturing at a whiteboard, and says: <d>[English] Our entrepreneurial vision is what makes this startup special, a truly entrepreneurial leap of faith.</d> She smiles and caps her marker.
+      overall_soundscape: Ambient café murmur; marker squeak on the whiteboard; a laptop keyboard nearby.
+      non_diegetic_music: N/A
+    category: speech
+    label: founder_entrepreneurial
+    script: "Our entrepreneurial vision is what makes this startup special, a truly entrepreneurial leap of faith."
+    targets: [entrepreneurial]
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, IMAX clarity. An art critic (S1), measured British accent, walks a gallery wall in a slow tracking shot, turns to camera and says: <d>[English] The juxtaposition of rough steel and silk here — this juxtaposition is the whole point of the piece.</d> He nods once.
+      overall_soundscape: Quiet room tone; soft footsteps on polished concrete; a distant HVAC whisper.
+      non_diegetic_music: N/A
+    category: speech
+    label: critic_juxtaposition
+    script: "The juxtaposition of rough steel and silk here — this juxtaposition is the whole point of the piece."
+    targets: [juxtaposition]
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, 35mm anamorphic. A weathered mountaineer (S1), low raspy voice, sits on a rock at base camp, steam rising from a mug, and says: <d>[English] The climb was extraordinarily hard, extraordinarily hard, and I would do it again tomorrow.</d> He sips.
+      overall_soundscape: Wind flapping tent fabric; a stove hissing; ice shifting in the mug.
+      non_diegetic_music: N/A
+    category: speech
+    label: climber_extraordinarily
+    script: "The climb was extraordinarily hard, extraordinarily hard, and I would do it again tomorrow."
+    targets: [extraordinarily]
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, 90s broadcast tape. A novelist (S1), warm mid-Atlantic accent, in a book-lined study, leans toward the camera and says: <d>[English] Every character has an idiosyncratic habit, one small idiosyncratic detail you never forget.</d> She closes her notebook.
+      overall_soundscape: A log settling in the fireplace; page rustle; a clock ticking.
+      non_diegetic_music: N/A
+    category: speech
+    label: novelist_idiosyncratic
+    script: "Every character has an idiosyncratic habit, one small idiosyncratic detail you never forget."
+    targets: [idiosyncratic]
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, bleach-bypass noir. A physician (S1), calm precise tone, under hospital corridor lights, looks into camera and says: <d>[English] This drug has a rare susceptibility profile, a susceptibility we must monitor carefully.</d> She walks on.
+      overall_soundscape: Corridor hum; a distant pager; squeaking sneakers; a door swinging.
+      non_diegetic_music: N/A
+    category: speech
+    label: doctor_susceptibility
+    script: "This drug has a rare susceptibility profile, a susceptibility we must monitor carefully."
+    targets: [susceptibility]
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, golden hour. A grandfather (S1), soft worn voice, on a porch swing with a child out of frame, says: <d>[English] This beautiful evening, this beautiful light — try to remember it, will you remember it for me?</d> The swing creaks.
+      overall_soundscape: Crickets; the porch swing's rhythmic creak; a warm breeze in the leaves.
+      non_diegetic_music: N/A
+    category: speech
+    label: porch_beautiful_remember
+    script: "This beautiful evening, this beautiful light — try to remember it, will you remember it for me?"
+    targets: [beautiful, remember]
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, 35mm anamorphic. A baker (S1), cheerful, flour-dusted in a morning bakery, says: <d>[English] Tomorrow the new oven arrives — tomorrow, and not a day sooner, I hope it is comfortable to work beside.</d> She kneads dough.
+      overall_soundscape: A radio playing faintly behind the counter; dough thumps; oven fans.
+      non_diegetic_music: N/A
+    category: speech
+    label: baker_tomorrow_comfortable
+    script: "Tomorrow the new oven arrives — tomorrow, and not a day sooner, I hope it is comfortable to work beside."
+    targets: [tomorrow, comfortable]
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, handheld documentary. A coach (S1), firm encouraging voice, at a chalkboard in a gym, says: <d>[English] This match is important, remember, important — and together we are stronger, together we finish it.</d> The team claps.
+      overall_soundscape: Echoing gym acoustics; ball bounces; claps and shoe squeaks.
+      non_diegetic_music: N/A
+    category: speech
+    label: coach_important_together
+    script: "This match is important, remember, important — and together we are stronger, together we finish it."
+    targets: [important, together]
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, IMAX clarity. A radio host (S1), smooth baritone, leaning into a large studio microphone, says: <d>[English] Tomorrow morning look for the red cat sitting on the bridge — the red cat, listeners, on the steel bridge.</d> He slides a fader.
+      overall_soundscape: Studio silence under his voice; the fader's soft click; headphone bleed.
+      non_diegetic_music: N/A
+    category: speech
+    label: radio_red_cat_bridge
+    script: "Tomorrow morning look for the red cat sitting on the bridge — the red cat, listeners, on the steel bridge."
+    targets: [red, cat, bridge]
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, 90s broadcast tape. A night-shift engineer (S1), tired dry voice, in a control room lit by dials, says: <d>[English] The moon is over the box cars now, the moon high over every red box of them.</d> He leans back.
+      overall_soundscape: Equipment hum; a relay clicking; a distant train horn.
+      non_diegetic_music: N/A
+    category: speech
+    label: engineer_moon_box
+    script: "The moon is over the box cars now, the moon high over every red box of them."
+    targets: [moon, box, red]
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, handheld documentary. A blacksmith (S1), deep matter-of-fact voice, wipes soot from his hands at the anvil and says: <d>[English] Good steel sings when it is hot — hear the steel, that clear ring, no red in the glow.</d> He strikes once.
+      overall_soundscape: Forge roar fading; the anvil ring; tools clinking on the bench.
+      non_diegetic_music: N/A
+    category: speech
+    label: smith_steel_red
+    script: "Good steel sings when it is hot — hear the steel, that clear ring, no red in the glow."
+    targets: [steel, red]
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, 35mm anamorphic. A young librarian (S1), quiet careful voice, at a reading desk under a green lamp, says: <d>[English] The inconceivable thing about this inconceivable old map is how beautiful the moon-drawn coastline is.</d> She traces it with one finger.
+      overall_soundscape: Page turns; the lamp's faint buzz; a hushed reading room.
+      non_diegetic_music: N/A
+    category: speech
+    label: librarian_inconceivable_mixed
+    script: "The inconceivable thing about this inconceivable old map is how beautiful the moon-drawn coastline is."
+    targets: [inconceivable, beautiful, moon]
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, golden hour. A market vendor (S1), booming friendly voice, stacking fruit under an awning, says: <d>[English] Tomorrow I bring the beautiful pomegranates, and you remember — the cat keeps the box warm for them!</d> He laughs.
+      overall_soundscape: Market bustle; crates sliding; his laugh; sparrows.
+      non_diegetic_music: N/A
+    category: speech
+    label: vendor_mixed_common
+    script: "Tomorrow I bring the beautiful pomegranates, and you remember — the cat keeps the box warm for them!"
+    targets: [tomorrow, beautiful, remember, cat, box]
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, IMAX clarity. A diver (S1), tinny through a mask mic, treading water at a reef edge, says: <d>[English] Down there the coral walls are extraordinarily colored, extraordinarily alive — follow my red float line back.</d> She checks her gauge.
+      overall_soundscape: Water lapping; regulator breaths; a boat engine idling far off.
+      non_diegetic_music: N/A
+    category: speech
+    label: diver_extraordinarily_red
+    script: "Down there the coral walls are extraordinarily colored, extraordinarily alive — follow my red float line back."
+    targets: [extraordinarily, red]
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, 35mm anamorphic with film grain. An auctioneer (S1), rapid clipped voice, at a podium under a spotlight, says: <d>[English] Lot forty: an idiosyncratic bronze cat, an idiosyncratic piece, important collectors, do we have tomorrow's bidding started?</d> The gavel raps.
+      overall_soundscape: Murmured bids; the gavel rap; program pages flipping.
+      non_diegetic_music: N/A
+    category: speech
+    label: auctioneer_mixed_tiers
+    script: "Lot forty: an idiosyncratic bronze cat, an idiosyncratic piece, important collectors, do we have tomorrow's bidding started?"
+    targets: [idiosyncratic, cat, important, tomorrow]

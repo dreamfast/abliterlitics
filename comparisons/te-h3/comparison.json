@@ -22,7 +22,9 @@
     },
     "heretic": {
       "path": "models/base_stub",
-      "display_name": "Qwen3-VL-32B H3 Heretic (user-supplied, pending)",
+      "display_name": "Qwen3-VL-32B H3 Ultra Uncensored Heretic INT8 ConvRot",
+      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3vl_32b_h3_ultra_uncensored_heretic_int8_convrot.safetensors",
+      "te_reference": "base",
       "skip_kl": true,
       "skip_lm_eval": true,
       "skip_harmbench": true,
@@ -37,7 +39,7 @@
       "comfyui_path": "/home/maxx/comfyui-docker/comfyui",
       "device": "cpu",
       "n_boot": 1000,
-      "prompt_suite": "prompts/te_h3_suite.yaml",
+      "prompt_suite": "prompts/te_h3_audio_prompts.yaml",
       "whisper_model": "openai/whisper-large-v3",
       "frame_sample_n": 8
     }
