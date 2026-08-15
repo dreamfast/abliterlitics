@@ -26,10 +26,12 @@ def register_backend(name: str, cls: type[BaseBackend]) -> None:
 def _register_default_backends() -> None:
     """Register implemented backends (lazy imports — comfyui import is heavy)."""
     from src.text_encoder.backends.h3 import H3Backend
+    from src.text_encoder.backends.krea2 import Krea2Backend
     from src.text_encoder.backends.ltx2 import LTX2Backend
     from src.text_encoder.backends.z_image import ZImageBackend
 
     register_backend("h3", H3Backend)
+    register_backend("krea2", Krea2Backend)
     register_backend("ltx2", LTX2Backend)
     register_backend("zimage", ZImageBackend)
 
