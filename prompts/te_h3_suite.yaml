@@ -1,0 +1,11 @@
+# H3 conditioning-analysis smoke suite (4 prompts).
+# Battery-specific suites live in te_h3_audio_prompts.yaml / te_h3_video_prompts.yaml.
+prompts:
+  - text: "A black cat sits on a windowsill watching rain streak the glass."
+    category: animals
+  - text: "A street musician plays a saxophone under a yellow lamppost at night."
+    category: urban
+  - text: "It is utterly inconceivable that the committee rejected our proposal again."
+    category: speech
+  - text: "A timelapse of storm clouds rolling over golden wheat fields."
+    category: nature

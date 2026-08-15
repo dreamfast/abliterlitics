@@ -2,7 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Abliterlitics Comparison Configuration",
   "type": "object",
-  "required": ["name", "base", "variants"],
+  "required": [
+    "name",
+    "base",
+    "variants"
+  ],
   "additionalProperties": false,
   "properties": {
     "name": {
@@ -20,7 +24,9 @@
       "patternProperties": {
         "^[a-z0-9][a-z0-9_-]*$": {
           "type": "object",
-          "required": ["path"],
+          "required": [
+            "path"
+          ],
           "additionalProperties": false,
           "properties": {
             "path": {
@@ -74,16 +80,27 @@
       "additionalProperties": false,
       "properties": {
         "gguf_dir": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Directory for GGUF files. null = auto-convert when needed."
         },
         "tokenizer_dir": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Tokenizer directory for lm-eval. null = use base model."
         },
         "inference_backend": {
           "type": "string",
-          "enum": ["vllm", "llamacpp", "ik_llamacpp", "auto"],
+          "enum": [
+            "vllm",
+            "llamacpp",
+            "ik_llamacpp",
+            "auto"
+          ],
           "default": "auto",
           "description": "Inference backend for benchmarks. 'auto' selects based on model size and GPU VRAM."
         },
@@ -112,7 +129,10 @@
           "description": "Max generation tokens for GSM8K (Phase 2). Reasoning models need ~5K thinking + ~2K answer room. Auto-capped to max_model_len - 1024 by runner."
         },
         "lm_eval_gpu_util": {
-          "type": ["number", "string"],
+          "type": [
+            "number",
+            "string"
+          ],
           "default": "",
           "description": "vLLM gpu_memory_utilization override (0-1). Empty string = use runner default."
         },
@@ -125,7 +145,10 @@
           "description": "Docker image override for weights/kl forensics stages. Defaults to abliterlitics-forensics:1.0.0."
         },
         "reasoning_parser": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "default": null,
           "description": "Override reasoning parser for vLLM. null = auto-detect from model config.json. Set to 'none' to disable."
         },
@@ -144,7 +167,12 @@
           "properties": {
             "backend": {
               "type": "string",
-              "enum": ["zimage", "ltx2", "h3", "ltx25"],
+              "enum": [
+                "zimage",
+                "ltx2",
+                "h3",
+                "ltx25"
+              ],
               "description": "Which text-encoder backend to use."
             },
             "base_te_file": {
@@ -164,10 +192,22 @@
               "default": "/home/maxx/comfyui-docker/comfyui",
               "description": "Path to the ComfyUI repo (contains comfy/). Mount target inside Docker: /comfyui."
             },
-            "max_length": {"type": "integer", "default": 1024},
-            "device": {"type": "string", "default": "cpu"},
-            "n_boot": {"type": "integer", "default": 1000},
-            "prompt_suite": {"type": "string", "default": "default"},
+            "max_length": {
+              "type": "integer",
+              "default": 1024
+            },
+            "device": {
+              "type": "string",
+              "default": "cpu"
+            },
+            "n_boot": {
+              "type": "integer",
+              "default": 1000
+            },
+            "prompt_suite": {
+              "type": "string",
+              "default": "default"
+            },
             "img_clip_model": {
               "type": "string",
               "default": "ViT-L-14",
@@ -180,11 +220,13 @@
             },
             "img_reference": {
               "type": "string",
-              "description": "Reference variant for image-space TE-swap pairs — a near-lossless base quant (e.g. base_int8). Defaults to base_int8."
+              "description": "Reference variant for image-space TE-swap pairs \u2014 a near-lossless base quant (e.g. base_int8). Defaults to base_int8."
             },
             "img_floor_pair": {
               "type": "array",
-              "items": {"type": "string"},
+              "items": {
+                "type": "string"
+              },
               "minItems": 2,
               "maxItems": 2,
               "description": "Two near-lossless base quants defining the quant-floor band in image space. Defaults to [base_int8, base_fp8]."
@@ -192,6 +234,15 @@
             "te_image": {
               "type": "string",
               "description": "Docker image override for text-encoder stage. Defaults to abliterlitics-te:1.0.0."
+            },
+            "whisper_model": {
+              "type": "string",
+              "description": "Whisper ASR model (HF id) for the H3 audio battery."
+            },
+            "frame_sample_n": {
+              "type": "integer",
+              "minimum": 2,
+              "description": "Frames sampled per clip for H3 video frame-LPIPS/CLIP metrics."
             }
           }
         }

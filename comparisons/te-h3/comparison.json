@@ -1,0 +1,45 @@
+{
+  "name": "te-h3",
+  "base": "models/base_stub",
+  "variants": {
+    "base": {
+      "path": "models/base_stub",
+      "display_name": "Qwen3-VL-32B H3 INT8 ConvRot (base)",
+      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+      "skip_kl": true,
+      "skip_lm_eval": true,
+      "skip_harmbench": true,
+      "skip_weight": true
+    },
+    "base_nvfp4": {
+      "path": "models/base_stub",
+      "display_name": "Qwen3-VL-32B H3 NVFP4 AWQ (stand-in smoke arm)",
+      "te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "skip_kl": true,
+      "skip_lm_eval": true,
+      "skip_harmbench": true,
+      "skip_weight": true
+    },
+    "heretic": {
+      "path": "models/base_stub",
+      "display_name": "Qwen3-VL-32B H3 Heretic (user-supplied, pending)",
+      "skip_kl": true,
+      "skip_lm_eval": true,
+      "skip_harmbench": true,
+      "skip_weight": true
+    }
+  },
+  "settings": {
+    "tebench": {
+      "backend": "h3",
+      "base_te_file": "/home/maxx/extra/comfyui-models/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+      "dit_file": "/home/maxx/extra/comfyui-models/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+      "comfyui_path": "/home/maxx/comfyui-docker/comfyui",
+      "device": "cpu",
+      "n_boot": 1000,
+      "prompt_suite": "prompts/te_h3_suite.yaml",
+      "whisper_model": "openai/whisper-large-v3",
+      "frame_sample_n": 8
+    }
+  }
+}
