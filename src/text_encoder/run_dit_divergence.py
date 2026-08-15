@@ -52,17 +52,26 @@ def parse_args() -> argparse.Namespace:
 
 
 def _load_consumed_from_cache(
-    cache_dir: Path, te_file: str, device: str, ctx: str, prompts: list[str], categories: list[str]
+    cache_dir: Path,
+    te_file: str,
+    device: str,
+    ctx: str,
+    prompts: list[str],
+    categories: list[str],
+    suite_path: str = "/prompts/te_suite.yaml",
 ) -> list[torch.Tensor]:
     """Per-prompt consumed_hidden [L, 2560] for the sampled prompts.
 
     The cache is keyed by the FULL suite hash (from run_analysis), so load
     the full artifact and slice to the sampled prompts by prompt text.
+    ``suite_path`` must match the suite the artifacts were cached with
+    (run_analysis --prompts); the A/B stress suite is a valid choice — its
+    {prompts: [...]} layout is accepted by load_suite.
     """
     from src.text_encoder.cache import WILDCARD_DTYPE, cache_key, load_artifact
     from src.text_encoder.suite import load_suite, suite_hash
 
-    full_prompts, _full_cats = load_suite("/prompts/te_suite.yaml")
+    full_prompts, _full_cats = load_suite(suite_path)
     p_hash = suite_hash(full_prompts, _full_cats)
     key = cache_key(te_file, p_hash, WILDCARD_DTYPE, device, "raw_hidden", "orig", context=ctx)
     art = load_artifact(cache_dir, key)

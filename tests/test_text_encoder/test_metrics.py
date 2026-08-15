@@ -269,8 +269,11 @@ class TestCkaRbf:
     def test_too_few_samples(self) -> None:
         x = torch.randn(3, 32)
         y = torch.randn(3, 32)
-        with pytest.raises(ValueError, match="n >= 4"):
-            cka_rbf(x, y)
+        # n < 4 returns NaN (undefined) instead of raising — small stress-suite
+        # categories must not kill a full comparison run (phase-6 fix)
+        import math
+
+        assert math.isnan(cka_rbf(x, y))
 
     def test_symmetric(self) -> None:
         """cka_rbf(X, Y) == cka_rbf(Y, X)."""
@@ -404,8 +407,11 @@ class TestRankCorrelation:
     def test_too_few_samples(self) -> None:
         x = torch.randn(2, 8)
         y = torch.randn(2, 8)
-        with pytest.raises(ValueError, match="n >= 3"):
-            rank_correlation(x, y)
+        # n < 3 returns NaN (degenerate) instead of raising — stress-suite
+        # categories with 2 prompts must not kill a comparison run (phase-6)
+        import math
+
+        assert math.isnan(rank_correlation(x, y))
 
     def test_mismatched_n(self) -> None:
         x = torch.randn(50, 8)

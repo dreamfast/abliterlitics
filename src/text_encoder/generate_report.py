@@ -1133,38 +1133,69 @@ def _ab_section(
         return ""
 
     by_name = {v["name"]: v for v in variants}
-    # label -> variant -> img record (warm pass preferred - later in list)
-    images: dict[str, dict[str, dict[str, Any]]] = {}
+    # label -> variant -> seed -> img record (warm pass). Pairing is STRICTLY
+    # (label, seed)-matched: the Phase-4 top-up appended later seeds, and a
+    # last-record-wins selection silently cross-paired seeds across variants
+    # (seed-change LPIPS 0.516 = "different picture") — phase-6 fix, P12.
+    images: dict[str, dict[str, dict[int, dict[str, Any]]]] = {}
     for img in manifest.get("images", []):
+        if str(img.get("pass", "")) != "warm":
+            continue
         label = img.get("label") or "unlabeled"
-        slot = images.setdefault(label, {})
-        slot[img["variant"]] = img
+        images.setdefault(label, {}).setdefault(img["variant"], {})[int(img.get("seed", 42))] = img
 
     if not images:
         return ""
 
-    # ---- embed images + per-variant metric captions into JS data ----
-    img_data: dict[str, dict[str, str]] = {}
+    # Slider seeds: present for EVERY (label, variant) pair — the slider
+    # switches the SAME seed value on both panes (user spec). Cap at 3.
+    all_pairs: list[dict[int, dict[str, Any]]] = [v for lbl in images for v in images[lbl].values()]
+    slider_seeds: list[int] = []
+    if all_pairs:
+        common = set.intersection(*(set(v.keys()) for v in all_pairs))
+        slider_seeds = sorted(common)[:3]
+    default_seed = min(slider_seeds) if slider_seeds else 42
+
+    # ---- per-(label, variant, seed) image sources + captions ----
+    img_data: dict[str, dict[str, dict[str, str]]] = {}
     cap_data: dict[str, dict[str, str]] = {}
     all_variants: set[str] = set()
     for label, vars_ in images.items():
         img_data.setdefault(label, {})
         cap_data.setdefault(label, {})
-        for var_name in vars_:
-            img = vars_[var_name]
-            pth = Path(img.get("path", ""))
-            local = results_dir / "ab_images" / var_name / pth.name
-            if not pth.name or not local.exists():
+        for var_name, by_seed in vars_.items():
+            seed = by_seed.get(default_seed) or next(iter(by_seed.values()))
+            local = results_dir / "ab_images" / var_name / Path(seed.get("path", "")).name
+            if not local.exists():
                 continue
-            src = _ab_image_src(
-                local,
-                split_dir=(graphs_dir / "ab_images") if (split_images and graphs_dir) else None,
-                rel_name=f"{label}/{var_name}.webp",
-            )
-            if src is None:
-                continue
-            img_data[label][var_name] = src
-            cap_data[label][var_name] = _ab_caption_html(var_name, img, by_name, manifest, divergence)
+            img_data[label].setdefault(var_name, {})
+            cap_data[label].setdefault(var_name, "")
+            if cap_data[label][var_name] == "":
+                cap_data[label][var_name] = _ab_caption_html(var_name, seed, by_name, manifest, divergence)
+            for s in slider_seeds:
+                rec = by_seed.get(s)
+                if rec is None:
+                    continue
+                pth = Path(rec.get("path", ""))
+                slocal = results_dir / "ab_images" / var_name / pth.name
+                if not pth.name or not slocal.exists():
+                    continue
+                src = _ab_image_src(
+                    slocal,
+                    split_dir=(graphs_dir / "ab_images") if (split_images and graphs_dir) else None,
+                    rel_name=f"{label}/{var_name}_s{s}.webp",
+                )
+                if src is not None:
+                    img_data[label][var_name][str(s)] = src
+            if not img_data[label][var_name]:
+                fallback_seed = min(by_seed)
+                src = _ab_image_src(
+                    local,
+                    split_dir=(graphs_dir / "ab_images") if (split_images and graphs_dir) else None,
+                    rel_name=f"{label}/{var_name}_s{fallback_seed}.webp",
+                )
+                if src is not None:
+                    img_data[label][var_name][str(fallback_seed)] = src
             all_variants.add(var_name)
 
     labels = [lb for lb in images if img_data.get(lb)]
@@ -1173,19 +1204,36 @@ def _ab_section(
     var_list = sorted(all_variants)
     if "base" in var_list:  # base anchor first
         var_list = ["base"] + [v for v in var_list if v != "base"]
+
+    # Word-readout strips per (label, variant) from the attention battery
+    from src.text_encoder.phase4_report import (
+        build_gallery_word_data,
+        load_attention,
+        load_word_content,
+    )
+
+    word_data = build_gallery_word_data(load_attention(results_dir), load_word_content(results_dir))
+
     js_images = json.dumps(img_data)
     js_caps = json.dumps(cap_data)
     js_vars = json.dumps(var_list)
     js_labels = json.dumps(labels)
-    # Full prompt text + adherence checks per label (small-text panel)
-    prompt_texts: dict[str, str] = {
-        lb: next((img.get("prompt", "") for img in images[lb].values()), "") for lb in labels
-    }
-    prompt_checks: dict[str, list[str]] = {
-        lb: next((img.get("checks", []) for img in images[lb].values()), []) for lb in labels
-    }
-    js_prompts = json.dumps(prompt_texts)
-    js_checks = json.dumps(prompt_checks)
+    js_seeds = json.dumps(slider_seeds)
+    js_words = json.dumps(word_data)
+    # Full prompt text + adherence checks per label (small-text panel) — take
+    # the first variant's first-seed record (prompt text is seed-invariant)
+    prompt_texts: dict[str, str] = {}
+    prompt_checks: dict[str, list[str]] = {}
+    for lb in labels:
+        first_seed_map = next(iter(images[lb].values()))
+        first_rec = next(iter(first_seed_map.values()))
+        prompt_texts[lb] = str(first_rec.get("prompt", ""))
+        prompt_checks[lb] = list(first_rec.get("checks", []))
+    # </script>-breakout hardening for text payloads embedded in the inline
+    # <script> block (JSON-safe; js_caps is deliberately HTML and excluded)
+    js_words = js_words.replace("</", "<\\/")
+    js_prompts = json.dumps(prompt_texts).replace("</", "<\\/")
+    js_checks = json.dumps(prompt_checks).replace("</", "<\\/")
 
     # Aggregate server_gen_ms by te_cached state for ms-level precision.
     from collections import defaultdict as _dd
@@ -1258,15 +1306,30 @@ over warm images demonstrates generation-time consistency.</p>
         if split_images
         else ""
     )
+    seed_ui_note = (
+        " Use the seed slider to re-roll the comparison: the SAME seed value is "
+        "applied to both panes (same-seed pairing is strict; quantitative panels "
+        f"stay seed-{default_seed}-based)."
+        if len(slider_seeds) > 1
+        else ""
+    )
+    words_ui_note = (
+        " Under the prompt, the <b>token readout</b> strips show how much attention "
+        "each word receives from the DiT (blue bar = base encoder, orange = the "
+        "pane's encoder) — rendered for the SELECTED variants only. The strips are "
+        "conditioning-side measurements and do not change with the seed slider."
+        if word_data
+        else ""
+    )
     return f"""
 <h2 id="sec-ab">A/B image evidence: same seed, only the text encoder swapped {seed_badge}</h2>
 {split_note}
-<p>Paired generations from the fixed seed {manifest.get("seed", "?")} through the
-real ComfyUI stack (Z-Image Turbo, 9 steps, cfg 1, euler/simple). Pick two
-variants and hover over the image to reveal: <b>left of the divider = variant
-A, right = variant B</b>. Identical-looking images at very different divergence
-levels demonstrate DiT robustness; visible differences localize what the
-conditioning perturbation actually changed.</p>
+<p>Paired generations from fixed seeds through the real ComfyUI stack (Z-Image
+Turbo, 9 steps, cfg 1, euler/simple). Pick two variants and hover over the
+image to reveal: <b>left of the divider = variant A, right = variant B</b>.
+Identical-looking images at very different divergence levels demonstrate DiT
+robustness; visible differences localize what the conditioning perturbation
+actually changed.{seed_ui_note}{words_ui_note}</p>
 <noscript><p class="meta">Enable JavaScript for the interactive comparator.</p></noscript>
 <div id="ab-app" class="ab-app"></div>
 <script>
@@ -1275,31 +1338,80 @@ conditioning perturbation actually changed.</p>
   const CAP = {js_caps};
   const VARS = {js_vars};
   const LABELS = {js_labels};
+  const SEEDS = {js_seeds};
   const PROMPTS = {js_prompts};
   const CHECKS = {js_checks};
+  const WORDS = {js_words};
   const app = document.getElementById('ab-app');
-  let state = {{label: LABELS[0], a: VARS[0], b: VARS[1] || VARS[0]}};
+  let state = {{label: LABELS[0], a: VARS[0], b: VARS[1] || VARS[0], si: 0}};
 
+  function esc(s) {{
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }}
   function cap(label, v) {{
     return (CAP[label] && CAP[label][v]) || v;
+  }}
+  function imgSrc(label, v) {{
+    const bySeed = (IMG[label] || {{}})[v] || {{}};
+    const s = SEEDS[state.si];
+    return bySeed[String(s)] || bySeed[Object.keys(bySeed)[0]] || '';
+  }}
+  function wordPanel(label, v) {{
+    const entry = (WORDS[label] || {{}})[v];
+    if (!entry) return `<div class="ab-word-strip ab-word-none">no token readout captured for ${{esc(v)}}</div>`;
+    const rows = entry.rows;
+    const hasCos = rows.some(r => r.length > 4 && r[4] !== null);
+    let maxAbs = 0, maxCorr = 0;
+    for (const r of rows) {{
+      if (r[3] !== 'word') continue;
+      const d = Math.abs((r[2] - r[1]) * 100);
+      if (d > maxAbs) maxAbs = d;
+      if (hasCos && r[4] !== null) {{
+        const c = 1 - r[4];
+        if (c > maxCorr) maxCorr = c;
+      }}
+    }}
+    const spans = rows.map(r => {{
+      const [w, mb, mv, kind] = r;
+      const cos = r.length > 4 ? r[4] : null;
+      if (kind !== 'word') return '';
+      const dpp = (mv - mb) * 100;
+      let title = `${{w}}: attention base ${{(mb*100).toFixed(2)}}% → this TE ${{(mv*100).toFixed(2)}}% (${{dpp>=0?'+':''}}${{dpp.toFixed(2)}}pp)`;
+      const heat = maxAbs > 0 ? Math.min(0.55, Math.abs(dpp) / maxAbs * 0.55) : 0;
+      const bg = dpp > 0.05 ? `rgba(39,174,96,${{heat}})`
+                : dpp < -0.05 ? `rgba(192,57,43,${{heat}})` : 'transparent';
+      let ul = 'none';
+      if (cos !== null) {{
+        const corr = 1 - cos;
+        const ih = maxCorr > 0 ? Math.min(1, corr / maxCorr) : 0;
+        ul = corr > 0.002 ? `${{3 + Math.round(ih * 4)}}px solid rgba(230,126,34,${{0.35 + 0.5 * ih}})` : 'none';
+        title += ` · content cos ${{cos.toFixed(3)}}`;
+      }}
+      return `<span class="ab-w" style="background:${{bg}};border-bottom:${{ul}}" title="${{esc(title)}}">${{esc(w)}}</span>`;
+    }}).join(' ');
+    const legend = hasCos
+      ? `${{esc(v)}} — background: attention Δ vs base (green more / red less) · <span class="ab-w" style="border-bottom:5px solid rgba(230,126,34,0.85)">underline</span>: conditioning-content corruption (hover for numbers)`
+      : `${{esc(v)}} — green = more attention than base, red = less (hover for numbers)`;
+    return `<div class="ab-word-strip"><div class="ab-word-title">${{legend}}</div><p class="ab-words-para">${{spans}}</p></div>`;
   }}
   function render() {{
     const labelSel = LABELS.map(l =>
       `<option ${{l === state.label ? 'selected' : ''}}>${{l}}</option>`).join('');
-    const varOpts = VARS.map(v =>
-      `<option ${{v === state.a || v === state.b ? 'disabled' : ''}}>${{v}}</option>`).join('');
-    const imgA = (IMG[state.label] || {{}})[state.a];
-    const imgB = (IMG[state.label] || {{}})[state.b];
+    const seedSel = SEEDS.length > 1
+      ? `<label>Seed <input type="range" id="ab-seed" min="0" max="${{SEEDS.length - 1}}" step="1" value="${{state.si}}"/> <span id="ab-seed-val">${{SEEDS[state.si]}}</span></label>`
+      : '';
     app.innerHTML = `
       <div class="ab-controls">
         <label>Prompt <select id="ab-label">${{labelSel}}</select></label>
         <label>Variant A <select id="ab-a">${{VARS.map(v => `<option ${{v===state.a?'selected':''}}>${{v}}</option>`).join('')}}</select></label>
         <label>Variant B <select id="ab-b">${{VARS.map(v => `<option ${{v===state.b?'selected':''}}>${{v}}</option>`).join('')}}</select></label>
+        ${{seedSel}}
         <button id="ab-swap" type="button">⇄ swap</button>
       </div>
       <div class="ab-slider" id="ab-slider">
-        <img class="ab-img-b" src="${{imgB || ''}}" alt="B"/>
-        <img class="ab-img-a" id="ab-img-a" src="${{imgA || ''}}" alt="A"/>
+        <img class="ab-img-b" src="${{imgSrc(state.label, state.b)}}" alt="B" loading="lazy" decoding="async"/>
+        <img class="ab-img-a" id="ab-img-a" src="${{imgSrc(state.label, state.a)}}" alt="A" loading="lazy" decoding="async"/>
         <div class="ab-divider" id="ab-divider"><div class="ab-handle">◀▶</div></div>
       </div>
       <div class="ab-caps">
@@ -1309,6 +1421,9 @@ conditioning perturbation actually changed.</p>
       <div class="ab-prompt">
         <div class="ab-prompt-text">${{(PROMPTS[state.label] || '').replace(/</g, '&lt;')}}</div>
         <div class="ab-prompt-checks">${{(CHECKS[state.label] || []).map(c => '✓ ' + c.replace(/</g, '&lt;')).join(' &nbsp;·&nbsp; ')}}</div>
+      </div>
+      <div class="ab-words">
+        ${{WORDS[state.label] ? wordPanel(state.label, state.a) + wordPanel(state.label, state.b) : ''}}
       </div>`;
     const slider = document.getElementById('ab-slider');
     const imgAElem = document.getElementById('ab-img-a');
@@ -1327,6 +1442,13 @@ conditioning perturbation actually changed.</p>
     document.getElementById('ab-a').onchange = e => {{ state.a = e.target.value; render(); }};
     document.getElementById('ab-b').onchange = e => {{ state.b = e.target.value; render(); }};
     document.getElementById('ab-swap').onclick = () => {{ [state.a, state.b] = [state.b, state.a]; render(); }};
+    const seedEl = document.getElementById('ab-seed');
+    if (seedEl) seedEl.oninput = e => {{
+      state.si = parseInt(e.target.value, 10);
+      document.getElementById('ab-seed-val').textContent = SEEDS[state.si];
+      document.querySelector('.ab-img-b').src = imgSrc(state.label, state.b);
+      document.getElementById('ab-img-a').src = imgSrc(state.label, state.a);
+    }};
   }}
   render();
 }})();

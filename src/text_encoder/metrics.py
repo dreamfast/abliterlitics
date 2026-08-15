@@ -175,7 +175,11 @@ def cka_rbf(x: torch.Tensor, y: torch.Tensor, sigma: float | None = None) -> flo
     if x.shape[0] != y.shape[0]:
         raise ValueError(f"cka_rbf requires same n (rows): x={x.shape[0]}, y={y.shape[0]}")
     if x.shape[0] < 4:
-        raise ValueError(f"cka_rbf requires n >= 4 for stable kernel estimation, got n={x.shape[0]}")
+        # Small per-category groups (e.g. stress suites with 2 prompts per
+        # category) are legitimate inputs — RBF CKA is simply undefined there.
+        # NaN (not a raise) so a single small category can't kill a full run.
+        log.warning("cka_rbf undefined for n=%d (< 4); returning NaN", x.shape[0])
+        return float("nan")
 
     # Center the data (for consistency with linear CKA interpretation)
     x = x - x.mean(dim=0, keepdim=True)
@@ -322,7 +326,11 @@ def rank_correlation(x: torch.Tensor, y: torch.Tensor) -> float:
         raise ValueError(f"rank_correlation requires same n: x={x.shape[0]}, y={y.shape[0]}")
     n = x.shape[0]
     if n < 3:
-        raise ValueError(f"rank_correlation requires n >= 3, got n={n}")
+        # Degenerate for small per-category groups (stress suites) — Spearman
+        # over 1 pairwise distance is meaningless. NaN, not a raise, so one
+        # small category can't kill a full comparison run (phase-6 fix).
+        log.warning("rank_correlation undefined for n=%d (< 3); returning NaN", n)
+        return float("nan")
 
     # Pairwise distances (upper triangle only)
     # dist_x[i,j] = ||x_i - x_j||

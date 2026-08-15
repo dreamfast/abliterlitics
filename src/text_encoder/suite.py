@@ -46,6 +46,11 @@ def load_suite(path: Path | str) -> tuple[list[str], list[str]]:
     with open(path) as f:
         data = yaml.safe_load(f)
 
+    # Stress/A-B suites wrap entries in a {prompts: [...]} mapping (with
+    # labels/checks); canonical te_suite.yaml is a bare list. Accept both.
+    if isinstance(data, dict):
+        data = data.get("prompts")
+
     if not isinstance(data, list):
         raise ValueError(f"Expected a list of entries in {path}, got {type(data).__name__}")
 

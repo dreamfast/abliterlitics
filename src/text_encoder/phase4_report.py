@@ -89,6 +89,11 @@ def load_taboo(results_dir: Path) -> dict[str, Any] | None:
     return _load_json(results_dir / "tebench_taboo.json")
 
 
+def load_word_content(results_dir: Path) -> dict[str, dict[str, list[list[Any]]]]:
+    doc = _load_json(results_dir / "tebench_word_content.json")
+    return doc.get("variants", {}) if doc else {}
+
+
 def _summary_mean(bucket: dict[str, Any], metric: str) -> tuple[float | None, float | None, float | None]:
     for s in bucket.get("summaries", []):
         if s.get("metric") == metric:
@@ -1205,86 +1210,98 @@ prompt embedding and measured how the sampler responds, to learn what real sabot
 
 
 def _word_readout_section(attn: dict[str, dict[str, Any]]) -> str:
-    """What the DiT reads, in words — prompt-order rows with mass highlighting.
+    """Pointer section: the word-level readout lives IN the A/B gallery.
 
-    Presentation (user design): rows keep the prompt's word order (never
-    re-sorted); row brightness + in-cell bars encode attention mass (share of
-    the prompt budget); delta is green (gained) / red (lost); chat-template
-    scaffolding collapses to one dimmed row. The capture stores per-prompt
-    readout distributions for BOTH sides plus the token strings, so no extra
-    runs are needed.
+    The per-prompt word tables render under each gallery comparison for the
+    SELECTED variants only (user design, phase 6) — this section carries the
+    framing and links there instead of duplicating 5 variants x 20 prompts
+    of tables.
     """
-    from src.text_encoder.attention_metrics import word_rows_ordered
-
     with_words = {k: d for k, d in attn.items() if d.get("has_word_readout") and d.get("per_prompt")}
     if not with_words:
         return ""
-
-    def _mass_cell(m: float, max_m: float, bar_cls: str) -> str:
-        pct = m * 100
-        width = min(100.0, m / max(max_m, 1e-9) * 100.0)
-        return (
-            f'<div class="mcell"><div class="{bar_cls}" style="width:{width:.0f}%"></div><span>{pct:.1f}%</span></div>'
-        )
-
-    blocks: list[str] = []
-    for name in sorted(with_words):
-        doc = with_words[name]
-        pp_tables: list[str] = []
-        for pp in doc["per_prompt"]:
-            toks = pp.get("tokens", [])
-            b = pp.get("base_mean_readout", [])
-            v = pp.get("variant_mean_readout", [])
-            if not toks or not b or not v:
-                continue
-            rows_b = word_rows_ordered(toks, b)
-            rows_v = word_rows_ordered(toks, v)
-            if not rows_b:
-                continue
-            v_by_label: dict[str, float] = {}
-            for label, m, _kind in rows_v:
-                v_by_label[label] = v_by_label.get(label, 0.0) + m
-            max_m = max(max(mb, v_by_label.get(label, 0.0)) for label, mb, _kind in rows_b)
-            trs: list[str] = []
-            for label, mb, kind in rows_b:
-                mv = v_by_label.get(label, 0.0)
-                delta = (mv - mb) * 100
-                heat = min(0.55, max(mb, mv) / max(max_m, 1e-9) * 0.55)
-                cls = "" if kind == "word" else "wr-chat"
-                style = f' style="background:rgba(76,114,176,{heat:.2f})"' if kind == "word" else ""
-                d_col = "#27ae60" if delta > 0.15 else ("#c0392b" if delta < -0.15 else "#888")
-                trs.append(
-                    f'<tr class="{cls}"{style}><td style="text-align:left">{label}</td>'
-                    f"<td>{_mass_cell(mb, max_m, 'mbar')}</td>"
-                    f"<td>{_mass_cell(mv, max_m, 'mbar2')}</td>"
-                    f'<td><span style="color:{d_col}">{delta:+.1f}pp</span></td></tr>'
-                )
-            prompt_short = pp.get("prompt", "")[:110]
-            pp_tables.append(
-                f"<tr><td colspan=4 class='meta' style='text-align:left'>{prompt_short}…</td></tr>" + "".join(trs)
-            )
-        if pp_tables:
-            blocks.append(
-                f"<details class='glossary' open><summary><b>{name}</b> — word readout in prompt order "
-                f"(mean attention JSD {float(doc.get('jsd_mean_all', 0)):.5f})</summary>"
-                "<table><tr><th style='text-align:left'>word (prompt order)</th>"
-                "<th>base encoder</th><th>this encoder</th><th>Δ</th></tr>" + "".join(pp_tables) + "</table></details>"
-            )
-    if not blocks:
-        return ""
-    intro = """
+    return """
 <h2 id="sec-words">What the DiT reads, in words</h2>
-<p>The attention readout decoded back into the prompt's words, <b>rows in prompt order</b>:
-row brightness and bar length encode how much attention each word receives — blue bar =
-base encoder, orange bar = this encoder (bars relative to this prompt's most-read word) —
-and Δ is the change in percentage points of the prompt budget (green = gained attention,
-red = lost). Chat-template scaffolding collapses into one dimmed row.</p>
-<p class="explainer"><b>How to read this:</b> the image model receives the prompt through two
-channels — <i>where it looks</i> (this table) and <i>what it receives</i> (the embedding content
-behind each word, measured in the conditioning tables). The channels move independently:
-the abliterated encoder leaves this table nearly unchanged (same gaze, slightly different
-content — its image changes flow through the content channel), while int4 scrambles both.
-Also note the prompt as a whole only receives a few percent of total attention in this
-architecture (the rest is image-to-image); the rows share out that prompt budget.</p>
-"""
-    return intro + chr(10).join(blocks)
+<p>The word-level attention readout is built into the
+<a href="#sec-ab">A/B image evidence</a> gallery: pick two encoders and any
+prompt, and the token strips under the image show how much attention each word
+receives from the DiT under exactly those two encoders (rows in prompt order;
+row brightness and bar length encode attention mass; green/red Δ = gained/lost
+vs base). The strips are conditioning-side measurements — they do not change
+with the image seed slider.</p>
+<p class="explainer"><b>How to read them:</b> the image model receives the
+prompt through two channels — <i>where it looks</i> (the strips) and <i>what
+it receives</i> (the embedding content behind each word, measured in the
+conditioning tables). The channels move independently: the abliterated
+encoder leaves the strips nearly unchanged (same gaze, different content),
+while 4-bit quantization perturbs both. Late detail words (e.g. a cat on a
+windowsill) carry only a fraction of a percent of attention even under the
+base encoder — they render from a weak signal, which is why conditioning
+damage hits them first.</p>"""
+
+
+def gallery_word_rows(doc: dict[str, Any], label: str) -> list[list[Any]] | None:
+    """Per-word rows for ONE (attention doc, prompt label): compact data only.
+
+    Rows are [word, base_mass, variant_mass, kind] with kind in {"word",
+    "chat", "pad"} — positional pairs from word_rows_ordered (same tokens both
+    sides, so repeated words never sum). The GALLERY renders these as the
+    prompt paragraph with per-word background heat (client-side), so the
+    report payload stays compact (phase-6: was 3.2MB of pre-rendered tables).
+    Returns None when the doc has no readout for the label.
+    """
+    from src.text_encoder.attention_metrics import word_rows_ordered
+
+    for pp in doc.get("per_prompt", []):
+        if pp.get("label") != label:
+            continue
+        toks = pp.get("tokens", [])
+        b = pp.get("base_mean_readout", [])
+        v = pp.get("variant_mean_readout", [])
+        if not toks or not b or not v:
+            return None
+        rows_b = word_rows_ordered(toks, b)
+        rows_v = word_rows_ordered(toks, v)
+        if not rows_b or len(rows_b) != len(rows_v):
+            return None
+        return [
+            [str(lab_), round(float(mb), 5), round(float(mv), 5), str(kind)]
+            for (lab_, mb, kind), (_lv, mv, _kv) in zip(rows_b, rows_v, strict=True)
+        ]
+    return None
+
+
+def build_gallery_word_data(
+    attn: dict[str, dict[str, Any]],
+    content: dict[str, dict[str, list[list[Any]]]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """{label: {variant: {"prompt": str, "rows": [[word, mb, mv, kind, cos], ...]}}}.
+
+    Compact (client-rendered) word-readout payload for the A/B gallery: the
+    selected variants' prompt paragraphs get per-word heat from these rows.
+    Row fields: word, base attention mass, variant attention mass, kind, and
+    (when run_word_content data exists) the conditioning-CONTENT cosine
+    between base and variant behind that word — attention is the background
+    heat, content the underline.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for vname, doc in attn.items():
+        for pp in doc.get("per_prompt", []):
+            lab_ = pp.get("label")
+            if not lab_:
+                continue
+            rows = gallery_word_rows(doc, lab_)
+            if rows:
+                entry = out.setdefault(lab_, {})
+                merged = [list(r) for r in rows]
+                crows = (content or {}).get(vname, {}).get(lab_)
+                if crows is not None and len(crows) == len(merged):
+                    ok = all(
+                        str(cr[0]) == str(mr[0]) and str(cr[2]) == str(mr[3])
+                        for cr, mr in zip(crows, merged, strict=True)
+                    )
+                    if ok:
+                        for mr, cr in zip(merged, crows, strict=True):
+                            mr.append(round(float(cr[1]), 4))
+                entry[vname] = {"prompt": str(pp.get("prompt", "")), "rows": merged}
+    return out

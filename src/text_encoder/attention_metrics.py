@@ -225,6 +225,53 @@ def word_diff(
 CHAT_TOKENS = {"<|im_start|>", "<|im_end|>", "<|endoftext|>", "user", "assistant", "system", "Ċ"}
 
 
+def token_groups(tokens: list[str]) -> list[tuple[str, str, list[int]]]:
+    """Group BPE token strings into word groups IN PROMPT ORDER.
+
+    Returns (label, kind, token_indices) triples with kind in {"word",
+    "chat", "pad"} using the same rules as word_rows_ordered:
+    - consecutive non-space BPE pieces glue into one word group
+    - consecutive chat-template tokens merge into ONE "[chat template]" group
+    - consecutive pad positions merge into ONE "[pad]" group
+
+    Index-tracking companion so per-token measurements (e.g. conditioning
+    content cosine) can be aggregated to the SAME rows the attention readout
+    renders — guaranteeing the two channels stay aligned.
+    """
+    groups: list[tuple[str, str, list[int]]] = []
+    cur_label: str | None = None
+    cur_kind = ""
+    cur_idx: list[int] = []
+
+    def _flush() -> None:
+        nonlocal cur_label, cur_kind, cur_idx
+        if cur_label is not None:
+            groups.append((cur_label, cur_kind, cur_idx))
+        cur_label, cur_kind, cur_idx = None, "", []
+
+    for i, tok in enumerate(tokens):
+        t = tok.strip()
+        is_pad = (not t) or tok in ("<pad>", "<|pad|>")
+        is_chat = (tok.startswith("<") and tok.endswith(">")) or tok in CHAT_TOKENS
+        if is_pad or is_chat:
+            _flush()
+            kind = "pad" if is_pad else "chat"
+            label = "[pad]" if is_pad else "[chat template]"
+            if groups and groups[-1][1] == kind:
+                groups[-1][2].append(i)
+            else:
+                groups.append((label, kind, [i]))
+        elif tok.startswith(" ") or cur_label is None:
+            _flush()
+            cur_label, cur_kind, cur_idx = t, "word", [i]
+        else:
+            assert cur_label is not None
+            cur_label = cur_label + t
+            cur_idx.append(i)
+    _flush()
+    return groups
+
+
 def word_rows_ordered(tokens: list[str], mass: list[float]) -> list[tuple[str, float, str]]:
     """Group BPE tokens into word rows IN PROMPT ORDER (positional, no re-sorting).
 
@@ -238,38 +285,11 @@ def word_rows_ordered(tokens: list[str], mass: list[float]) -> list[tuple[str, f
     if n == 0:
         return []
     total = sum(mass[:n]) or 1.0
-    norm = [m / total for m in mass[:n]]
     rows: list[tuple[str, float, str]] = []
-    cur: tuple[str, float, str] | None = None
-
-    def _flush() -> None:
-        nonlocal cur
-        if cur is not None:
-            rows.append(cur)
-            cur = None
-
-    for tok, m in zip(tokens[:n], norm, strict=False):
-        t = tok.strip()
-        is_pad = (not t) or tok in ("<pad>", "<|pad|>")
-        is_chat = (tok.startswith("<") and tok.endswith(">")) or tok in CHAT_TOKENS
-        if is_pad or is_chat:
-            _flush()
-            kind = "pad" if is_pad else "chat"
-            label = (
-                "[pad]"
-                if is_pad
-                else ("[chat template]" if rows and rows[-1][2] != "chat" or not rows else "[chat template]")
-            )
-            # merge into a trailing row of the same kind
-            if rows and rows[-1][2] == kind:
-                rows[-1] = (rows[-1][0], rows[-1][1] + m, kind)
-            else:
-                rows.append((label, m, kind))
-        elif tok.startswith(" ") or cur is None:
-            _flush()
-            cur = (t, m, "word")
+    for label, kind, idxs in token_groups(tokens[:n]):
+        m = sum(mass[i] for i in idxs) / total
+        if rows and rows[-1][2] == kind and kind in ("chat", "pad"):
+            rows[-1] = (rows[-1][0], rows[-1][1] + m, kind)
         else:
-            assert cur is not None
-            cur = (cur[0] + t, cur[1] + m, "word")
-    _flush()
+            rows.append((label, m, kind))
     return rows

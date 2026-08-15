@@ -47,7 +47,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--results-dir", default="/results")
     p.add_argument("--device", default="cuda")
     p.add_argument("--n-steps", type=int, default=20)
-    p.add_argument("--n-prompts", type=int, default=6)
+    p.add_argument(
+        "--n-prompts",
+        type=int,
+        default=6,
+        help="Prompts to capture (one per category); 0 = ALL prompts in the suite",
+    )
+    p.add_argument(
+        "--suite",
+        default="/prompts/te_suite.yaml",
+        help="Prompt suite YAML (entries may carry labels — recorded per prompt)",
+    )
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--latent-hw", type=int, default=128)
     p.add_argument("--layer-sample", type=int, default=4, help="Compute summaries on every Nth layer (all steps)")
@@ -90,6 +100,23 @@ def _token_strings(comfyui_loaded: bool, prompts: list[str]) -> dict[str, list[s
     return out
 
 
+def _suite_labels(suite_path: str) -> dict[str, str]:
+    """text -> label mapping for suites whose entries carry labels (A/B stress)."""
+    import yaml
+
+    try:
+        raw = yaml.safe_load(Path(suite_path).read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        log.warning("could not read suite labels from %s: %s", suite_path, exc)
+        return {}
+    entries = raw.get("prompts", raw) if isinstance(raw, dict) else raw
+    if not isinstance(entries, list):
+        return {}
+    return {
+        str(e["text"]): str(e["label"]) for e in entries if isinstance(e, dict) and e.get("label") and e.get("text")
+    }
+
+
 def main() -> int:
     args = parse_args()
     from src.text_encoder.backends import comfyui_loader
@@ -98,8 +125,8 @@ def main() -> int:
     from src.text_encoder.suite import load_suite
 
     comfyui_loader.import_comfy("/comfyui", cpu=(args.device == "cpu"))
-    prompts, categories = load_suite("/prompts/te_suite.yaml")
-    if args.n_prompts < len(prompts):
+    prompts, categories = load_suite(args.suite)
+    if 0 < args.n_prompts < len(prompts):
         seen: set[str] = set()
         idxs: list[int] = []
         for i, c in enumerate(categories):
@@ -108,10 +135,14 @@ def main() -> int:
                 seen.add(c)
         prompts = [prompts[i] for i in idxs[: args.n_prompts]]
         categories = [categories[i] for i in idxs[: args.n_prompts]]
+    # Label per prompt (stress suites carry labels; te_suite entries do not)
+    prompt_labels = _suite_labels(args.suite)
 
     cache_dir = Path(args.cache_dir)
     ctx_scope = f"zimage:{Path(args.dit).name}"
-    base_ctxs = _load_consumed_from_cache(cache_dir, args.base, args.device, ctx_scope, prompts, categories)
+    base_ctxs = _load_consumed_from_cache(
+        cache_dir, args.base, args.device, ctx_scope, prompts, categories, suite_path=args.suite
+    )
 
     log.info("Loading Z-Image DiT: %s", Path(args.dit).name)
     dit = load_zimage_dit(args.dit, device=args.device)
@@ -146,7 +177,9 @@ def main() -> int:
     results_dir.mkdir(parents=True, exist_ok=True)
 
     for vfile, vname in zip(variant_files, names, strict=True):
-        var_ctxs = _load_consumed_from_cache(cache_dir, vfile, args.device, ctx_scope, prompts, categories)
+        var_ctxs = _load_consumed_from_cache(
+            cache_dir, vfile, args.device, ctx_scope, prompts, categories, suite_path=args.suite
+        )
         per_prompt_metrics: list[dict[str, Any]] = []
         token_strings = _token_strings(True, prompts)
         for pi, (ctx_b, ctx_v) in enumerate(zip(base_ctxs, var_ctxs, strict=True)):
@@ -187,6 +220,7 @@ def main() -> int:
                 {
                     "prompt": prompts[pi],
                     "category": categories[pi],
+                    "label": prompt_labels.get(prompts[pi], ""),
                     "step_layer": {f"{s}_{ly}": m for (s, ly), m in sorted(step_layer.items())},
                     "base_mean_readout": [round(float(x), 6) for x in base_mean] if base_mean is not None else [],
                     "variant_mean_readout": [round(float(x), 6) for x in var_mean] if var_mean is not None else [],

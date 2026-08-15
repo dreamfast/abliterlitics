@@ -12,6 +12,9 @@ usage() {
 Usage: $(basename "$0") [OPTIONS] <comparison_dir>
 
 Options:
+   --n-prompts N       Prompts to capture (default 6, one per category; 0 = all)
+   --suite PATH        Prompt suite YAML (default: te_suite; A/B stress suite
+                       supported — labels are recorded per prompt)
    --variants LIST   Comma-separated variant names (default: heretic,base_int8,base_int4,base_gguf_q3_k_m,base_gguf_q8_0)
    --n-steps N       Euler steps (default 20)
    --layer-sample N  Compute readout summaries every Nth step (default 4)
@@ -24,6 +27,8 @@ EOF
 
 ATTN_VARIANTS="heretic,base_int8,base_int4,base_gguf_q3_k_m,base_gguf_q8_0"
 N_STEPS=20
+N_PROMPTS=6
+SUITE=""
 LAYER_SAMPLE=4
 FORCE=0
 DRY_RUN=0
@@ -32,6 +37,8 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --variants) ATTN_VARIANTS="$2"; shift 2 ;;
         --n-steps) N_STEPS="$2"; shift 2 ;;
+        --n-prompts) N_PROMPTS="$2"; shift 2 ;;
+        --suite) SUITE="$2"; shift 2 ;;
         --layer-sample) LAYER_SAMPLE="$2"; shift 2 ;;
         --force) FORCE=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
@@ -119,6 +126,8 @@ docker_run "$GPU" "$TE_IMAGE" \
         --results-dir /results \
         --device cuda \
         --n-steps "${N_STEPS}" \
+        --n-prompts "${N_PROMPTS}" \
+        ${SUITE:+--suite "/app/${SUITE#./}"} \
         --layer-sample "${LAYER_SAMPLE}"
 
 log "Attention readout complete: ${RESULTS_DIR}/tebench_attention_*.json"

@@ -65,7 +65,10 @@ class Report:
                             "n_prompts": sr.n_prompts,
                             "metrics": {
                                 "cka_linear": sr.cka_linear.value,
-                                "cka_rbf": sr.cka_rbf.value,
+                                # cka_rbf/rank_corr return NaN for n<4/n<3
+                                # (2-prompt stress categories) — normalize to
+                                # None: bare NaN literals are non-standard JSON
+                                "cka_rbf": sr.cka_rbf.value if sr.cka_rbf.value == sr.cka_rbf.value else None,
                                 "cos_all": sr.cos_all.value,
                                 "cos_all_ci": [sr.cos_all.ci_low, sr.cos_all.ci_high]
                                 if sr.cos_all.ci_low is not None
@@ -74,7 +77,7 @@ class Report:
                                 "mse": sr.mse.value,
                                 "mse_ci": [sr.mse.ci_low, sr.mse.ci_high] if sr.mse.ci_low is not None else None,
                                 "l2": sr.l2.value,
-                                "rank_corr": sr.rank_corr.value,
+                                "rank_corr": sr.rank_corr.value if sr.rank_corr.value == sr.rank_corr.value else None,
                             },
                             "damage_quant_units": (sr.damage_quant_units.value if sr.damage_quant_units else None),
                             "damage_quant_ci": [
@@ -125,11 +128,15 @@ class Report:
                 else:
                     dmg = "N/A"
                 sem = f"{sr.damage_semantic_units.value:.2%}" if sr.damage_semantic_units else "N/A"
+
+                def _f(val: float) -> str:
+                    return f"{val:.6f}" if val == val else "N/A"
+
                 lines.append(
-                    f"| {sr.stream} | {sr.stage} | {sr.cka_linear.value:.6f} | "
-                    f"{sr.cka_rbf.value:.6f} | {sr.cos_all.value:.6f} | "
+                    f"| {sr.stream} | {sr.stage} | {_f(sr.cka_linear.value)} | "
+                    f"{_f(sr.cka_rbf.value)} | {_f(sr.cos_all.value)} | "
                     f"{sr.mse.value:.6e} | {sr.l2.value:.6e} | "
-                    f"{sr.rank_corr.value:.6f} | {dmg} | {sem} |"
+                    f"{_f(sr.rank_corr.value)} | {dmg} | {sem} |"
                 )
 
             # Per-category breakdown for streams that have it
