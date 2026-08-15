@@ -294,6 +294,15 @@ class Krea2Backend(BaseBackend):
 
         import comfy.text_encoders.hunyuan_video as hv
         import comfy.text_encoders.krea2 as krea2_te
+        import comfy.utils
+
+        # Mirror comfy/sd.py's Qwen3-VL prefix replace (the TE modules expect
+        # llama keys under model.* but visual keys under bare visual.*; the
+        # single-file format stores both under model.*).
+        self._te_sd = comfy.utils.state_dict_prefix_replace(
+            self._te_sd,
+            {"model.language_model.": "model.", "model.visual.": "visual.", "lm_head.": "model.lm_head."},
+        )
 
         llama_meta = hv.llama_detect(self._te_sd)
         self._quantized = bool(llama_meta.get("llama_quantization_metadata"))

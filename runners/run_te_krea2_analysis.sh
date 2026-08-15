@@ -104,22 +104,29 @@ except Exception:
 PYEOF
 }
 
-# Reference base for a variant: te_reference if set, else the global base.
+# Reference base TE file for a variant: te_reference names an ARM — resolve
+# that arm's te_file; empty/missing falls back to the global base_te_file.
 reference_te_for() {
-    local name="$1" ref
-    ref="$(python3 - "${COMPARISON_DIR}/comparison.json" "${name}" <<'PYEOF'
+    local name="$1"
+    python3 - "${COMPARISON_DIR}/comparison.json" "${name}" <<'PYEOF'
 import json, sys
 cmp = json.load(open(sys.argv[1]))
 name = sys.argv[2]
-v = cmp["variants"].get(name, {})
-print(v.get("te_reference") or cmp["settings"]["tebench"]["base_te_file"])
+ref = cmp["variants"].get(name, {}).get("te_reference") or ""
+if ref and ref in cmp["variants"]:
+    path = cmp["variants"][ref].get("te_file", "")
+else:
+    path = ""
+print(path or cmp["settings"]["tebench"]["base_te_file"])
 PYEOF
-)"
-    echo "${ref}"
 }
 
 run_one() {
     local name="$1" te_file="$2" ref_file="$3"
+    if [[ "${te_file}" == "${ref_file}" ]]; then
+        log "SKIP ${name}: te_file == reference (self-comparison)"
+        return 0
+    fi
     if [[ "$(te_readable "${te_file}")" == "unreadable" ]]; then
         log "SKIP ${name}: $(basename "${te_file}") unreadable host-side (packed quant) — generation-only arm"
         return 0
