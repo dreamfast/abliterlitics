@@ -75,12 +75,14 @@ def align_target_occurrences(target: str, script: str, transcript: str) -> list[
     n_occ = tokenize(script).count(target.lower())
     if n_occ == 0:
         n_occ = 1  # defensive: score at least once even on script mismatch
+    script_seq = tokenize(script)
+    script_words = set(script_seq)
     pool = _candidates(transcript)
     out: list[dict[str, Any]] = []
     for _ in range(n_occ):
         best_i, best_r = -1, 0.0
         for i, t in enumerate(pool):
-            r = _ratio(target.lower(), t)
+            r = 1.0 if _compound_merge(target.lower(), t, script_words, script_seq) else _ratio(target.lower(), t)
             if r > best_r:
                 best_i, best_r = i, r
         if best_i >= 0 and best_r >= MISPRONOUNCED_THRESHOLD:
@@ -143,18 +145,52 @@ def _classify(target: str, matched: str, r: float) -> dict[str, Any]:
     }
 
 
-def align_target(target: str, transcript: str) -> dict[str, Any]:
+def _compound_merge(target: str, token: str, script_words: set[str], script_seq: list[str] | None = None) -> bool:
+    """True when ``token`` = target + the ADJACENT scripted word, joined.
+
+    "box" in "boxcars" when the script reads "... box cars ..." is a whisper
+    compound merge — tokenization, not pronunciation. Tightened per review:
+    (1) boundary-only joins (target at token start or end — no middle-match
+    concatenation like "correct" inside "uncorrectable");
+    (2) the leftover must be the word IMMEDIATELY AFTER (or BEFORE) the
+    target in the script sequence, not merely any scripted word
+    ("redhead" only merges if the script literally reads "red head").
+    """
+    if len(token) <= len(target) or target not in token:
+        return False
+    i = token.index(target)
+    prefix, suffix = token[:i], token[i + len(target) :]
+    if prefix and suffix:
+        return False  # middle match — not a boundary join
+    leftover = (prefix or suffix).strip()
+    if not leftover or leftover == "s":
+        return False
+    if script_seq is not None:
+        # adjacency: leftover must neighbor the target in the scripted order
+        for j, w in enumerate(script_seq):
+            if w != target:
+                continue
+            nxt = script_seq[j + 1] if j + 1 < len(script_seq) else ""
+            prv = script_seq[j - 1] if j > 0 else ""
+            if (not prefix and leftover == nxt) or (not suffix and leftover == prv):
+                return True
+        return False
+    return leftover in script_words  # legacy fallback: membership only
+
+
+def align_target(target: str, transcript: str, script: str = "") -> dict[str, Any]:
     """Classify one target word against a transcript (best single match).
 
-    Returns dict with:
-      target, verdict ("correct" | "mispronounced" | "dropped"),
-      matched (best transcript token or ""), ratio,
-      syllables_target, syllables_rendered, syllable_fidelity
+    ``script`` (optional, full scripted line) enables compound-merge
+    detection: target found inside a longer token whose remainder is a
+    scripted word counts as correct.
     """
+    script_seq = tokenize(script) if script else []
+    script_words = set(script_seq)
     toks = _candidates(transcript)
     best, best_r = "", 0.0
     for t in toks:
-        r = _ratio(target.lower(), t)
+        r = 1.0 if _compound_merge(target.lower(), t, script_words, script_seq) else _ratio(target.lower(), t)
         if r > best_r:
             best, best_r = t, r
     return _classify(target, best, best_r)

@@ -35,6 +35,28 @@ base-vs-heretic battery.
 - Audio is muxed into the mp4 (stereo AAC 32kHz); decode via PyAV.
 - ~175s/clip cold, seconds warm; GPU offload heavy (33GB TE + 21GB DiT on 32GB).
 
+## Generation configuration disclosure
+
+All clips use the community-standard turbo t2v workflow (from the
+ComfyUI-MiniMax-H3-Turbo example pack): MiniMaxH3TurboLoRA v4 step600
+@ strength 1.0, MiniMaxH3TurboSampler at 6 steps (vs 50 stock), 0.2MP 16:9,
+5s (124 frames). Both arms traverse the identical graph, so base-vs-heretic
+differences are purely the TE. Scope note: a turbo adapter could amplify
+conditioning sensitivity (fewer steps); if the audio battery returns a null
+result against p-e-w's observation, rerun at 50 steps stock as the first
+follow-up control (phase 8 candidate).
+
+## Quant-floor semantics (disclosed)
+
+The h3 BASE TE is already int8-convrot, so the automatic "fake-quant int8"
+floor is a REQUANT floor (per-tensor requant of per-channel int8 weights),
+not a pristine-precision floor like z-image's BF16-base. Empirically
+non-degenerate (semantic ceiling MSE ≈ 1.96). Damage-in-quant-units numbers
+for h3 must be read as "divergence in requant-floor units" — the report
+labels them accordingly. The primary h3 anchors are the empirical audio
+floors (A: whisper intrinsic on base arm; B: int8-vs-nvfp4 generation band
+from the stand-in pair) and the seed-change video anchor.
+
 ## Heretic swap-in runbook (when the user supplies the TE files)
 
 1. Copy the heretic TE safetensors into

@@ -20,6 +20,7 @@ Options:
    --gen-seeds LIST    Seeds for generation (default 42,43,44)
    --arms LIST         Arm filter (default: all in manifest)
    --device DEV        Whisper device (default cuda)
+   --gpu N             GPU id when device=cuda (default 0; 1 = 4090)
    --smoke             Tag generation smoke=true
    --dry-run           Preview scoring
    -h, --help          Show this help
@@ -31,6 +32,7 @@ GEN=0
 GEN_SEEDS="42,43,44"
 ARMS=""
 DEVICE="cuda"
+GPU="0"
 SMOKE_FLAG=()
 DRY_RUN=0
 COMP_DIR=""
@@ -40,6 +42,7 @@ while [[ $# -gt 0 ]]; do
         --gen-seeds) GEN_SEEDS="$2"; shift 2 ;;
         --arms) ARMS="$2"; shift 2 ;;
         --device) DEVICE="$2"; shift 2 ;;
+        --gpu) GPU="$2"; shift 2 ;;
         --smoke) SMOKE_FLAG=("--smoke"); shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help) usage ;;
@@ -91,7 +94,7 @@ RUN_FN=docker_run_cpu
 RUN_EXTRA=()
 if [[ "${DEVICE}" == "cuda" ]]; then
     RUN_FN=docker_run
-    RUN_EXTRA=("0")
+    RUN_EXTRA=("${GPU:-0}")  # GPU 0 = 5090; GPU=1 uses the 4090 (5090 busy)
 fi
 
 log "Scoring H3 audio battery (whisper=${WHISPER_MODEL}, device=${DEVICE})"

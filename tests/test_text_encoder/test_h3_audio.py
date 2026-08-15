@@ -223,6 +223,49 @@ class TestPossessiveStrip:
         assert all(al["verdict"] == "correct" for al in als)
 
 
+class TestCompoundMerge:
+    """Real-battery artifact: whisper joins 'box cars' -> 'boxcars'; target
+    'box' must classify correct (substring of a longer token = merge)."""
+
+    def test_box_in_boxcars_correct_with_script(self) -> None:
+        a = align_target("box", "the moon is over the boxcars now", script="the moon is over the box cars now")
+        assert a["verdict"] == "correct"
+        assert a["ratio"] == 1.0
+
+    def test_compound_in_occurrences(self) -> None:
+        # script contains the second word ("cars") — the merge is detected
+        als = align_target_occurrences("box", "the moon is over the box cars now", "the moon is over the boxcars now")
+        assert als[0]["verdict"] == "correct"
+
+    def test_middle_match_not_merged(self) -> None:
+        # "correct" inside "uncorrectable" is NOT a boundary join (review R2)
+        from src.text_encoder.h3_audio import _compound_merge
+
+        assert not _compound_merge("correct", "uncorrectable", {"un", "able"}, ["correct", "un", "able"])
+
+    def test_nonadjacent_script_word_not_merged(self) -> None:
+        # leftover is scripted but NOT adjacent to the target
+        from src.text_encoder.h3_audio import _compound_merge
+
+        assert not _compound_merge("red", "redhead", {"red", "head", "shoulders"}, ["red", "shoulders", "head"])
+
+    def test_adjacent_prefix_merge(self) -> None:
+        from src.text_encoder.h3_audio import _compound_merge
+
+        assert _compound_merge("cars", "boxcars", {"box", "cars"}, ["box", "cars"])
+
+    def test_exact_token_unchanged(self) -> None:
+        a = align_target("cat", "the cat")
+        assert a["verdict"] == "correct"
+
+    def test_unrelated_substring_not_merged(self) -> None:
+        # 'red' inside 'unrelated' — no scripted tail word, so no compound
+        # merge; plain ratio 0.5 lands at the mispronounced boundary
+        a = align_target("red", "completely unrelated wording", script="the red circle")
+        assert a["verdict"] == "mispronounced"
+        assert a["ratio"] < 0.9
+
+
 class TestSyllableDowngrade:
     """Review round 1: ratio-0.9 'correct' matches with swallowed syllables
     (comfortable -> comfortble, difflib 0.95) must classify as mispronounced."""
