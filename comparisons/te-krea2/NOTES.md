@@ -4,6 +4,22 @@ Phase 8 of the TE-bench arc (z-image → H3 → **krea2**). Same question as H3:
 does the abliterated (heretic) Qwen3-VL-4B damage the conditioning interface
 or the generation it drives?
 
+## Build-night status (2026-08-15, all smoke=true)
+
+Pipeline verified end-to-end on the RedCraft stand-in DiT + ComfyUI 8190:
+- Analysis: all 4 arms encoded at the interface (4-prompt smoke). First
+  numbers — heretic bf16 vs base bf16: layer_02 bit-clean, peak divergence
+  layer_26 (cos 0.99936, 0.65 quant-units), interface txtfusion_out cos
+  0.99995 / damage 0.23 q-units. heretic_int8 vs matched base_int8: peak
+  15.2× the int8 floor at layer_26; the interface ATTENUATES the edit to
+  1.8 q-units (txtfusion projector+refiners compress it). Same surgical
+  fingerprint as H3/z-image.
+- A/B: bird-workflow API conversion runs on the 4090 (~13s/image warm);
+  the COFFEE sign renders legibly (K4 word-check pipeline has signal).
+- Image metrics: seed-change anchor LPIPS 0.464 (portrait) — inside the
+  z-image normal-variation band. te_swap/floor_band populate once the base
+  arms are in ComfyUI.
+
 ## Non-reportable rule (inherited)
 
 `manifest.json` entries with `smoke: true` are stand-in/verification runs —
