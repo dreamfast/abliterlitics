@@ -20,6 +20,8 @@ import math
 from pathlib import Path
 from typing import Any
 
+from src.text_encoder.citations import ref, refs_section_html
+
 log = logging.getLogger(__name__)
 
 
@@ -138,6 +140,7 @@ def _img_section(anchors: dict[str, Any] | None, img_vars: dict[str, dict[str, A
     if seed_m is not None and floor_m is not None:
         anchor_line = (
             f"<p><b>Anchors (shared, bootstrap-CI'd)</b>: seed change (same TE, different noise — "
+            f"the oldest observation in diffusion communities, now a unit — {ref('sdissue35')}; "
             f'"a different image") LPIPS = <b>{seed_m:.3f}</b>'
             + (f" [{seed_lo:.3f}, {seed_hi:.3f}]" if seed_lo is not None else "")
             + f"; quant-floor band (int8 vs fp8 — two known-good encoders) LPIPS = <b>{floor_m:.3f}</b>"
@@ -173,7 +176,7 @@ def _img_section(anchors: dict[str, Any] | None, img_vars: dict[str, dict[str, A
         )
     return f"""
 <h2 id="sec-img">Image-space perceptual ladder</h2>
-<p>What the DiT RENDERS when only the text encoder changes — LPIPS between
+<p>What the DiT RENDERS when only the text encoder changes — {ref("lpips2018")} between
 same-seed image pairs (variant vs reference), with CLIP-score deltas as the
 semantic-adherence proxy. Same-seed differences are expected from chaotic
 sampling; the anchors make the magnitude interpretable.</p>
@@ -288,7 +291,7 @@ def _clip_adherence_section(img_vars: dict[str, dict[str, Any]]) -> str:
     ref_line = f" (reference {ref_name} scores {ref_mean:.1f} on average, for scale)" if ref_mean is not None else ""
     return f"""
 <h2 id="sec-clip">Prompt adherence (CLIP)</h2>
-<p>CLIP-score similarity between each rendered image and its prompt, relative
+<p>{ref("clipscore2021")} — similarity between each rendered image and its prompt, relative
 to the reference encoder's render of the same prompt{ref_line}. This is the
 capability check that pairs with the perceptual ladder: LPIPS says how
 different the image looks, CLIP says whether it still depicts what was asked.
@@ -737,7 +740,10 @@ content only — the gore tier is gap-only).</p>
 <p class="explainer"><b>Ethics &amp; reading notes:</b> prompts are adults-only and
 generic by construction. <b>No explicit imagery is embedded in this report</b> —
 the generated set stays local under <code>ab_images_taboo/</code> for the
-author's manual review; this section reports measurements only. The int8 row is
+author's manual review; this section reports measurements only. Engineered
+T2I safety, when it exists, is trained into the DiT itself
+({ref("esd2023")}; {ref("mace2025")}) — which is exactly why a text-encoder
+swap cannot unlock a model whose render stage never refused. The int8 row is
 the negative control: quantization alone should not move compliance, so its
 spread defines the noise band any real effect must exceed.</p>
 {base_compliance_note}
@@ -901,7 +907,7 @@ def _verdict_section(
     # H3: directionality — from directional results (cited from prior phase)
     add(
         "H3",
-        "The abliteration delta is a direction, not noise (Arditi-style structure)",
+        f"The abliteration delta is a direction, not noise ({ref('arditi2024')} — direction concept)",
         "directional.py: cos(Δ, taboo) ≈ −0.15 with permutation z 50–134; 97–99% orthogonal energy",
         "SUPPORTED (prior phase)",
     )
@@ -911,7 +917,7 @@ def _verdict_section(
         e = controls["conditions"]["embed_shuffle"]["summary"]["mean_final_latent_div"]
         add(
             "H4",
-            "The DiT responds to word-meaning destruction ≫ word-order destruction (Spingarn)",
+            f"The DiT responds to word-meaning destruction ≫ word-order destruction ({ref('spingarn2026')})",
             f"meaning-shuffle {e:.5f} vs order-shuffle {o:.5f} ({e / max(o, 1e-12):.1f}×)",
             _verdict_cell(e > o * 1.5),
         )
@@ -991,6 +997,7 @@ def build_phase4_sections(results_dir: Path) -> str:
         _breadth_section(breadth),
         _taboo_section(taboo),
         _verdict_section(anchors, img_vars, controls, attn, disc, dit_summaries, taboo),
+        refs_section_html(),
     ]
     return "\n".join(p for p in parts if p)
 
