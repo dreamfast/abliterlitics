@@ -171,7 +171,8 @@
                 "zimage",
                 "ltx2",
                 "h3",
-                "ltx25"
+                "ltx25",
+                "krea2"
               ],
               "description": "Which text-encoder backend to use."
             },

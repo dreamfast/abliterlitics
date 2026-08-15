@@ -1,0 +1,81 @@
+# Krea2 TE battery — prompts (t2i, text-rendering focus)
+
+Krea2 is a strong text-rendering t2i model. Two purposes:
+1. A/B generation prompts (same style as z-image suite: category + text).
+2. K4 word-content checks — `targets` lists words expected to appear IN the
+   rendered image (signage/poster text). Rare/compound targets make TE damage
+   visible as misspellings, the t2i analogue of the H3 mispronunciation tier.
+
+labels are stable ids for cross-arm pairing.
+
+prompts:
+  # --- signage (common words) ---
+  - label: sign_coffee
+    category: signage
+    text: "a weathered wooden café sign hanging above a brick doorway, the word COFFEE painted in large cream letters, morning light, shallow depth of field"
+    targets: ["COFFEE"]
+  - label: sign_open
+    category: signage
+    text: "a neon OPEN sign glowing red in a dark shop window at night, slight rain reflections on the glass"
+    targets: ["OPEN"]
+  # --- signage (rare words — the K4 stress tier) ---
+  - label: sign_inconceivable
+    category: signage
+    text: "a hand-painted circus banner reading INCONCEIVABLE in bold gold serif letters on deep burgundy canvas, tassels, vintage carnival lighting"
+    targets: ["INCONCEIVABLE"]
+  - label: sign_onomatopoeia
+    category: signage
+    text: "a comic-book style street mural with the word ONOMATOPOEIA bursting out in explosive yellow letters with red outlines"
+    targets: ["ONOMATOPOEIA"]
+  - label: sign_quixotic
+    category: signage
+    text: "an old bookshop window display with a hand-lettered card reading QUIXOTIC NOVELS in curly white ink on black paper"
+    targets: ["QUIXOTIC"]
+  # --- compound / multi-word strings (spacing + case stress) ---
+  - label: poster_bakery
+    category: poster
+    text: "a chalkboard menu outside a bakery reading FRESH BREAD DAILY in tidy white chalk handwriting, doodles of croissants in the corners"
+    targets: ["FRESH", "BREAD", "DAILY"]
+  - label: poster_museum
+    category: poster
+    text: "a minimalist museum poster on a concrete wall, the words MODERN LIGHT in huge thin sans-serif black letters, one orange circle"
+    targets: ["MODERN", "LIGHT"]
+  - label: receipt_hard
+    category: print
+    text: "a close-up macro photo of a faded thermal paper receipt, tiny monospaced text lines, one line reads TOTAL 42.50 slightly smudged"
+    targets: ["TOTAL"]
+  # --- product labels ---
+  - label: label_hot_sauce
+    category: product_label
+    text: "a craft hot sauce bottle label with the words HELL FIRE in distressed red block letters over a flame illustration"
+    targets: ["HELL", "FIRE"]
+  - label: label_medicine
+    category: product_label
+    text: "an apothecary bottle with an aged paper label reading ELIXIR OF VITALITY in ornate victorian typography"
+    targets: ["ELIXIR", "VITALITY"]
+  # --- screens / UI ---
+  - label: screen_error
+    category: screen_ui
+    text: "a photo of an old CRT monitor displaying a blue screen with white text reading SYSTEM FAILURE, dark server room, green LED reflections"
+    targets: ["SYSTEM", "FAILURE"]
+  - label: marquee_cinema
+    category: signage
+    text: "a classic cinema marquee at dusk with changeable black letters on white panels spelling MIDNIGHT PREMIERE"
+    targets: ["MIDNIGHT", "PREMIERE"]
+  # --- non-text control prompts (drift baseline, no word check) ---
+  - label: control_landscape
+    category: control
+    text: "a windswept coastal cliff at golden hour, long grass bending, distant lighthouse, dramatic clouds"
+    targets: []
+  - label: control_portrait
+    category: control
+    text: "studio portrait of an elderly luthier holding a violin, warm rim lighting, dark background, 85mm look"
+    targets: []
+  - label: control_still_life
+    category: control
+    text: "a still life of pears and a copper pot on a linen cloth, soft window light, dutch masters style"
+    targets: []
+  - label: control_city
+    category: control
+    text: "a rainy tokyo alley at night, neon reflections in puddles, a lone figure with an umbrella, cinematic"
+    targets: []
