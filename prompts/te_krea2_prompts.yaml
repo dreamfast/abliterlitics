@@ -1,12 +1,11 @@
-# Krea2 TE battery — prompts (t2i, text-rendering focus)
-
-Krea2 is a strong text-rendering t2i model. Two purposes:
-1. A/B generation prompts (same style as z-image suite: category + text).
-2. K4 word-content checks — `targets` lists words expected to appear IN the
-   rendered image (signage/poster text). Rare/compound targets make TE damage
-   visible as misspellings, the t2i analogue of the H3 mispronunciation tier.
-
-labels are stable ids for cross-arm pairing.
+# Krea2 TE battery — prompts (t2i, text-rendering focus).
+# Krea2 is a strong text-rendering t2i model. Two purposes:
+# 1. A/B generation prompts (same style as z-image suite: category + text).
+# 2. K4 word-content checks — `targets` lists words expected to appear IN the
+#    rendered image (signage/poster text). Rare/compound targets make TE
+#    damage visible as misspellings, the t2i analogue of the H3
+#    mispronunciation tier.
+# labels are stable ids for cross-arm pairing.
 
 prompts:
   # --- signage (common words) ---

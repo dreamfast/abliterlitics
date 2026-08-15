@@ -1,0 +1,13 @@
+{
+ "49": {"class_type": "ResolutionSelector", "inputs": {"aspect_ratio": "4:3 (Standard)", "megapixels": 1.0, "multiple": 8}, "_meta": {"title": "Resolution 4:3 1MP"}},
+ "53": {"class_type": "EmptyLatentImage", "inputs": {"width": ["49", 0], "height": ["49", 1], "batch_size": 1}},
+ "54": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen3-vl-4b-heretic_int8.safetensors", "type": "krea2", "device": "default"}},
+ "55": {"class_type": "VAELoader", "inputs": {"vae_name": "Wan2_1_VAE_bf16.safetensors"}},
+ "69": {"class_type": "UNETLoader", "inputs": {"unet_name": "redcraft22INT8INT4_2Krea2Edition.safetensors", "weight_dtype": "default"}, "_meta": {"title": "RedCraft Krea2 Edition (stand-in until official weights)"}},
+ "70": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["54", 0]}},
+ "71": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["70", 0]}},
+ "72": {"class_type": "KSampler", "inputs": {"model": ["69", 0], "positive": ["70", 0], "negative": ["71", 0], "latent_image": ["53", 0], "seed": 332383976343439, "steps": 6, "cfg": 1.0, "sampler_name": "res_2s", "scheduler": "beta", "denoise": 1.0}, "_meta": {"title": "gen pass (6-step res_2s/beta)"}},
+ "73": {"class_type": "KSampler", "inputs": {"model": ["69", 0], "positive": ["70", 0], "negative": ["71", 0], "latent_image": ["72", 0], "seed": 619288578219518, "steps": 2, "cfg": 1.0, "sampler_name": "deis_3m", "scheduler": "bong_tangent", "denoise": 0.2}, "_meta": {"title": "refine pass (2-step deis_3m denoise 0.2)"}},
+ "68": {"class_type": "VAEDecode", "inputs": {"samples": ["73", 0], "vae": ["55", 0]}},
+ "74": {"class_type": "SaveImageWebP", "inputs": {"images": ["68", 0], "filename_prefix": "ComfyUI", "quality": 85, "lossless": false, "compression": "slow", "embed_workflow": false, "save": true}}
+}

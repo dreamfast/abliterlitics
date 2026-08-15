@@ -51,7 +51,9 @@
    "device": "cpu",
    "n_boot": 1000,
    "prompt_suite": "prompts/te_krea2_prompts.yaml",
-   "img_clip_model": "ViT-L-14"
+   "img_clip_model": "ViT-L-14",
+   "img_reference": "base_int8",
+   "img_floor_pair": ["base", "base_int8"]
   }
  }
 }
