@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
         "instead of fake-quantizing --base (literal damage-in-quant-units). "
         "Falls back to fake-quant int8 when not provided.",
     )
-    p.add_argument("--backend", default="zimage", choices=["zimage", "ltx2"], help="Backend name")
+    p.add_argument("--backend", default="zimage", choices=["zimage", "ltx2", "h3"], help="Backend name")
     p.add_argument("--comfyui", default="/comfyui", help="Path to ComfyUI repo (contains comfy/)")
     p.add_argument("--variant-name", default="variant", help="Variant display name")
     p.add_argument("--prompts", default="/prompts/te_suite.yaml", help="Path to prompt suite YAML")
