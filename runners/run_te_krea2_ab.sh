@@ -61,7 +61,7 @@ done
 
 load_comparison "$COMP_DIR"
 COMPARISON_DIR="$(cd "$(dirname "${COMPARISON_DIR}")" && pwd)/$(basename "${COMPARISON_DIR}")"
-OUT_DIR="${COMPARISON_DIR}/results/${COMPARISON_NAME}/ab_images"
+OUT_DIR="${COMPARISON_DIR}/results/${COMPARISON_NAME}/text_encoder/ab_images"
 WORKFLOW="${COMPARISON_DIR}/workflows/krea2_t2i_api.json"
 [[ -f "${WORKFLOW}" ]] || { error "Workflow not found: ${WORKFLOW}"; exit 1; }
 
@@ -81,7 +81,7 @@ docker_run_cpu "${TE_IMAGE}" \
         --workflow /comp/workflows/krea2_t2i_api.json \
         --comparison /comp/comparison.json \
         --api-url "${API_URL}" \
-        --out-dir "/comp/results/${COMPARISON_NAME}/ab_images" \
+        --out-dir "/comp/results/${COMPARISON_NAME}/text_encoder/ab_images" \
         --prompt-suite "/app/${SUITE}" \
         --seeds "${SEEDS}" \
         ${SMOKE_FLAG[@]+"${SMOKE_FLAG[@]}"} \

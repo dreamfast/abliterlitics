@@ -10,7 +10,9 @@ semantics; WebP outputs fetch exactly like images).
 
 Outputs:
     <out-dir>/<variant>/<label>__seed<seed>.webp
-    <out-dir>/manifest.json                      (provenance + perf + targets)
+    <out-dir>/manifest.json                      (provenance + perf + targets;
+                                                  z-image "images" layout so
+                                                  run_img_metrics consumes it)
 
 Node targeting is class-type based (assert exactly one match each, except
 KSampler which is ALL-of-them — both stages must share the A/B seed),
@@ -165,12 +167,15 @@ def main() -> None:
     log.info("Krea2 A/B plan: %d arms x %d prompts x %d seeds", len(jobs), len(suite), len(seeds))
 
     out_dir = Path(args.out_dir)
+    # Manifest contract matches run_ab_test/run_img_metrics (z-image layout):
+    # entries under "images" + the fixed A/B base seed at top level.
     manifest: dict[str, Any] = {
         "workflow": str(Path(args.workflow)),
         "api_url": args.api_url,
         "prompt_suite": str(args.prompt_suite),
+        "seed": seeds[0],
         "smoke": bool(args.smoke),
-        "clips": [],
+        "images": [],
     }
     manifest_path = out_dir / "manifest.json"
     if manifest_path.exists():
@@ -178,7 +183,7 @@ def main() -> None:
         if args.smoke:
             manifest["smoke"] = True
 
-    done: set[str] = {e["key"] for e in manifest.get("clips", [])}
+    done: set[str] = {e["key"] for e in manifest.get("images", [])}
     by_variant: OrderedDict[str, str] = OrderedDict(jobs)
 
     for name, te_name in by_variant.items():
@@ -214,9 +219,10 @@ def main() -> None:
                     len(data) // 1024,
                     perf.get("server_gen_ms"),
                 )
-                manifest.setdefault("clips", []).append(
+                manifest.setdefault("images", []).append(
                     {
                         "key": key,
+                        "pass": "warm",
                         "variant": name,
                         "te_name": te_name,
                         "gen_seconds": round(perf.get("client_wall_ms", 0) / 1000, 2),
@@ -233,7 +239,7 @@ def main() -> None:
                 manifest_path.parent.mkdir(parents=True, exist_ok=True)
                 manifest_path.write_text(json.dumps(manifest, indent=2))
 
-    log.info("=== Krea2 A/B generation complete: %d images ===", len(manifest.get("clips", [])))
+    log.info("=== Krea2 A/B generation complete: %d images ===", len(manifest.get("images", [])))
 
 
 if __name__ == "__main__":
