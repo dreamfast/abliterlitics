@@ -87,7 +87,10 @@ def load_krea2_dit(dit_file: str | Path, device: str = "cuda", dtype: torch.dtyp
         cfg["txtdim"],
     )
 
-    quant = comfy.utils.detect_layer_quantization(sd, _DIT_PREFIX)
+    # Two packaging styles on disk: prefixed (redcraft stand-in) and bare
+    # (official turbo export) — detect which, use for quant detection + strip.
+    dit_prefix = _DIT_PREFIX if any(k.startswith(_DIT_PREFIX) for k in sd) else ""
+    quant = comfy.utils.detect_layer_quantization(sd, dit_prefix)
     if quant:
         ops: Any = comfy.ops.mixed_precision_ops(quant, compute_dtype=dtype)
         log.info("checkpoint is layer-quantized (int8_tensorwise) -> mixed_precision_ops")
@@ -95,7 +98,7 @@ def load_krea2_dit(dit_file: str | Path, device: str = "cuda", dtype: torch.dtyp
         ops = comfy.ops.disable_weight_init
 
     model = SingleStreamDiT(operations=ops, device=device, dtype=dtype, image_model="krea2", **cfg)
-    stripped = {k[len(_DIT_PREFIX) :]: v for k, v in sd.items() if k.startswith(_DIT_PREFIX)}
+    stripped = {(k[len(dit_prefix) :] if dit_prefix else k): v for k, v in sd.items()}
     unexpected = [k for k in stripped if not k.endswith((".comfy_quant", ".weight_scale"))]
     missing, unexpected_keys = model.load_state_dict(stripped, strict=False)
     if missing:
