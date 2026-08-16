@@ -154,7 +154,7 @@ def main() -> int:
         else [Path(f).stem for f in variant_files]
     )
     img_len = (args.latent_hw // 2) ** 2  # patch 2
-    capture = AttentionCapture(img_len=img_len, device=args.device)
+    capture = AttentionCapture(device=args.device)
 
     sigmas = _sigma_schedule(args.n_steps).to(args.device)
     g = torch.Generator(device="cpu").manual_seed(args.seed)
@@ -187,6 +187,12 @@ def main() -> int:
             recs_v_all: list[dict[str, Any]] = []
             x0 = torch.randn(1, 16, args.latent_hw, args.latent_hw, generator=g).to(args.device).to(torch.bfloat16)
             xb, xv = x0.clone(), x0.clone()
+            # per-prompt layout: text keys leading, image queries after (phase-9
+            # capture API; numerically identical to the old img_len constructor)
+            capture.configure(
+                text_len=int(ctx_b.shape[0]),
+                query_segments={"img": (int(ctx_b.shape[0]), int(ctx_b.shape[0]) + img_len)},
+            )
             step_layer: dict[tuple[int, int], dict[str, float]] = {}
             for i in range(args.n_steps):
                 s = float(sigmas[i])
