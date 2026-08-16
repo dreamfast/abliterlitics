@@ -22,6 +22,11 @@ Options:
    --variants LIST     Arm filter (default: base + all with te_file)
    --labels LIST       Prompt-label filter
    --duration SEC      Clip duration (default 5)
+   --workflow PATH     Workflow json (default workflows/h3_t2v_api.json;
+                       pass workflows/h3_t2v_stock_api.json for the official
+                       res_multistep/20-step no-turbo control)
+   --out-subdir NAME   Output subdir under results/<name>/ (default ab_videos;
+                       e.g. ab_videos_stock keeps the control battery separate)
    --smoke             Tag manifest smoke=true (stand-in runs)
    --dry-run           Preview
    -h, --help          Show this help
@@ -34,6 +39,8 @@ SEEDS="42"
 VARIANTS=""
 LABELS=""
 DURATION="5"
+WORKFLOW_OVERRIDE=""
+OUT_SUBDIR="ab_videos"
 SMOKE_FLAG=()
 DRY_RUN=0
 COMP_DIR=""
@@ -45,6 +52,8 @@ while [[ $# -gt 0 ]]; do
         --variants) VARIANTS="$2"; shift 2 ;;
         --labels) LABELS="$2"; shift 2 ;;
         --duration) DURATION="$2"; shift 2 ;;
+        --workflow) WORKFLOW_OVERRIDE="$2"; shift 2 ;;
+        --out-subdir) OUT_SUBDIR="$2"; shift 2 ;;
         --smoke) SMOKE_FLAG=("--smoke"); shift ;;
         --dry-run) DRY_RUN=1; EXTRA_ARGS+=("--dry-run"); shift ;;
         -h|--help) usage ;;
@@ -60,8 +69,10 @@ done
 
 load_comparison "$COMP_DIR"
 COMPARISON_DIR="$(cd "$(dirname "${COMPARISON_DIR}")" && pwd)/$(basename "${COMPARISON_DIR}")"
-OUT_DIR="${COMPARISON_DIR}/results/${COMPARISON_NAME}/ab_videos"
+OUT_DIR="${COMPARISON_DIR}/results/${COMPARISON_NAME}/${OUT_SUBDIR}"
 WORKFLOW="${COMPARISON_DIR}/workflows/h3_t2v_api.json"
+[[ -n "${WORKFLOW_OVERRIDE}" ]] && WORKFLOW="${WORKFLOW_OVERRIDE}"
+WORKFLOW_C="${WORKFLOW/#${COMPARISON_DIR}//comp}"
 [[ -f "${WORKFLOW}" ]] || { error "Workflow not found: ${WORKFLOW}"; exit 1; }
 
 [[ -n "${VARIANTS}" ]] && EXTRA_ARGS+=("--variants" "${VARIANTS}")
@@ -77,10 +88,10 @@ docker_run_cpu "${TE_IMAGE}" \
     -e PYTHONPATH=/app \
     -- \
     -m src.text_encoder.run_h3_ab \
-        --workflow /comp/workflows/h3_t2v_api.json \
+        --workflow "${WORKFLOW_C}" \
         --comparison /comp/comparison.json \
         --api-url http://host.docker.internal:8191 \
-        --out-dir "/comp/results/${COMPARISON_NAME}/ab_videos" \
+        --out-dir "/comp/results/${COMPARISON_NAME}/${OUT_SUBDIR}" \
         --prompt-suite "/app/${SUITE}" \
         --seeds "${SEEDS}" \
         --duration "${DURATION}" \
