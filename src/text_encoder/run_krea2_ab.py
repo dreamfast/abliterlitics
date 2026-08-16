@@ -2,17 +2,20 @@
 
 For each arm's TE, patches the exported Krea2 t2i workflow
 (``krea2_t2i_api.json``, converted from the user's ``krea2_pro_bird.json``):
-swaps the CLIPLoader clip_name, sets the CLIPTextEncode prompt, fixes BOTH
-KSampler seeds (two-stage graph: 6-step gen + 2-step denoise-0.2 refine —
-each stage derives its noise from its seed), and sets the SaveImageWebP
-filename_prefix. Shares the ComfyUI client (one copy of the lesson-#39
-semantics; WebP outputs fetch exactly like images).
+swaps the TE loader (``CLIPLoader`` for safetensors, ``CLIPLoaderGGUF`` for
+.gguf arms — class swapped in place, ``type: krea2`` preserved), optionally
+patches the ``UNETLoader`` DiT name (config-driven stand-in/turbo swap), sets
+the CLIPTextEncode prompt, fixes BOTH KSampler seeds (two-stage graph:
+6-step gen + 2-step denoise-0.2 refine — each stage derives its noise from
+its seed), and sets the SaveImageWebP filename_prefix. Shares the ComfyUI
+client (one copy of the lesson-#39 semantics; WebP outputs fetch exactly
+like images).
 
 Outputs:
     <out-dir>/<variant>/<label>__seed<seed>.webp
     <out-dir>/manifest.json                      (provenance + perf + targets;
-                                                  z-image "images" layout so
-                                                  run_img_metrics consumes it)
+                                                   z-image "images" layout so
+                                                   run_img_metrics consumes it)
 
 Node targeting is class-type based (assert exactly one match each, except
 KSampler which is ALL-of-them — both stages must share the A/B seed),
@@ -43,7 +46,8 @@ from src.text_encoder.comfy_client import comfy_te_name, query_vram, queue_and_f
 
 log = logging.getLogger(__name__)
 
-TE_LOADER = "CLIPLoader"  # krea2 TEs are safetensors (no GGUF arms planned)
+TE_LOADER_SAFETENSORS = "CLIPLoader"
+TE_LOADER_GGUF = "CLIPLoaderGGUF"
 
 
 def _find_node(wf: dict[str, Any], class_type: str, input_name: str = "") -> tuple[str, dict[str, Any]]:
@@ -59,28 +63,70 @@ def _find_node(wf: dict[str, Any], class_type: str, input_name: str = "") -> tup
     return nid, node
 
 
+def _find_te_loader(wf: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Find the UNIQUE TE loader node — CLIPLoader or CLIPLoaderGGUF.
+
+    The workflow carries ONE TE loader whose class depends on the arm being
+    patched (safetensors vs .gguf), so matching either class keeps both the
+    patcher and the post-patch te_node_id lookup correct.
+    """
+    matches = [(nid, n) for nid, n in wf.items() if n.get("class_type") in (TE_LOADER_SAFETENSORS, TE_LOADER_GGUF)]
+    if len(matches) != 1:
+        raise ValueError(
+            f"Expected exactly one TE loader ({TE_LOADER_SAFETENSORS}/{TE_LOADER_GGUF}) node in workflow, "
+            f"found {len(matches)}: {[nid for nid, _ in matches]}"
+        )
+    nid, node = matches[0]
+    if "clip_name" not in node.get("inputs", {}):
+        raise ValueError(f"TE loader node {nid} ({node.get('class_type')}) lacks input 'clip_name'")
+    return nid, node
+
+
 def krea2_patch_workflow(
     workflow: dict[str, Any],
     te_name: str,
     prompt: str,
     seed: int,
     filename_prefix: str,
+    dit_name: str | None = None,
 ) -> dict[str, Any]:
-    """Copy of the workflow with TE + prompt + seeds + prefix patched.
+    """Copy of the workflow with TE + prompt + seeds + prefix (+ DiT) patched.
 
-    Fail-loud: CLIPLoader/CLIPTextEncode asserted unique; every KSampler
+    Fail-loud: TE loader/CLIPTextEncode asserted unique; every KSampler
     (both stages of the two-stage graph) gets the same fixed seed so the
-    A/B pair differs ONLY by the text encoder.
+    A/B pair differs ONLY by the text encoder. ``te_name`` ending in .gguf
+    swaps the loader class to CLIPLoaderGGUF in place (type/device inputs
+    preserved); ``dit_name`` patches the UNETLoader so the stand-in/turbo
+    DiT swap is config-driven (None = leave the workflow's DiT untouched).
     """
     wf: dict[str, Any] = json.loads(json.dumps(workflow))  # deep copy
 
-    _nid, clip_node = _find_node(wf, TE_LOADER, input_name="clip_name")
-    clip_node["inputs"]["clip_name"] = te_name
-    if clip_node["inputs"].get("type") != "krea2":
+    clip_nid, clip_node = _find_te_loader(wf)
+    te_type = clip_node["inputs"].get("type")
+    if te_type != "krea2":
         raise ValueError(
-            f"CLIPLoader type is {clip_node['inputs'].get('type')!r}, expected 'krea2' — "
+            f"TE loader type is {te_type!r}, expected 'krea2' — "
             "wrong workflow file (this is the 12-tap VL interface, not qwen_image)"
         )
+    is_gguf = te_name.lower().endswith(".gguf")
+    loader = TE_LOADER_GGUF if is_gguf else TE_LOADER_SAFETENSORS
+    if clip_node["class_type"] != loader:
+        # Swap class, preserving the type/device inputs ComfyUI-GGUF shares
+        old_inputs = clip_node["inputs"]
+        wf[clip_nid] = {
+            "class_type": loader,
+            "inputs": {
+                "clip_name": te_name,
+                "type": te_type,
+                **({"device": old_inputs["device"]} if "device" in old_inputs else {}),
+            },
+        }
+    else:
+        clip_node["inputs"]["clip_name"] = te_name
+
+    if dit_name is not None:
+        _unid, unet_node = _find_node(wf, "UNETLoader", input_name="unet_name")
+        unet_node["inputs"]["unet_name"] = dit_name
 
     _nid, encode_node = _find_node(wf, "CLIPTextEncode", input_name="text")
     encode_node["inputs"]["text"] = prompt
@@ -128,6 +174,12 @@ def main() -> None:
     p.add_argument("--out-dir", required=True)
     p.add_argument("--models-root", default="/home/maxx/extra/comfyui-models")
     p.add_argument("--prompt-suite", required=True)
+    p.add_argument(
+        "--dit-name",
+        default="",
+        help="UNETLoader unet_name to patch in (default: basename of settings.tebench.dit_file; "
+        "'none' (any case) leaves the workflow's DiT untouched)",
+    )
     p.add_argument("--seeds", default="42", help="Comma-separated seed list (default 42)")
     p.add_argument("--labels", default="", help="Comma-separated prompt-label filter")
     p.add_argument("--variants", default="", help="Comma-separated arm filter (default: base + all with te_file)")
@@ -141,6 +193,19 @@ def main() -> None:
     workflow = json.loads(Path(args.workflow).read_text())
     comparison = json.loads(Path(args.comparison).read_text())
     suite = load_krea2_suite(Path(args.prompt_suite))
+
+    # DiT resolution: explicit --dit-name > settings.tebench.dit_file basename
+    # > None (workflow untouched). Config-driven so the stand-in -> turbo
+    # swap never needs a workflow file edit.
+    if args.dit_name:
+        dit_name = None if args.dit_name.lower() == "none" else args.dit_name
+    else:
+        cfg_dit = comparison.get("settings", {}).get("tebench", {}).get("dit_file", "")
+        dit_name = Path(cfg_dit).name if cfg_dit else None
+    if dit_name:
+        log.info("DiT: patching UNETLoader -> %s", dit_name)
+    else:
+        log.info("DiT: leaving workflow DiT untouched")
     if args.labels:
         label_filter = {s.strip() for s in args.labels.split(",") if s.strip()}
         suite = [pr for pr in suite if (pr.get("label") or sanitize(pr["text"])) in label_filter]
@@ -174,6 +239,7 @@ def main() -> None:
         "api_url": args.api_url,
         "prompt_suite": str(args.prompt_suite),
         "seed": seeds[0],
+        "dit_name": dit_name,
         "smoke": bool(args.smoke),
         "images": [],
     }
@@ -182,6 +248,13 @@ def main() -> None:
         manifest = json.loads(manifest_path.read_text())
         if args.smoke:
             manifest["smoke"] = True
+        # Resume path: keep dit_name provenance honest — update when this run
+        # knows it, warn if it contradicts what earlier entries were built with.
+        if dit_name is not None:
+            prior = manifest.get("dit_name")
+            if prior is not None and prior != dit_name:
+                log.warning("Manifest dit_name %r != this run's %r — mixed-DiT manifest!", prior, dit_name)
+            manifest["dit_name"] = dit_name
 
     done: set[str] = {e["key"] for e in manifest.get("images", [])}
     by_variant: OrderedDict[str, str] = OrderedDict(jobs)
@@ -204,8 +277,9 @@ def main() -> None:
                     prompt=pr["text"],
                     seed=seed,
                     filename_prefix=f"abliterlitics-krea2/{name}",
+                    dit_name=dit_name,
                 )
-                data, perf = queue_and_fetch(args.api_url, wf, te_node_id=_find_node(wf, TE_LOADER)[0])
+                data, perf = queue_and_fetch(args.api_url, wf, te_node_id=_find_te_loader(wf)[0])
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 out_path.write_bytes(data)
                 vram_cap = query_vram(args.api_url) if first_clip else None

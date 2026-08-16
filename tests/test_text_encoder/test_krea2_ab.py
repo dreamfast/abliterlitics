@@ -121,14 +121,85 @@ class TestKrea2Patch:
         with pytest.raises(ValueError, match="filename_prefix"):
             krea2_patch_workflow(wf, "x.safetensors", "p", 1, "pre")
 
+    def test_gguf_arm_swaps_loader_class(self) -> None:
+        """A .gguf te_name swaps CLIPLoader -> CLIPLoaderGGUF in place, type/device preserved."""
+        wf = krea2_patch_workflow(
+            _krea2_workflow(),
+            te_name="qwen3vl_4b-Q4_K_M.gguf",
+            prompt="p",
+            seed=1,
+            filename_prefix="pre",
+        )
+        clip = wf["54"]
+        assert clip["class_type"] == "CLIPLoaderGGUF"
+        assert clip["inputs"]["clip_name"] == "qwen3vl_4b-Q4_K_M.gguf"
+        assert clip["inputs"]["type"] == "krea2"
+        assert clip["inputs"]["device"] == "default"
+
+    def test_gguf_arm_without_device_input(self) -> None:
+        wf = _krea2_workflow()
+        del wf["54"]["inputs"]["device"]
+        patched = krea2_patch_workflow(wf, "x.gguf", "p", 1, "pre")
+        assert patched["54"]["class_type"] == "CLIPLoaderGGUF"
+        assert "device" not in patched["54"]["inputs"]
+
+    def test_safetensors_arm_on_gguf_workflow_swaps_back(self) -> None:
+        wf = _krea2_workflow()
+        wf["54"]["class_type"] = "CLIPLoaderGGUF"
+        patched = krea2_patch_workflow(wf, "x.safetensors", "p", 1, "pre")
+        assert patched["54"]["class_type"] == "CLIPLoader"
+        assert patched["54"]["inputs"]["clip_name"] == "x.safetensors"
+
+    def test_gguf_wrong_type_still_fails_loud(self) -> None:
+        wf = _krea2_workflow()
+        wf["54"]["inputs"]["type"] = "qwen_image"
+        with pytest.raises(ValueError, match="krea2"):
+            krea2_patch_workflow(wf, "x.gguf", "p", 1, "pre")
+
+    def test_two_te_loaders_fail_loud(self) -> None:
+        wf = _krea2_workflow()
+        wf["54b"] = {"class_type": "CLIPLoaderGGUF", "inputs": {"clip_name": "y.gguf", "type": "krea2"}}
+        with pytest.raises(ValueError, match="TE loader"):
+            krea2_patch_workflow(wf, "x.safetensors", "p", 1, "pre")
+
+    def test_dit_patch(self) -> None:
+        wf = krea2_patch_workflow(
+            _krea2_workflow(),
+            te_name="heretic.safetensors",
+            prompt="p",
+            seed=1,
+            filename_prefix="pre",
+            dit_name="krea2_turbo_int8_convrot.safetensors",
+        )
+        assert wf["69"]["inputs"]["unet_name"] == "krea2_turbo_int8_convrot.safetensors"
+
+    def test_dit_none_leaves_unet_untouched(self) -> None:
+        wf = krea2_patch_workflow(_krea2_workflow(), "heretic.safetensors", "p", 1, "pre", dit_name=None)
+        assert wf["69"]["inputs"]["unet_name"] == "dit.safetensors"
+
+    def test_missing_unet_loader_fails_loud_when_dit_requested(self) -> None:
+        wf = _krea2_workflow()
+        del wf["69"]
+        with pytest.raises(ValueError, match="UNETLoader"):
+            krea2_patch_workflow(wf, "x.safetensors", "p", 1, "pre", dit_name="turbo.safetensors")
+
     def test_real_workflow_file_patches(self) -> None:
         """The committed workflow file stays patch-compatible (guards re-exports)."""
         wf_path = Path(__file__).parents[2] / "comparisons/te-krea2/workflows/krea2_t2i_api.json"
         if not wf_path.exists():
             pytest.skip("workflow file not present (comparisons/ untracked in some checkouts)")
-        wf = krea2_patch_workflow(json.loads(wf_path.read_text()), "heretic.safetensors", "p", 7, "pre")
+        wf = krea2_patch_workflow(
+            json.loads(wf_path.read_text()),
+            "heretic.safetensors",
+            "p",
+            7,
+            "pre",
+            dit_name="krea2_turbo_int8_convrot.safetensors",
+        )
         clip = next(n for n in wf.values() if n.get("class_type") == "CLIPLoader")
         assert clip["inputs"]["clip_name"] == "heretic.safetensors"
+        unet = next(n for n in wf.values() if n.get("class_type") == "UNETLoader")
+        assert unet["inputs"]["unet_name"] == "krea2_turbo_int8_convrot.safetensors"
 
 
 class TestSuite:
