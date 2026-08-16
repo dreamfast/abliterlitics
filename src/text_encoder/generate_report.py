@@ -74,6 +74,21 @@ COLORS = ["#4c72b0", "#dd8452", "#55a868", "#c44e52", "#8172b3", "#937860", "#da
 # ---------------------------------------------------------------------------
 
 
+def _headline_stream(var: dict[str, Any]) -> dict[str, Any] | None:
+    """The DiT-input stream for a variant, across backend stream namings.
+
+    z-image: refined_context / cap_embedded; krea2 12-tap: connector_out /
+    txtfusion_out / tap_stack (connector_out IS the DiT input). First stream
+    carrying quant-unit divergence wins.
+    """
+    streams: dict[str, dict[str, Any]] = var["streams"]
+    for name in ("refined_context", "cap_embedded", "connector_out", "txtfusion_out", "consumed_hidden"):
+        sr = streams.get(name)
+        if sr and sr.get("damage_quant_units") is not None:
+            return sr
+    return None
+
+
 def load_results(results_dir: Path) -> list[dict[str, Any]]:
     """Load all te_*.json result files.
 
@@ -292,8 +307,8 @@ def graph_damage_ranking(variants: list[dict[str, Any]], out: Path) -> None:
     variants = _group_ordered([v for v in variants if not v["name"].endswith("__vs_base")])
     rows: list[tuple[dict[str, Any], float]] = []
     for var in variants:
-        sr = var["streams"].get("refined_context") or var["streams"].get("cap_embedded")
-        if sr and sr.get("damage_quant_units") is not None:
+        sr = _headline_stream(var)
+        if sr is not None:
             rows.append((var, sr["damage_quant_units"]))
 
     if not rows:
@@ -525,8 +540,8 @@ def graph_gguf_ladder(variants: list[dict[str, Any]], out: Path) -> None:
     for var in variants:
         if var["name"].endswith("__vs_base"):
             continue
-        sr = var["streams"].get("refined_context") or var["streams"].get("cap_embedded")
-        if not sr or sr.get("damage_quant_units") is None:
+        sr = _headline_stream(var)
+        if sr is None:
             continue
         dmg = float(sr["damage_quant_units"])
         if var.get("gguf"):
@@ -964,7 +979,7 @@ def _gguf_section(variants: list[dict[str, Any]], divergence: dict[str, dict[str
     rows_heretic: list[tuple[float, str]] = []
     for var in gguf_vars:
         g = var["gguf"]
-        sr = var["streams"].get("refined_context") or var["streams"].get("cap_embedded")
+        sr = _headline_stream(var)
         dmg = sr.get("damage_quant_units") if sr else None
         ci = sr.get("damage_quant_ci") if sr else None
         sem = sr.get("damage_semantic_units") if sr else None
@@ -1562,7 +1577,7 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
         # skip here to avoid duplicating the primary variant's findings.
         if var["name"].endswith("__vs_base"):
             continue
-        sr = var["streams"].get("refined_context") or var["streams"].get("cap_embedded")
+        sr = _headline_stream(var)
         dmg_val = sr.get("damage_quant_units") if sr else None
         if _is_reference_variant(var):
             # Pure quantization floor: how much the quant alone perturbs conditioning
@@ -1589,7 +1604,7 @@ def _key_findings(variants: list[dict[str, Any]], backend: str) -> list[str]:
                     f"{at_consumed[2]:.2f}× - a <b>{filt:.0f}× lower-divergence</b> layer than the encoder's peak."
                 )
         # DiT-input divergence + taboo ratio
-        sr = var["streams"].get("refined_context") or var["streams"].get("cap_embedded")
+        sr = _headline_stream(var)
         if sr and sr.get("per_category"):
             pc = sr["per_category"]
             inn, ext = pc.get("innocent", {}).get("mse"), pc.get("extreme", {}).get("mse")
