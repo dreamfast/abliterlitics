@@ -56,7 +56,7 @@ COMPARISON_DIR="$(cd "$(dirname "${COMPARISON_DIR}")" && pwd)/$(basename "${COMP
 RESULTS_DIR="${COMPARISON_DIR}/results/${COMPARISON_NAME}/text_encoder"
 DIT_FILE="${TEBENCH_DIT_FILE:-}"
 BASE_TE="${TEBENCH_BASE_TE_FILE:-}"
-if [[ -z "${SUITE_CLI}" ]]; then SUITE="${TEBENCH_PROMPT_SUITE:-prompts/te_krea2_prompts.yaml}"; fi
+if [[ -z "${SUITE_CLI:-}" ]]; then SUITE="${TEBENCH_PROMPT_SUITE:-prompts/te_krea2_prompts.yaml}"; fi
 COMFYUI_PATH="${TEBENCH_COMFYUI_PATH:-/home/maxx/comfyui-docker/comfyui}"
 
 [[ "${TEBENCH_BACKEND:-}" == "krea2" ]] || { error "This runner is krea2-only"; exit 1; }

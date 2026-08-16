@@ -62,8 +62,12 @@ def load_krea2_dit(dit_file: str | Path, device: str = "cuda", dtype: torch.dtyp
         for k in keys:
             sd[k] = f.get_tensor(k)
 
+    # Two packaging styles: prefixed (redcraft stand-in) and bare (official
+    # turbo export) — same dual handling as load_dit_txtfusion_sd.
+    _pref = _DIT_PREFIX if keys and keys[0].startswith(_DIT_PREFIX) else ""
+
     def g(name: str) -> torch.Tensor:
-        return sd[_DIT_PREFIX + name]
+        return sd[_pref + name]
 
     head_dim = 128
     first_w = g("first.weight")  # (features, channels*patch^2)
@@ -71,7 +75,7 @@ def load_krea2_dit(dit_file: str | Path, device: str = "cuda", dtype: torch.dtyp
         "features": int(first_w.shape[0]),
         "channels": int(first_w.shape[1]) // 4,  # patch=2 -> patch^2=4
         "patch": 2,
-        "layers": _count_blocks(keys, _DIT_PREFIX + r"blocks\.(\d+)\."),
+        "layers": _count_blocks(keys, "^" + _pref + r"blocks\.(\d+)\."),
         "heads": int(g("blocks.0.attn.wq.weight").shape[0]) // head_dim,
         "kvheads": int(g("blocks.0.attn.wk.weight").shape[0]) // head_dim,
         "txtlayers": int(g("txtfusion.projector.weight").shape[1]),
