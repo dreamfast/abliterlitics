@@ -20,6 +20,7 @@ import json
 import logging
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -214,6 +215,26 @@ def _queue_once(api_url: str, wf: dict[str, Any], te_node_id: str = "") -> tuple
     raise TimeoutError(f"ComfyUI did not finish {prompt_id} within {POLL_TIMEOUT}s")
 
 
+def flush_loaded_models(api_url: str) -> bool:
+    """POST /free {"unload_models": true} — drop loaded models from memory.
+
+    Used between transient retries: a failed TE load can leave a bad CLIP
+    object in the node-output cache, and every re-queue would REUSE it
+    (execution_cached) without re-loading. Flushing forces a fresh load.
+    """
+    try:
+        req = urllib.request.Request(
+            api_url.rstrip("/") + "/free",
+            data=json.dumps({"unload_models": True}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return int(resp.status) == 200
+    except (urllib.error.URLError, OSError) as e:
+        log.warning("/free flush failed (non-fatal): %s", e)
+        return False
+
+
 def queue_and_fetch(api_url: str, wf: dict[str, Any], te_node_id: str = "") -> tuple[bytes, dict[str, Any]]:
     """Queue the workflow, wait for completion, return (output bytes, perf).
 
@@ -244,5 +265,9 @@ def queue_and_fetch(api_url: str, wf: dict[str, Any], te_node_id: str = "") -> t
             last_err = e
             log.warning("Transient krea2 TE staging failure (attempt %d/%d): %s", attempt, TRANSIENT_RETRY_ATTEMPTS, e)
             if attempt < TRANSIENT_RETRY_ATTEMPTS:
+                # Force a fresh TE load on retry: a failed load can leave a
+                # bad CLIP object in the node-output cache (execution_cached),
+                # which plain re-queues would silently reuse forever.
+                flush_loaded_models(api_url)
                 time.sleep(TRANSIENT_RETRY_BACKOFF_S)
     raise last_err if last_err else RuntimeError("unreachable")
