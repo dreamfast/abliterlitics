@@ -15,6 +15,7 @@ Usage: $(basename "$0") [OPTIONS] <comparison_dir>
 
 Options:
    --variant NAME     Only this variant (default: all with te_file)
+   --suite PATH       Prompt suite (default prompts/te_h3_suite.yaml)
    --n-prompts N      Prompts to encode (default 2; 32B TE encode is slow on CPU)
    --n-steps N        Euler steps (default 4)
    --device DEV       cuda | cpu (default cuda; GPU 0)
@@ -24,6 +25,7 @@ EOF
     exit 0
 }
 
+SUITE="prompts/te_h3_suite.yaml"
 N_PROMPTS=2
 N_STEPS=4
 DEVICE="cuda"
@@ -32,6 +34,7 @@ DRY_RUN=0
 COMP_DIR=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --suite) SUITE="$2"; SUITE_CLI=1; shift 2 ;;
         --n-prompts|--limit) N_PROMPTS="$2"; shift 2 ;;
         --n-steps) N_STEPS="$2"; shift 2 ;;
         --device) DEVICE="$2"; shift 2 ;;
@@ -52,7 +55,7 @@ COMPARISON_DIR="$(cd "$(dirname "${COMPARISON_DIR}")" && pwd)/$(basename "${COMP
 RESULTS_DIR="${COMPARISON_DIR}/results/${COMPARISON_NAME}/text_encoder"
 DIT_FILE="${TEBENCH_DIT_FILE:-}"
 BASE_TE="${TEBENCH_BASE_TE_FILE:-}"
-SUITE="${TEBENCH_PROMPT_SUITE:-prompts/te_h3_suite.yaml}"
+if [[ -z "${SUITE_CLI}" ]]; then SUITE="${TEBENCH_PROMPT_SUITE:-prompts/te_h3_suite.yaml}"; fi
 COMFYUI_PATH="${TEBENCH_COMFYUI_PATH:-/home/maxx/comfyui-docker/comfyui}"
 
 [[ "${TEBENCH_BACKEND:-}" == "h3" ]] || { error "This runner is h3-only"; exit 1; }

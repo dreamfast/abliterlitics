@@ -6,12 +6,14 @@ import json
 from pathlib import Path
 
 from src.text_encoder.h3_report import (
+    _attention_rows,
     _damage_ladder_rows,
     build_report,
     h8_verdict,
     h9_verdict,
     h10_verdict,
     h13_verdict,
+    h14_verdict,
     verdict_row,
 )
 
@@ -302,3 +304,54 @@ class TestDamageLadderRows:
     def test_missing_values_em_dash(self) -> None:
         html = _damage_ladder_rows({"smoke": False, "instruments": {}})
         assert "&mdash;" in html
+
+
+class TestH14:
+    def _attn(self, agg: float = 0.0012, audio: float = 0.0016, video: float = 0.0014) -> dict:
+        return {
+            "jsd_mean_all": agg,
+            "jsd_per_segment": {"audio": audio, "video": video},
+            "jsd_per_layer": {"0": 0.001, "40": 0.004},
+            "per_prompt": [],
+        }
+
+    def test_noise_scale_refuted_benign(self) -> None:
+        res = h14_verdict(self._attn())
+        assert "REFUTED (noise-scale)" in res["verdict"]
+        assert "audio 0.00160 / video 0.00140" in res["detail"]
+
+    def test_large_aggregate_supported(self) -> None:
+        res = h14_verdict(self._attn(agg=0.05))
+        assert res["verdict"] == "SUPPORTED"
+
+    def test_stream_selective_partial(self) -> None:
+        res = h14_verdict(self._attn(audio=0.004, video=0.001))
+        assert "PARTIAL (stream-selective)" in res["verdict"]
+
+    def test_missing(self) -> None:
+        assert h14_verdict(None)["verdict"] == "NOT RUN"
+        assert h14_verdict({})["verdict"] == "NOT RUN"
+
+    def test_attention_rows_renders_word_shifts(self) -> None:
+        attn = {
+            "jsd_mean_all": 0.0012,
+            "jsd_per_segment": {"audio": 0.0016, "video": 0.0014},
+            "jsd_per_layer": {"38": 0.0042},
+            "per_prompt": [
+                {
+                    "label": "prof_inconceivable",
+                    "prompt": "p",
+                    "tokens": ["a", " sign", " reading", " COFFEE"],
+                    "base_mean_readout": [0.1, 0.3, 0.3, 0.3],
+                    "variant_mean_readout": [0.1, 0.35, 0.25, 0.3],
+                }
+            ],
+        }
+        html = _attention_rows(attn)
+        assert "0.00120" in html and "0.00160" in html and "0.00140" in html
+        assert "38" in html and "0.00420" in html
+        assert "prof_inconceivable" in html
+        assert "sign +5.00pp" in html and "reading -5.00pp" in html  # word shifts rendered
+
+    def test_attention_rows_missing(self) -> None:
+        assert "unavailable" in _attention_rows(None)

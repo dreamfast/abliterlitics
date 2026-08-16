@@ -61,11 +61,18 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _suite_entries(suite_path: str) -> tuple[list[str], list[str]]:
+def _suite_entries(suite_path: str) -> tuple[list[str], list[str], dict[str, str]]:
     from src.text_encoder.suite import load_suite
 
     prompts, cats = load_suite(suite_path)
-    return prompts, cats
+    # label map (audio/video suites carry labels; plain te_suite does not)
+    import yaml
+
+    raw = yaml.safe_load(Path(suite_path).read_text())
+    if isinstance(raw, dict):
+        raw = raw.get("prompts", [])
+    labels = {str(e["text"]): str(e.get("label", "")) for e in raw if "text" in e}
+    return prompts, cats, labels
 
 
 def main() -> int:
@@ -81,7 +88,7 @@ def main() -> int:
     from src.text_encoder.backends.krea2_dit import sigma_schedule_flow
 
     comfyui_loader.import_comfy(args.comfyui, cpu=(args.device == "cpu"))
-    prompts, cats = _suite_entries(args.suite)
+    prompts, cats, label_map = _suite_entries(args.suite)
     if 0 < args.n_prompts < len(prompts):
         seen: set[str] = set()
         idxs: list[int] = []
@@ -221,6 +228,7 @@ def main() -> int:
                 {
                     "prompt": prompts[pi],
                     "category": cats[pi],
+                    "label": label_map.get(prompts[pi], ""),
                     "step_layer": {f"{s}_{ly}": m for (s, ly), m in sorted(step_layer.items())},
                     "step_layer_segment": {f"{s}_{ly}_{sg}": m for (s, ly, sg), m in sorted(step_layer_seg.items())},
                     "base_mean_readout": [round(float(x), 6) for x in base_mean] if base_mean is not None else [],

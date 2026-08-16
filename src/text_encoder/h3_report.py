@@ -211,6 +211,84 @@ the consumed layer 49. What the DiT reads (<code>refined_context</code>):
 from layer 0 and persist; it washes out within the first layers (journal #139/#140).</p>"""
 
 
+def h14_verdict(attn: dict[str, Any] | None) -> dict[str, str]:
+    """Attention readout (phase 9): do the DiT streams read the prompt
+    differently under the variant TE? Noise-scale aggregate with near-equal
+    segments = no readout shift; a stream-selective or large aggregate shift
+    is a conditioning-level signal worth escalating."""
+    if attn is None:
+        return {"verdict": "NOT RUN", "detail": "no tebench_attention_heretic.json"}
+    agg = attn.get("jsd_mean_all")
+    segs = attn.get("jsd_per_segment") or {}
+    if agg is None:
+        return {"verdict": "NOT RUN", "detail": "no jsd_mean_all"}
+    a = segs.get("audio")
+    v = segs.get("video")
+    seg_txt = f"aggregate {agg:.5f}" + (f", audio {a:.5f} / video {v:.5f}" if a is not None and v is not None else "")
+    ratio = (a / v) if (a and v) else None
+    if agg >= 0.01:
+        return {"verdict": "SUPPORTED", "detail": seg_txt + " — readout shift well above noise"}
+    if ratio is not None and ratio >= 2.0:
+        return {"verdict": "PARTIAL (stream-selective)", "detail": seg_txt + " — one stream shifts twice the other"}
+    return {"verdict": "REFUTED (noise-scale)", "detail": seg_txt + " — both streams shift at noise scale"}
+
+
+def _attention_rows(attn: dict[str, Any] | None) -> str:
+    """Attention section table FROM the tebench_attention json (no drift)."""
+    if not attn:
+        return "<tr><td colspan='3'>(attention results unavailable)</td></tr>"
+    segs = attn.get("jsd_per_segment") or {}
+    layers = attn.get("jsd_per_layer") or {}
+    peak_ly, peak_val = ("—", 0.0)
+    if layers:
+        peak_ly = max(layers, key=lambda k: layers[k])
+        peak_val = layers[peak_ly]
+    a = segs.get("audio")
+    v = segs.get("video")
+    n_prompts = len(attn.get("per_prompt", []))
+
+    def fmt(x: Any) -> str:
+        return f"{x:.5f}" if isinstance(x, (int, float)) else "&mdash;"
+
+    rows = [
+        "<tr><td>aggregate text-readout JSD</td>"
+        f"<td>{fmt(attn.get('jsd_mean_all'))}</td>"
+        f"<td>mean over {n_prompts} prompt(s) &times; steps &times; 50 layers</td></tr>",
+        "<tr><td>audio-stream readout JSD</td>"
+        f"<td>{fmt(a)}</td><td>what the audio stream reads from the prompt</td></tr>",
+        "<tr><td>video-stream readout JSD</td>"
+        f"<td>{fmt(v)}</td><td>what the video stream reads from the prompt</td></tr>",
+        "<tr><td>peak layer</td>"
+        f"<td>{escape(str(peak_ly))} ({fmt(peak_val)})</td>"
+        "<td>layer with the largest base/variant readout JSD</td></tr>",
+    ]
+
+    # word-level emphasis shifts (biggest gains/losses per prompt)
+    from src.text_encoder.attention_metrics import group_words
+
+    word_lines: list[str] = []
+    for pp in attn.get("per_prompt", [])[:16]:
+        toks = pp.get("tokens") or []
+        rb = pp.get("base_mean_readout") or []
+        rv = pp.get("variant_mean_readout") or []
+        if not toks or len(rb) != len(rv) or not rb:
+            continue
+        wb = dict(group_words(toks, rb))
+        wv = dict(group_words(toks, rv))
+        deltas = sorted((wv.get(w, 0.0) - wb.get(w, 0.0), w) for w in set(wb) | set(wv))
+        if not deltas:
+            continue
+        top = deltas[-2:] + deltas[:1]  # two biggest gains, one biggest loss
+        parts = [f"{w} {'+' if d > 0 else ''}{d * 100:.2f}pp" for d, w in top if abs(d) > 1e-4]
+        if parts:
+            word_lines.append(
+                f"<code>{escape(pp.get('label') or pp.get('prompt', '')[:40])}</code>: " + ", ".join(parts)
+            )
+    if word_lines:
+        rows.append("<tr><td>word emphasis shifts</td><td colspan='2'>" + "<br>".join(word_lines[:6]) + "</td></tr>")
+    return "".join(rows)
+
+
 def _damage_ladder_rows(damage: dict[str, Any] | None) -> str:
     """Render the six-instrument table FROM the consolidated json (no drift)."""
     if not damage or damage.get("smoke"):
@@ -287,6 +365,7 @@ def build_report(results_dir: Path, out_html: Path) -> str:
     video = _load(results_dir / "tebench_h3_video.json")
     cond = _load(results_dir / "te_heretic.json")
     damage = _load(results_dir / "tebench_h3_audio_damage.json")
+    attn = _load(results_dir / "tebench_attention_heretic.json")
 
     smoke_refusal = bool((audio or {}).get("smoke")) or bool((video or {}).get("smoke"))
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -322,6 +401,11 @@ def build_report(results_dir: Path, out_html: Path) -> str:
             "H13",
             "Voice-quality damage (p-e-w follow-up): the TE makes speech sound worse",
             h13_verdict(damage),
+        ),
+        verdict_row(
+            "H14",
+            "Attention readout: the DiT streams read the prompt differently under the variant TE",
+            h14_verdict(attn),
         ),
     ]
 
@@ -423,6 +507,19 @@ nulls 0.10&ndash;0.16), zero MOS shift (DNSMOS CIs straddle 0), no accent shift,
 and the flagged word measurably <i>more</i> similar cross-arm at fixed seed than
 same-arm across seeds. Perception explanation: some draws drift accent-flavoured;
 a British ear flags them; rerolling fixes it. Different, not damaged.</p>
+
+<h2>H14 &mdash; attention readout (phase 9: what the DiT READS)</h2>
+<p>Hooked the fl2va joint attention (comfy's <code>optimized_attention_override</code>)
+during paired Euler denoise: per text token, the attention mass each stream
+(audio / video) directs at it &mdash; base vs variant TE. The conditioning-level
+view behind the generation batteries; the word table is the t2i/t2v analogue
+of emphasis measurement.</p>
+<table><tr><th>metric</th><th>value</th><th>meaning</th></tr>
+{_attention_rows(attn)}</table>
+<p class="explainer"><b>Reading:</b> both streams shift their prompt readout at
+noise scale under the heretic TE; the audio stream shifts slightly more than
+video &mdash; the conditioning-level echo of the speech-perturbation finding
+(lesson 43), consistent in magnitude with the damage-null verdicts.</p>
 
 <h2>Verdicts</h2>
 <table><tr><th>ID</th><th>Hypothesis</th><th>Evidence</th><th>Verdict</th></tr>
