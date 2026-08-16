@@ -73,3 +73,30 @@ from the stand-in pair) and the seed-change video anchor.
 5. Re-run: T2 analysis (base vs heretic), T3 generation (base + heretic arms,
    seeds 42/43/44), T4 audio battery (real, no smoke flag), T5 video, T6
    directional, T7 report (verdicts unlock).
+
+## Audio-damage investigation (2026-08-16, journals #147–#149)
+
+Trigger: p-e-w reported the heretic TE "makes the voice sound worse" (word:
+"utterly"). Six instruments, all converged on NULL (noise injection, not
+damage):
+
+1. **Audio-VAE ladder** (MiniMaxH3AudioVAE.encode, whisper-free): te_swap
+   speech 0.797 (turbo) / 0.851 (stock) ≈ quant control 0.811/0.870; ≪ seed
+   reroll 0.20; ambient ~0.96. Speech is the TE-sensitive channel for ANY
+   weight perturbation (abliteration OR pure nvfp4 quantization).
+2. **Delta-direction**: te_swap deltas mean pairwise cos 0.007 (turbo) /
+   0.017 (stock) vs seed nulls 0.10–0.16 — no shared direction, no tilt.
+3. **Word forensics** ("utterly"): te_swap mel_cos 0.857 > within-arm seed
+   0.730 — cross-arm same-seed MORE similar than same-arm cross-seed; F0
+   in-band; flatness clean.
+4. **DNSMOS P.808/P.835** (vendored official): paired diffs SIG −0.017,
+   OVRL −0.044, P808 −0.003 — all 95% CIs straddle 0; heretic ≈ nvfp4.
+5. **Accent classifier**: Native/Foreign 79.2% vs base 79.6% — no shift.
+6. User blind listening: "both sound fine, just some variation".
+
+**Stock-config control battery** (`ab_videos_stock/`, official
+res_multistep/20-step no-turbo graph from the official r2v workflow, 3 arms
+× 16 lines × 3 seeds = 144 clips, smoke=false): same fingerprint, same
+null. The turbo-config objection is closed.
+
+Probes: `scripts/probe_h3_{audio_vae_distance,delta_direction,word_forensics,dnsmos,mos_accent}.py`.
