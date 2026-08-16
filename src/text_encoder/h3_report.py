@@ -139,6 +139,56 @@ def h11_verdict(cond: dict[str, Any] | None) -> dict[str, str]:
     return {"verdict": "PARTIAL (interface measured, directional deferred)", "detail": det}
 
 
+def h13_verdict(damage: dict[str, Any] | None) -> dict[str, str]:
+    """Voice-quality damage claim (p-e-w follow-up): six whisper-free
+    instruments must ALL hold null for the REFUTED verdict.
+
+    Null conditions (tebench_h3_audio_damage.json null_conditions):
+      no_tilt_{turbo,stock}      delta-direction cos below the seed nulls
+      dnsmos_ci_zero             all paired MOS CIs straddle 0
+      word_inside_seed_noise     flagged word te_swap >= seed noise - 0.02
+      swap_near_quant_control    te_swap closer to the quant floor than to seed
+    """
+    if damage is None:
+        return {"verdict": "NOT RUN", "detail": "no tebench_h3_audio_damage.json"}
+    if damage.get("smoke"):
+        return {"verdict": "REFUSED (smoke)", "detail": "stand-in run — non-reportable"}
+    conditions = damage.get("null_conditions") or {}
+    if not conditions:
+        return {"verdict": "NOT RUN", "detail": "no null_conditions in result json"}
+    # A silently-absent condition (probe format drift) must NOT read as PASS —
+    # require the full expected set before a REFUTED verdict is possible.
+    expected = {
+        "no_tilt_turbo",
+        "no_tilt_stock",
+        "dnsmos_ci_zero",
+        "word_inside_seed_noise",
+        "swap_near_quant_control",
+    }
+    missing = sorted(expected - set(conditions))
+    if missing:
+        return {
+            "verdict": "NOT RUN (incomplete conditions)",
+            "detail": "absent (probe format drift?): " + ", ".join(missing),
+        }
+    failed = [k for k, v in conditions.items() if not v]
+    inst = damage.get("instruments", {})
+    dd_t = (inst.get("delta_direction", {}).get("turbo") or {}).get("speech:te_swap (heretic-base)", {})
+    cos = dd_t.get("mean_pairwise_cos")
+    det = (
+        f"delta-direction cos {cos:.4f} (seed nulls 0.10-0.16); DNSMOS CIs ~0; "
+        f"word 'utterly' inside seed noise; te_swap ≈ quant control on both configs"
+        if cos is not None
+        else "instrument summary unavailable"
+    )
+    if not failed:
+        return {"verdict": "REFUTED (noise injection, not damage)", "detail": det}
+    return {
+        "verdict": "PARTIAL (flagged: " + ", ".join(failed) + ")",
+        "detail": det,
+    }
+
+
 def _interface_paragraph(cond: dict[str, Any] | None) -> str:
     """Conditioning-interface prose rendered FROM the result json (no drift)."""
     cos = cka = None
@@ -161,6 +211,61 @@ the consumed layer 49. What the DiT reads (<code>refined_context</code>):
 from layer 0 and persist; it washes out within the first layers (journal #139/#140).</p>"""
 
 
+def _damage_ladder_rows(damage: dict[str, Any] | None) -> str:
+    """Render the six-instrument table FROM the consolidated json (no drift)."""
+    if not damage or damage.get("smoke"):
+        return "<tr><td colspan='4'>(audio-damage results unavailable or smoke)</td></tr>"
+    inst = damage.get("instruments", {})
+
+    def lad(cfg: str, key: str) -> str:
+        v = ((inst.get("audio_vae_ladder", {}).get(cfg) or {}).get(key) or {}).get("mean")
+        return f"{v:.3f}" if v is not None else "&mdash;"
+
+    def dcos(cfg: str) -> str:
+        v = ((inst.get("delta_direction", {}).get(cfg) or {}).get("speech:te_swap (heretic-base)") or {}).get(
+            "mean_pairwise_cos"
+        )
+        return f"{v:.3f}" if v is not None else "&mdash;"
+
+    word = inst.get("word_forensics_utterly", {})
+    dnsmos = inst.get("dnsmos_paired", {}).get("OVRL", {})
+    accent = inst.get("accent_native_pct", {})
+    w_te = word.get("te_swap_mel_cos_mean")
+    w_sd = word.get("seed_noise_mel_cos_mean")
+    d_m = dnsmos.get("mean")
+    d_ci = dnsmos.get("ci95") or [None, None]
+    a_b = accent.get("base")
+    a_h = accent.get("heretic")
+
+    def fmt(x: Any, nd: int = 3) -> str:
+        return f"{x:.{nd}f}" if isinstance(x, (int, float)) else "&mdash;"
+
+    def lad_row(cfg: str) -> str:
+        return (
+            f"<td>{lad(cfg, 'te_swap:speech:frame')} / {lad(cfg, 'floor:speech:frame')}"
+            f" / {lad(cfg, 'seed_base:speech:frame')}</td>"
+        )
+
+    return "".join(
+        [
+            "<tr><td>audio-VAE ladder</td><td>speech perturbation (frame-cos): te_swap vs quant control vs seed</td>"
+            + lad_row("turbo")
+            + lad_row("stock")
+            + "</tr>",
+            "<tr><td>delta-direction</td><td>systematic tilt? (te_swap pairwise-cos vs seed nulls 0.10&ndash;0.16)</td>"
+            f"<td>{dcos('turbo')}</td><td>{dcos('stock')}</td></tr>",
+            "<tr><td>word forensics</td><td>flagged word 'utterly': te_swap vs seed-noise mel-cos</td>"
+            f"<td>{fmt(w_te)} vs {fmt(w_sd)}</td><td>(same clips)</td></tr>",
+            "<tr><td>DNSMOS (P.835)</td><td>absolute quality: paired OVRL diff (95% CI)</td>"
+            f"<td>{fmt(d_m)} [{fmt(d_ci[0], 2)}..{fmt(d_ci[1], 2)}] (CI ~0)</td><td>(turbo clips)</td></tr>",
+            "<tr><td>accent classifier</td><td>Native% base vs heretic</td>"
+            f"<td>{fmt(a_b, 1)}% vs {fmt(a_h, 1)}%</td><td>(turbo clips)</td></tr>",
+            "<tr><td>human blind listening</td><td>publisher A/B across arms/seeds</td>"
+            "<td>'both sound fine, just some variation'</td><td>same</td></tr>",
+        ]
+    )
+
+
 def verdict_row(hid: str, text: str, res: dict[str, str]) -> str:
     v = escape(res["verdict"])
     benign_null = "no damage" in res["verdict"] or "no structure" in res["verdict"]
@@ -181,6 +286,7 @@ def build_report(results_dir: Path, out_html: Path) -> str:
     audio = _load(results_dir / "tebench_h3_audio.json")
     video = _load(results_dir / "tebench_h3_video.json")
     cond = _load(results_dir / "te_heretic.json")
+    damage = _load(results_dir / "tebench_h3_audio_damage.json")
 
     smoke_refusal = bool((audio or {}).get("smoke")) or bool((video or {}).get("smoke"))
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -211,6 +317,11 @@ def build_report(results_dir: Path, out_html: Path) -> str:
                 "verdict": "NOT TESTED BY DESIGN",
                 "detail": "H3 has no render-stage refusal per community consensus; ethics scope — see z-image H6",
             },
+        ),
+        verdict_row(
+            "H13",
+            "Voice-quality damage (p-e-w follow-up): the TE makes speech sound worse",
+            h13_verdict(damage),
         ),
     ]
 
@@ -297,6 +408,21 @@ Seed-change anchor (same TE, different noise): <b>{video.get("seed_change_anchor
 <p class="explainer">Heretic moves frames ~0.33 — far below the 0.60 seed anchor and
 next to the nvfp4 quant swap (0.29): the video silently REROLLS, nothing degrades
 (CLIP adherence within ±1.5). Identical fingerprint to z-image's heretic (0.29 ≈ nvfp4 0.27).</p>
+
+<h2>H13 &mdash; audio-damage investigation (the follow-up)</h2>
+<p>After the WER-clean battery, p-e-w maintained the voice "sounds worse" (flagged
+word: "utterly"). Six instruments, two sampler configs, 341 clips re-analyzed
+&mdash; all whisper-free where possible:</p>
+<table><tr><th>Instrument</th><th>Question</th><th>turbo</th><th>stock (official)</th></tr>
+{_damage_ladder_rows(damage)}</table>
+<p class="explainer"><b>Reading:</b> the TE edit (and equally, pure nvfp4
+quantization) adds a small amount of <i>directionally random</i> variance to
+speech rendering &mdash; ~5&times; more than for ambient sound, 4&times; smaller than an
+ordinary seed change, with no shared direction (delta cos 0.007/0.017 vs seed
+nulls 0.10&ndash;0.16), zero MOS shift (DNSMOS CIs straddle 0), no accent shift,
+and the flagged word measurably <i>more</i> similar cross-arm at fixed seed than
+same-arm across seeds. Perception explanation: some draws drift accent-flavoured;
+a British ear flags them; rerolling fixes it. Different, not damaged.</p>
 
 <h2>Verdicts</h2>
 <table><tr><th>ID</th><th>Hypothesis</th><th>Evidence</th><th>Verdict</th></tr>

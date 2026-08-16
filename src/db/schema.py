@@ -303,6 +303,27 @@ CREATE TABLE IF NOT EXISTS te_img_metrics (
 CREATE INDEX IF NOT EXISTS idx_te_img_comp
     ON te_img_metrics(comparison, variant);
 
+-- Battery investigation results (tebench_<battery>_*.json with flat rows):
+-- multi-instrument outcome tables, e.g. the h3 audio-damage investigation
+-- (ladder / delta-direction / word forensics / DNSMOS / accent across configs).
+CREATE TABLE IF NOT EXISTS te_battery_results (
+    comparison     TEXT NOT NULL,
+    battery        TEXT NOT NULL,          -- h3_audio_damage | ...
+    config         TEXT NOT NULL,          -- turbo | stock | ...
+    instrument     TEXT NOT NULL,          -- audio_vae_ladder | delta_direction | ...
+    metric_name    TEXT NOT NULL,
+    metric_value   REAL NOT NULL,
+    ci_low         REAL,
+    ci_high        REAL,
+    n              INTEGER,
+    result_path    TEXT,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (comparison, battery, config, instrument, metric_name),
+    FOREIGN KEY (comparison) REFERENCES comparisons(name) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_te_battery_comp
+    ON te_battery_results(comparison, battery);
+
 -- Phase-4 control battery (tebench_controls.json): counterfactual conditioning
 -- through the DiT harness. One row per condition.
 CREATE TABLE IF NOT EXISTS te_controls (

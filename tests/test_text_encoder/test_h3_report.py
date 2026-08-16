@@ -6,10 +6,12 @@ import json
 from pathlib import Path
 
 from src.text_encoder.h3_report import (
+    _damage_ladder_rows,
     build_report,
     h8_verdict,
     h9_verdict,
     h10_verdict,
+    h13_verdict,
     verdict_row,
 )
 
@@ -208,3 +210,95 @@ class TestBuildReport:
         html = build_report(tmp_path, tmp_path / "r.html")
         assert "REFUSED:" in html
         assert "REFUSED (smoke)" in html
+
+
+class TestH13:
+    def _damage(self, nulls: dict[str, bool] | None = None, smoke: bool = False) -> dict:
+        return {
+            "smoke": smoke,
+            "null_conditions": nulls
+            if nulls is not None
+            else {
+                "no_tilt_turbo": True,
+                "no_tilt_stock": True,
+                "dnsmos_ci_zero": True,
+                "word_inside_seed_noise": True,
+                "swap_near_quant_control": True,
+            },
+            "instruments": {
+                "delta_direction": {"turbo": {"speech:te_swap (heretic-base)": {"mean_pairwise_cos": 0.0074, "n": 48}}}
+            },
+        }
+
+    def test_all_null_refuted_benign(self) -> None:
+        res = h13_verdict(self._damage())
+        assert "REFUTED (noise injection" in res["verdict"]
+        assert "cos 0.0074" in res["detail"]
+
+    def test_flagged_condition_partial(self) -> None:
+        nulls = self._damage()["null_conditions"]
+        nulls["no_tilt_turbo"] = False
+        res = h13_verdict(self._damage(nulls))
+        assert "PARTIAL" in res["verdict"]
+        assert "no_tilt_turbo" in res["verdict"]
+
+    def test_smoke_refused(self) -> None:
+        res = h13_verdict(self._damage(smoke=True))
+        assert "REFUSED (smoke)" in res["verdict"]
+
+    def test_missing(self) -> None:
+        assert h13_verdict(None)["verdict"] == "NOT RUN"
+
+    def test_no_conditions_not_run(self) -> None:
+        d = self._damage()
+        d["null_conditions"] = {}
+        assert h13_verdict(d)["verdict"] == "NOT RUN"
+
+    def test_absent_condition_not_false_refuted(self) -> None:
+        """A silently-absent condition (probe format drift) must never read
+        as PASS — partial sets refuse the REFUTED verdict (review round 1)."""
+        nulls = self._damage()["null_conditions"]
+        nulls.pop("no_tilt_stock")
+        res = h13_verdict(self._damage(nulls))
+        assert "NOT RUN" in res["verdict"]
+        assert "no_tilt_stock" in res["detail"]
+
+
+class TestDamageLadderRows:
+    def test_rendes_instruments_from_json(self) -> None:
+        dmg = {
+            "smoke": False,
+            "instruments": {
+                "audio_vae_ladder": {
+                    "turbo": {
+                        "te_swap:speech:frame": {"mean": 0.797},
+                        "floor:speech:frame": {"mean": 0.811},
+                        "seed_base:speech:frame": {"mean": 0.216},
+                    },
+                    "stock": {
+                        "te_swap:speech:frame": {"mean": 0.851},
+                        "floor:speech:frame": {"mean": 0.870},
+                        "seed_base:speech:frame": {"mean": 0.203},
+                    },
+                },
+                "delta_direction": {"turbo": {"speech:te_swap (heretic-base)": {"mean_pairwise_cos": 0.0074}}},
+                "word_forensics_utterly": {"te_swap_mel_cos_mean": 0.857, "seed_noise_mel_cos_mean": 0.730},
+                "dnsmos_paired": {"OVRL": {"mean": -0.0435, "ci95": [-0.0956, 0.008]}},
+                "accent_native_pct": {"base": 79.6, "heretic": 79.2},
+            },
+        }
+        html = _damage_ladder_rows(dmg)
+        assert "0.797 / 0.811 / 0.216" in html
+        assert "0.851 / 0.870 / 0.203" in html
+        assert "0.007" in html
+        assert "0.857 vs 0.730" in html
+        assert "79.6% vs 79.2%" in html
+        assert "sound fine" in html
+
+    def test_smoke_guards(self) -> None:
+        assert "unavailable" in _damage_ladder_rows({"smoke": True})
+        assert "unavailable" in _damage_ladder_rows(None)
+
+    def test_missing_values_em_dash(self) -> None:
+        html = _damage_ladder_rows({"smoke": False, "instruments": {}})
+        assert "&mdash;" in html

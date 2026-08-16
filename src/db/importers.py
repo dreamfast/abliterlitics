@@ -643,6 +643,64 @@ def import_te_ab_images(
     return count
 
 
+def import_te_battery_results(
+    conn: sqlite3.Connection,
+    comparison_name: str,
+    results_dir: Path,
+) -> int:
+    """Import battery-investigation files (tebench_<battery>_*.json with flat rows).
+
+    Consumes consolidation outputs like tebench_h3_audio_damage.json: each has
+    a ``rows`` list of {battery, config, instrument, metric_name, metric_value,
+    [ci_low, ci_high, n]} plus a top-level ``verdict``. Files without ``rows``
+    (e.g. tebench_img_*, tebench_controls.json — different importers) are
+    skipped by the explicit row check.
+
+    Returns the number of metric rows imported.
+    """
+    n_total = 0
+    for f in sorted(results_dir.glob("tebench_*.json")):
+        try:
+            data = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Skipping unreadable %s: %s", f.name, exc)
+            continue
+        rows = data.get("rows")
+        # defense-in-depth: a battery file must carry rows AND a battery name —
+        # sibling tebench_* outputs (img/controls/attention/...) have neither
+        if not (isinstance(rows, list) and rows and data.get("battery")):
+            continue
+        n_imported = 0
+        for r in rows:
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO te_battery_results
+                       (comparison, battery, config, instrument, metric_name,
+                        metric_value, ci_low, ci_high, n, result_path)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        comparison_name,
+                        str(r["battery"]),
+                        str(r["config"]),
+                        str(r["instrument"]),
+                        str(r["metric_name"]),
+                        float(r["metric_value"]),
+                        float(r["ci_low"]) if r.get("ci_low") is not None else None,
+                        float(r["ci_high"]) if r.get("ci_high") is not None else None,
+                        int(r["n"]) if r.get("n") is not None else None,
+                        str(f),
+                    ),
+                )
+                n_imported += 1
+                n_total += 1
+            except (KeyError, TypeError, ValueError, sqlite3.Error) as exc:
+                log.warning("Bad row in %s: %s (%s)", f.name, exc, r)
+        if n_imported:
+            log.info("Imported %s: %d rows (verdict: %s)", f.name, len(rows), data.get("verdict", "n/a"))
+    conn.commit()
+    return n_total
+
+
 def import_te_img_metrics(
     conn: sqlite3.Connection,
     comparison_name: str,
@@ -939,6 +997,9 @@ def import_all_results(
         disc_n = import_te_discriminability(conn, comparison_name, te_dir)
         if disc_n:
             counts["te_discriminability"] = disc_n
+        batt_n = import_te_battery_results(conn, comparison_name, te_dir)
+        if batt_n:
+            counts["te_battery_results"] = batt_n
 
     log.info("Import complete for %s: %s", comparison_name, counts)
     return counts
