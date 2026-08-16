@@ -176,6 +176,14 @@ class TestDitTxtfusionLoad:
         with pytest.raises(ValueError, match="missing Krea2 conditioning keys"):
             load_dit_txtfusion_sd(p)  # type: ignore[misc]
 
+    def test_bare_key_packaging(self, tmp_path: Any) -> None:
+        """Official turbo export carries BARE txtfusion keys (no model.diffusion_model. prefix)."""
+        p = tmp_path / "dit.safetensors"
+        save_file(self._base_keys(), str(p))
+        sd, n_dequant = load_dit_txtfusion_sd(p)
+        assert n_dequant == 0
+        assert set(sd) == set(self._base_keys())
+
     def test_missing_file_raises(self, tmp_path: Any) -> None:
         with pytest.raises(FileNotFoundError):
             load_dit_txtfusion_sd(tmp_path / "nope.safetensors")

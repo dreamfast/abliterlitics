@@ -94,9 +94,10 @@ def load_dit_txtfusion_sd(dit_file: str | Path) -> tuple[dict[str, torch.Tensor]
     raw: dict[str, torch.Tensor] = {}
     with safe_open(str(dit_file), framework="pt", device="cpu") as f:
         for k in list(f.keys()):
-            if not k.startswith(_DIT_KEY_PREFIX):
-                continue
-            short = k[len(_DIT_KEY_PREFIX) :]
+            # Two packaging styles on disk: prefixed (redcraft stand-in,
+            # "model.diffusion_model.txtfusion...") and bare (official turbo
+            # export, "txtfusion...").
+            short = k[len(_DIT_KEY_PREFIX) :] if k.startswith(_DIT_KEY_PREFIX) else k
             if any(short.startswith(p) for p in DIT_COND_PREFIXES):
                 raw[short] = f.get_tensor(k)
     if not REQUIRED_COND_KEYS.issubset(raw.keys()):
