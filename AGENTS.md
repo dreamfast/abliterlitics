@@ -566,3 +566,15 @@ runners/                          # all pipeline runners
 **(d) Word-level forensics** — for a specific flagged word: whisper word-timestamps (fuzzy match — whisper misses ~1/6) → slice ±50 ms → pure-torch log-mel (no torchaudio needed; build the mel filterbank manually and keep STFT geometry consistent) + F0 autocorrelation (pad input so conv1d gives the FULL autocorrelation — unpadded conv1d truncates to 1 sample) + spectral flatness. Compare te_swap vs within-arm cross-seed: cross-arm-same-seed MORE similar than same-arm-cross-seed ⇒ the word's variance is seed-dominated (draw luck).
 
 **Detection**: "voice sounds worse on the variant" claims → ladder + delta-direction + quant control before believing damage. All three converged on NULL for H3 heretic (perception = draw luck from a slightly widened speech distribution).
+
+### 44. Porting the attention-readout battery to a new DiT: wrap_attn unwraps containers for you, anchor your block regexes, and use descending sigmas
+
+**Context** (phase 9, 2026-08-16, journals #151/#152): the z-image "what does the DiT read from conditioning" instrument (`attention_capture.py`) ported to krea2 (SingleStreamDiT, text-leading `cat((context, img))`) and H3 (fl2va packed `[text|audio|video]` via `PackedLayout`).
+
+**(a) `wrap_attn` unwraps `AttentionTensorContainer` BEFORE the override** — `comfy/ldm/modules/attention.py:171-207` calls `container.take()` on q/k/v then invokes `optimized_attention_override(func, q, k, v, ...)` with PLAIN tensors. The capture override needs zero container handling for H3; the `[B, H, L, D]`-with-skip_reshape convention is identical across all three architectures. **Delegation rule**: capture only calls where `seq_k >= expected_full` (max configured segment stop) — refiner/txtfusion/noise-refiner calls (no text keys leading) delegate untouched, and delegated calls don't consume the layer counter.
+
+**(b) Multi-stream DiTs unlock per-modality readout** — H3's packed layout gives QUERY segments per stream; `configure(text_len, {"audio": (a0,a1), "video": (v0,v1)})` records separate text-readout distributions per modality. First result: the audio stream's readout shifts slightly more than video's under the heretic TE (JSD 0.00155 vs 0.00141) — a conditioning-level complement to the audio-damage ladder (lesson 43).
+
+**(c) `re.search` block-counting is a landmine** — `r"blocks\.(\d+)\."` also matches `token_refiner.blocks.N` (worked only because refiner indices {0,1} ⊂ DiT {0..49}). Anchor patterns (`^blocks\.`) in every `_count_blocks` call (review catch).
+
+**(d) Use DESCENDING sigma schedules for capture runs** — comfy stores ascending flow sigmas; the SAMPLER runs them descending from sigma_max so `x0 = randn` matches the σ=1 state exactly. The z-image phase-5 probe used the ascending grid (comparative results unaffected — both arms shared identical trajectories — but not real denoise dynamics). Phase 9 uses `sigma_schedule_flow(descending=True)`; byte-level-BPE token strings need Ġ/Ċ→whitespace decoding before `group_words`, and Qwen-`V*L` token ids come from `tok.<layer>.tokenizer.convert_ids_to_tokens`.
