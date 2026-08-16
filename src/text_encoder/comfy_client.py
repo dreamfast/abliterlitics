@@ -121,21 +121,37 @@ def sanitize(text: str, max_len: int = 48) -> str:
     return s or "prompt"
 
 
-def queue_and_fetch(api_url: str, wf: dict[str, Any], te_node_id: str = "") -> tuple[bytes, dict[str, Any]]:
-    """Queue the workflow, wait for completion, return (output bytes, perf).
+def extract_execution_error(messages: list[list[Any]]) -> str | None:
+    """Pull the human-readable execution_error out of a /history status message list.
 
-    Works for images (SaveImage) AND video (SaveVideo) — both surface their
-    outputs under ``outputs[*]["images"]``; video entries carry
-    ``"animated": [true]``.
-
-    Perf data extracted from the /history status messages (the richest the
-    ComfyUI API offers):
-    - ``server_gen_ms``: execution_success − execution_start timestamps
-    - ``te_cached``: whether the TE loader node appears in execution_cached
-      (true cold/warm verification — model loaded fresh vs reused)
-    - ``cached_nodes``: full cached-node list (execution graph reuse)
-    - ``prompt_id`` / ``queue_number``: server-side identifiers
+    Status messages are [event_name, payload] pairs; the plain ``messages[:2]``
+    rendering shows only the first two entries (timestamps) and hides the
+    actual error. Returns None when no execution_error is present. Tolerates
+    malformed entries (wrong arity / non-dict payload) by skipping them.
     """
+    for msg in messages:
+        try:
+            name, payload = msg
+        except (TypeError, ValueError):
+            continue
+        if name == "execution_error" and isinstance(payload, dict):
+            node = f"{payload.get('node_type', '?')}(node {payload.get('node_id', '?')})"
+            return f"{node}: {payload.get('exception_message', '<no message>')}".strip()
+    return None
+
+
+# First encode after a dynamic-VRAM (re)stage of the krea2 12-tap TE
+# intermittently yields single-layer (2560) conditioning on comfy 0.33.0 —
+# the DiT's width check fails LOUD (30720 expected), a re-queue re-encodes
+# fresh and succeeds. Tap collection is a fixed python list, so there is no
+# wrong-but-passing state: retry is safe. Targeted at this signature only.
+TRANSIENT_KREA2_STAGING_ERR = "expects conditioning with 12x2560"
+
+TRANSIENT_RETRY_ATTEMPTS = 3
+TRANSIENT_RETRY_BACKOFF_S = 2.0
+
+
+def _queue_once(api_url: str, wf: dict[str, Any], te_node_id: str = "") -> tuple[bytes, dict[str, Any]]:
     submit_t0 = time.monotonic()
     qresp = api(api_url, "/prompt", {"prompt": wf, "client_id": CLIENT_ID})
     # CRITICAL: ComfyUI assigns its own prompt_id — polling a self-generated
@@ -157,7 +173,8 @@ def queue_and_fetch(api_url: str, wf: dict[str, Any], te_node_id: str = "") -> t
         status = entry.get("status", {})
         if status.get("status_str") == "error":
             messages = status.get("messages", [])
-            raise RuntimeError(f"ComfyUI reported error for {prompt_id}: {messages[:2]}")
+            detail = extract_execution_error(messages)
+            raise RuntimeError(f"ComfyUI reported error for {prompt_id}: {detail or json.dumps(messages)[:400]}")
         outputs = entry.get("outputs", {})
         img_meta = None
         for node_out in outputs.values():
@@ -195,3 +212,37 @@ def queue_and_fetch(api_url: str, wf: dict[str, Any], te_node_id: str = "") -> t
             data: bytes = resp.read()
         return data, perf
     raise TimeoutError(f"ComfyUI did not finish {prompt_id} within {POLL_TIMEOUT}s")
+
+
+def queue_and_fetch(api_url: str, wf: dict[str, Any], te_node_id: str = "") -> tuple[bytes, dict[str, Any]]:
+    """Queue the workflow, wait for completion, return (output bytes, perf).
+
+    Works for images (SaveImage) AND video (SaveVideo) — both surface their
+    outputs under ``outputs[*]["images"]``; video entries carry
+    ``"animated": [true]``.
+
+    Perf data extracted from the /history status messages (the richest the
+    ComfyUI API offers):
+    - ``server_gen_ms``: execution_success − execution_start timestamps
+    - ``te_cached``: whether the TE loader node appears in execution_cached
+      (true cold/warm verification — model loaded fresh vs reused)
+    - ``prompt_id`` / ``queue_number``: server-side identifiers
+
+    Retries (up to TRANSIENT_RETRY_ATTEMPTS total) on the known-transient
+    krea2 TE staging failure (see TRANSIENT_KREA2_STAGING_ERR); every other
+    error — including submit-time/network errors and poll timeouts —
+    propagates immediately. The retry is deliberately narrow: widening the
+    except would mask real failures.
+    """
+    last_err: RuntimeError | None = None
+    for attempt in range(1, TRANSIENT_RETRY_ATTEMPTS + 1):
+        try:
+            return _queue_once(api_url, wf, te_node_id=te_node_id)
+        except RuntimeError as e:
+            if TRANSIENT_KREA2_STAGING_ERR not in str(e):
+                raise
+            last_err = e
+            log.warning("Transient krea2 TE staging failure (attempt %d/%d): %s", attempt, TRANSIENT_RETRY_ATTEMPTS, e)
+            if attempt < TRANSIENT_RETRY_ATTEMPTS:
+                time.sleep(TRANSIENT_RETRY_BACKOFF_S)
+    raise last_err if last_err else RuntimeError("unreachable")

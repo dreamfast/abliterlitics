@@ -3,7 +3,7 @@
  "53": {"class_type": "EmptyLatentImage", "inputs": {"width": ["49", 0], "height": ["49", 1], "batch_size": 1}},
  "54": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen3-vl-4b-heretic_int8.safetensors", "type": "krea2", "device": "default"}},
  "55": {"class_type": "VAELoader", "inputs": {"vae_name": "Wan2_1_VAE_bf16.safetensors"}},
- "69": {"class_type": "UNETLoader", "inputs": {"unet_name": "redcraft22INT8INT4_2Krea2Edition.safetensors", "weight_dtype": "default"}, "_meta": {"title": "RedCraft Krea2 Edition (stand-in until official weights)"}},
+ "69": {"class_type": "UNETLoader", "inputs": {"unet_name": "krea2_turbo_int8_convrot.safetensors", "weight_dtype": "default"}, "_meta": {"title": "Krea2 Turbo int8 (official; runner patches unet_name from settings.tebench.dit_file)"}},
  "70": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["54", 0]}},
  "71": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["70", 0]}},
  "72": {"class_type": "KSampler", "inputs": {"model": ["69", 0], "positive": ["70", 0], "negative": ["71", 0], "latent_image": ["53", 0], "seed": 332383976343439, "steps": 6, "cfg": 1.0, "sampler_name": "res_2s", "scheduler": "beta", "denoise": 1.0}, "_meta": {"title": "gen pass (6-step res_2s/beta)"}},
