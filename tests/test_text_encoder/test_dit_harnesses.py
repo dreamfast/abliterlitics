@@ -11,19 +11,19 @@ import pytest
 import torch
 
 from src.text_encoder.backends.h3_dit import time_shift_sigma
-from src.text_encoder.backends.krea2_dit import _count_blocks, _sigma_schedule, time_snr_shift
+from src.text_encoder.backends.krea2_dit import _count_blocks, sigma_schedule_flow, time_snr_shift
 
 
 class TestSigmaSchedules:
     def test_descending_from_sigma_max_to_zero(self) -> None:
-        sig = _sigma_schedule(6)
+        sig = sigma_schedule_flow(6)
         assert float(sig[0]) == pytest.approx(1.0)  # shift(1) = sigma_max
         assert float(sig[-1]) == 0.0
         diffs = sig[1:-1] - sig[:-2]
         assert torch.all(diffs < 0)  # strictly descending into the terminal 0
 
     def test_ascending_reproduces_stored_grid(self) -> None:
-        sig = _sigma_schedule(6, descending=False)
+        sig = sigma_schedule_flow(6, descending=False)
         # first sigma = shift(1/6): 1.15*(1/6)/(1+0.15/6)
         assert float(sig[0]) == pytest.approx(1.15 * (1 / 6) / (1 + 0.15 * (1 / 6)), rel=1e-6)
         diffs = sig[1:-1] - sig[:-2]

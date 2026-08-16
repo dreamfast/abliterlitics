@@ -78,7 +78,7 @@ def main() -> int:
         load_h3_dit,
         time_shift_sigma,
     )
-    from src.text_encoder.backends.krea2_dit import _sigma_schedule
+    from src.text_encoder.backends.krea2_dit import sigma_schedule_flow
 
     comfyui_loader.import_comfy(args.comfyui, cpu=(args.device == "cpu"))
     prompts, cats = _suite_entries(args.suite)
@@ -123,7 +123,7 @@ def main() -> int:
     shift_v = float(getattr(dit, "sigma_shift_video", 12.0))
     shift_a = float(getattr(dit, "sigma_shift_audio", 3.0))
     capture = AttentionCapture(device=args.device)
-    sigmas_v = _sigma_schedule(args.n_steps, shift=shift_v).to(args.device)
+    sigmas_v = sigma_schedule_flow(args.n_steps, shift=shift_v).to(args.device)
     g = torch.Generator(device="cpu").manual_seed(args.seed)
 
     def _forward_capture(
@@ -161,6 +161,11 @@ def main() -> int:
         var_ctxs, _tok_v = _encode(vfile)
         per_prompt: list[dict[str, Any]] = []
         for pi, (ctx_b, ctx_v) in enumerate(zip(base_ctxs, var_ctxs, strict=True)):
+            if ctx_b.shape[0] != ctx_v.shape[0]:
+                raise RuntimeError(
+                    f"prompt {pi!r}: base/variant context lengths differ "
+                    f"({ctx_b.shape[0]} vs {ctx_v.shape[0]}) — capture cannot pair"
+                )
             text_len = int(ctx_b.shape[0])
             layout, spans = build_layout(dit, text_len, lat_t, lat_h, lat_w, args.audio_t)
             capture.configure(text_len, spans)

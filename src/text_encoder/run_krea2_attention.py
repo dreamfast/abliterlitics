@@ -74,7 +74,7 @@ def main() -> int:
     args = parse_args()
     from src.text_encoder.backends import comfyui_loader
     from src.text_encoder.backends.krea2 import Krea2Backend
-    from src.text_encoder.backends.krea2_dit import _sigma_schedule, forward_krea2, load_krea2_dit
+    from src.text_encoder.backends.krea2_dit import forward_krea2, load_krea2_dit, sigma_schedule_flow
 
     comfyui_loader.import_comfy(args.comfyui, cpu=(args.device == "cpu"))
     prompts, cats, labels = _suite_entries(args.suite)
@@ -118,19 +118,25 @@ def main() -> int:
 
     def _strip_prefix_tokens(toks: list[str], ids: list[int]) -> list[str]:
         # krea2 encode strips the system+user template prefix (2nd im_start,
-        # 'user', '\n' + 3). Mirror: find index after the second im_start
-        # triplet.
-        im_start = 151644
+        # 'user', '\n' + 3) — mirror comfy's guards so a nonstandard template
+        # falls back to no strip instead of mis-labeling rows.
+        im_start, tok_user, tok_nl = 151644, 872, 198
         starts = [i for i, t in enumerate(ids) if t == im_start]
-        cut = starts[1] + 3 if len(starts) >= 2 and len(starts) > 1 else 0
-        return toks[cut:] if cut < len(toks) else toks
+        if len(starts) < 2:
+            return toks
+        cut = starts[1]
+        if cut + 3 < len(ids) and ids[cut + 1] == tok_user and ids[cut + 2] == tok_nl:
+            cut += 3
+        return toks[cut:]
 
     base_ctxs, token_strings = _encode(args.base)
     log.info("encoded %d base contexts (krea2 12-tap)", len(base_ctxs))
 
     dit = load_krea2_dit(args.dit, device=args.device)
     capture = AttentionCapture(device=args.device)
-    sigmas = _sigma_schedule(args.n_steps).to(args.device)
+    sigmas = sigma_schedule_flow(args.n_steps).to(args.device)
+    if args.latent_hw % 2:
+        raise ValueError(f"--latent-hw must be even (patch 2), got {args.latent_hw}")
     g = torch.Generator(device="cpu").manual_seed(args.seed)
     img_tokens = (args.latent_hw // 2) ** 2  # patch 2
 
@@ -155,6 +161,11 @@ def main() -> int:
         var_ctxs, _tok_v = _encode(vfile)
         per_prompt: list[dict[str, Any]] = []
         for pi, (ctx_b, ctx_v) in enumerate(zip(base_ctxs, var_ctxs, strict=True)):
+            if ctx_b.shape[0] != ctx_v.shape[0]:
+                raise RuntimeError(
+                    f"prompt {pi!r}: base/variant tap lengths differ "
+                    f"({ctx_b.shape[0]} vs {ctx_v.shape[0]}) — capture cannot pair"
+                )
             text_len = int(ctx_b.shape[0])
             capture.configure(text_len, {"img": (text_len, text_len + img_tokens)})
             x0 = torch.randn(1, 16, args.latent_hw, args.latent_hw, generator=g).to(args.device).to(torch.bfloat16)

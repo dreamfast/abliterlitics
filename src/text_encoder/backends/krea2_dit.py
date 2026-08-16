@@ -111,7 +111,7 @@ def load_krea2_dit(dit_file: str | Path, device: str = "cuda", dtype: torch.dtyp
     return model
 
 
-def _sigma_schedule(
+def sigma_schedule_flow(
     n_steps: int,
     shift: float = SAMPLING_SHIFT,
     multiplier: float = SAMPLING_MULTIPLIER,
