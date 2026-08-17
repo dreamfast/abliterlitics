@@ -61,6 +61,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cache-dir", default="/te_cache")
     p.add_argument("--results-dir", default="/results")
     p.add_argument("--device", default="cuda")
+    p.add_argument(
+        "--cache-device",
+        default="cpu",
+        help="Device key the forensics cache was written with (analysis runners cache on cpu)",
+    )
     p.add_argument("--n-steps", type=int, default=None, help="None = backend default (20 zimage / 6 krea2)")
     p.add_argument("--n-prompts", type=int, default=6)
     p.add_argument("--seed", type=int, default=42)
@@ -183,7 +188,7 @@ def main() -> int:
 
     full_prompts, full_cats = load_suite(args.suite)
     p_hash = suite_hash(full_prompts, full_cats)
-    key = cache_key(args.base, p_hash, WILDCARD_DTYPE, args.device, "raw_hidden", "orig", context=ctx_scope)
+    key = cache_key(args.base, p_hash, WILDCARD_DTYPE, args.cache_device, "raw_hidden", "orig", context=ctx_scope)
     base_art = load_artifact(cache_dir, key)
     if base_art is None:
         raise FileNotFoundError("No cached base artifact for taboo direction")

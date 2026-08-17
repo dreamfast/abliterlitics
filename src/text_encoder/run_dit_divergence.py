@@ -43,7 +43,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dit", required=True, help="Z-Image DiT checkpoint")
     p.add_argument("--cache-dir", default="/te_cache", help="Activation cache (from run_analysis)")
     p.add_argument("--results-dir", default="/results", help="Output directory")
-    p.add_argument("--device", default="cuda", help="cpu or cuda")
+    p.add_argument("--device", default="cuda", help="cpu or cuda (DiT + trajectories)")
+    p.add_argument(
+        "--cache-device",
+        default="",
+        help="Device key the forensics cache was written with (default: cpu — the "
+        "krea2/z-image analysis runners cache on cpu; set to 'cuda' only for "
+        "cuda-cached artifacts)",
+    )
     p.add_argument(
         "--n-steps", type=int, default=None, help="Euler steps (None = backend default: 20 zimage / 6 krea2)"
     )
@@ -137,6 +144,7 @@ def main() -> int:
         args.n_steps = default_steps
     if args.latent_hw is None:
         args.latent_hw = default_hw
+    cache_dev = args.cache_device or "cpu"
 
     prompts, categories = load_suite(args.suite)
     # One prompt per category (balanced sample) unless n_prompts covers all
@@ -155,10 +163,10 @@ def main() -> int:
     ctx_scope = f"{args.backend}:{Path(args.dit).name}"
 
     base_ctxs = _load_consumed_from_cache(
-        cache_dir, args.base, args.device, ctx_scope, prompts, categories, suite_path=args.suite, stream=cond_stream
+        cache_dir, args.base, cache_dev, ctx_scope, prompts, categories, suite_path=args.suite, stream=cond_stream
     )
     var_ctxs = _load_consumed_from_cache(
-        cache_dir, args.variant, args.device, ctx_scope, prompts, categories, suite_path=args.suite, stream=cond_stream
+        cache_dir, args.variant, cache_dev, ctx_scope, prompts, categories, suite_path=args.suite, stream=cond_stream
     )
 
     log.info("Loading %s DiT: %s", args.backend, Path(args.dit).name)

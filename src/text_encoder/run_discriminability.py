@@ -35,6 +35,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cache-dir", default="/te_cache")
     p.add_argument("--results-dir", default="/results")
     p.add_argument("--device", default="cuda")
+    p.add_argument(
+        "--cache-device",
+        default="cpu",
+        help="Device key the forensics cache was written with (analysis runners cache on cpu)",
+    )
     p.add_argument("--n-steps", type=int, default=None, help="None = backend default (20 zimage / 6 krea2)")
     p.add_argument("--n-prompts", type=int, default=6)
     p.add_argument("--seed", type=int, default=42)
@@ -126,7 +131,14 @@ def main() -> int:
         return spread
 
     base_ctxs = _load_consumed_from_cache(
-        cache_dir, args.base, args.device, ctx_scope, prompts, categories, suite_path=args.suite, stream=cond_stream
+        cache_dir,
+        args.base,
+        args.cache_device,
+        ctx_scope,
+        prompts,
+        categories,
+        suite_path=args.suite,
+        stream=cond_stream,
     )
     base_spread = _spread(base_ctxs)
     log.info("Base inter-prompt spread: %.5f", base_spread)
@@ -142,7 +154,14 @@ def main() -> int:
 
     for vfile, vname in zip(variant_files, names, strict=True):
         var_ctxs = _load_consumed_from_cache(
-            cache_dir, vfile, args.device, ctx_scope, prompts, categories, suite_path=args.suite, stream=cond_stream
+            cache_dir,
+            vfile,
+            args.cache_device,
+            ctx_scope,
+            prompts,
+            categories,
+            suite_path=args.suite,
+            stream=cond_stream,
         )
         spread = _spread(var_ctxs)
         doc: dict[str, Any] = {
