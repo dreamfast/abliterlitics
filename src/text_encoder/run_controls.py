@@ -61,10 +61,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cache-dir", default="/te_cache")
     p.add_argument("--results-dir", default="/results")
     p.add_argument("--device", default="cuda")
-    p.add_argument("--n-steps", type=int, default=20)
+    p.add_argument("--n-steps", type=int, default=None, help="None = backend default (20 zimage / 6 krea2)")
     p.add_argument("--n-prompts", type=int, default=6)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--latent-hw", type=int, default=128)
+    p.add_argument("--latent-hw", type=int, default=None, help="None = backend default (128 zimage / 64 krea2)")
     p.add_argument("--dose-steps", default=",".join(str(x) for x in DEFAULT_DOSE_STEPS))
     p.add_argument("--alphas", default=",".join(str(x) for x in DEFAULT_ALPHAS))
     p.add_argument(
@@ -78,6 +78,13 @@ def parse_args() -> argparse.Namespace:
         help="Merge into an existing tebench_controls.json instead of replacing it "
         "(required when adding bracket conditions post-hoc; refuses on metadata mismatch)",
     )
+    p.add_argument(
+        "--backend",
+        choices=["zimage", "krea2"],
+        default="zimage",
+        help="DiT + conditioning family",
+    )
+    p.add_argument("--suite", default="/prompts/te_suite.yaml")
     return p.parse_args()
 
 
@@ -95,7 +102,6 @@ def _summarize(result: dict[str, Any]) -> dict[str, Any]:
 def main() -> int:
     args = parse_args()
     from src.text_encoder.backends import comfyui_loader
-    from src.text_encoder.backends.z_image_dit import load_zimage_dit, run_divergence
     from src.text_encoder.directional import taboo_direction
     from src.text_encoder.perturb import (
         delta_scale,
@@ -111,7 +117,26 @@ def main() -> int:
     from src.text_encoder.suite import load_suite
 
     comfyui_loader.import_comfy("/comfyui", cpu=(args.device == "cpu"))
-    prompts, categories = load_suite("/prompts/te_suite.yaml")
+
+    if args.backend == "krea2":
+        from src.text_encoder.backends.krea2_dit import load_krea2_dit
+        from src.text_encoder.backends.krea2_dit import run_krea2_divergence as run_divergence
+
+        dit_loader = load_krea2_dit
+        cond_stream = "tap_stack"
+        taboo_layer_stream = "layer_35"  # last tap; z-image uses layer_34 (consumed)
+    else:
+        from src.text_encoder.backends.z_image_dit import load_zimage_dit, run_divergence
+
+        dit_loader = load_zimage_dit
+        cond_stream = "consumed_hidden"
+        taboo_layer_stream = "layer_34"
+    if args.n_steps is None:
+        args.n_steps = 6 if args.backend == "krea2" else 20
+    if args.latent_hw is None:
+        args.latent_hw = 64 if args.backend == "krea2" else 128
+
+    prompts, categories = load_suite(args.suite)
     if args.n_prompts < len(prompts):
         seen: set[str] = set()
         idxs: list[int] = []
@@ -124,16 +149,22 @@ def main() -> int:
     log.info("Control battery on %d prompts (one per category)", len(prompts))
 
     cache_dir = Path(args.cache_dir)
-    ctx_scope = f"zimage:{Path(args.dit).name}"
-    base_ctxs = _load_consumed_from_cache(cache_dir, args.base, args.device, ctx_scope, prompts, categories)
-    her_ctxs = _load_consumed_from_cache(cache_dir, args.heretic, args.device, ctx_scope, prompts, categories)
+    ctx_scope = f"{args.backend}:{Path(args.dit).name}"
+
+    def _load(te: str) -> list[torch.Tensor]:
+        return _load_consumed_from_cache(
+            cache_dir, te, args.device, ctx_scope, prompts, categories, suite_path=args.suite, stream=cond_stream
+        )
+
+    base_ctxs = _load(args.base)
+    her_ctxs = _load(args.heretic)
 
     # Dose reference: max per-prompt MSE across heretic + optional extra variants
     dose_files = [args.heretic] + [f for f in args.dose_variants.split(",") if f.strip()]
     max_dose = torch.zeros(len(prompts))
     for f in dose_files:
         try:
-            vctx = _load_consumed_from_cache(cache_dir, f, args.device, ctx_scope, prompts, categories)
+            vctx = _load(f)
         except FileNotFoundError:
             log.warning("dose variant not cached, skipping: %s", Path(f).name)
             continue
@@ -150,20 +181,35 @@ def main() -> int:
     from src.text_encoder.cache import WILDCARD_DTYPE, cache_key, load_artifact
     from src.text_encoder.suite import suite_hash
 
-    full_prompts, full_cats = load_suite("/prompts/te_suite.yaml")
+    full_prompts, full_cats = load_suite(args.suite)
     p_hash = suite_hash(full_prompts, full_cats)
     key = cache_key(args.base, p_hash, WILDCARD_DTYPE, args.device, "raw_hidden", "orig", context=ctx_scope)
     base_art = load_artifact(cache_dir, key)
     if base_art is None:
         raise FileNotFoundError("No cached base artifact for taboo direction")
-    layer34 = base_art.streams["layer_34"].activations  # [60, 1, 2560] pooled
-    if layer34.dim() == 3:
-        layer34 = layer34[:, 0, :]
-    d_taboo = taboo_direction(layer34, list(base_art.categories))
-    log.info("Taboo direction computed from 60-prompt layer-34 pooled acts")
+    if args.backend == "krea2":
+        # Taboo direction IN THE INJECTION SPACE: the conditioning stream is
+        # the 30720-dim tap stack, so pool the tap stacks per prompt (masked
+        # mean over seq) and compute the direction there. A layer-35 pooled
+        # direction (2560-d) would crash rank1/taboo injection (dim mismatch).
+        ts = base_art.streams["tap_stack"]
+        t_acts, t_mask = ts.activations, ts.mask  # [N, seq, 30720], [N, seq]
+        if t_mask is not None:
+            m = t_mask.unsqueeze(-1).float()
+            pooled = (t_acts.float() * m).sum(1) / m.sum(1).clamp(min=1.0)
+        else:
+            pooled = t_acts.float().mean(dim=1)
+        d_taboo = taboo_direction(pooled, list(base_art.categories))
+        log.info("Taboo direction computed from masked-mean tap stacks %s", tuple(pooled.shape))
+    else:
+        pooled = base_art.streams[taboo_layer_stream].activations  # [N, 1, H] pooled
+        if pooled.dim() == 3:
+            pooled = pooled[:, 0, :]
+        d_taboo = taboo_direction(pooled, list(base_art.categories))
+        log.info("Taboo direction computed from %s pooled acts", taboo_layer_stream)
 
-    log.info("Loading Z-Image DiT: %s", Path(args.dit).name)
-    dit = load_zimage_dit(args.dit, device=args.device)
+    log.info("Loading %s DiT: %s", args.backend, Path(args.dit).name)
+    dit = dit_loader(args.dit, device=args.device)
 
     dose_steps = [float(x) for x in args.dose_steps.split(",")]
     alphas = [float(x) for x in args.alphas.split(",")]
@@ -255,7 +301,7 @@ def main() -> int:
     results: dict[str, Any] = {
         "te_results_version": TE_RESULTS_VERSION,
         "analysis": "control_battery",
-        "backend": "zimage",
+        "backend": args.backend,
         "base": args.base,
         "heretic": args.heretic,
         "dit": args.dit,
@@ -278,7 +324,8 @@ def main() -> int:
         else:
             prior = json.loads(out_path.read_text())
             same_setup = (
-                prior.get("base") == results["base"]
+                prior.get("backend") == results["backend"]
+                and prior.get("base") == results["base"]
                 and prior.get("heretic") == results["heretic"]
                 and prior.get("dit") == results["dit"]
                 and len(prior.get("max_dose_mse", [])) == len(results["max_dose_mse"])

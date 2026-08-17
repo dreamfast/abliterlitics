@@ -44,10 +44,24 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cache-dir", default="/te_cache", help="Activation cache (from run_analysis)")
     p.add_argument("--results-dir", default="/results", help="Output directory")
     p.add_argument("--device", default="cuda", help="cpu or cuda")
-    p.add_argument("--n-steps", type=int, default=20, help="Euler steps per trajectory")
+    p.add_argument(
+        "--n-steps", type=int, default=None, help="Euler steps (None = backend default: 20 zimage / 6 krea2)"
+    )
     p.add_argument("--n-prompts", type=int, default=6, help="Prompts to run (one per category by default)")
-    p.add_argument("--latent-hw", type=int, default=128, help="Latent spatial size (128 = 1024px)")
+    p.add_argument(
+        "--latent-hw",
+        type=int,
+        default=None,
+        help="Latent spatial size (None = backend default: 128 zimage / 64 krea2)",
+    )
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument(
+        "--backend",
+        choices=["zimage", "krea2"],
+        default="zimage",
+        help="DiT + conditioning-interface family (stream name, loader, forward)",
+    )
+    p.add_argument("--suite", default="/prompts/te_suite.yaml", help="Prompt suite (must match run_analysis cache)")
     return p.parse_args()
 
 
@@ -59,8 +73,12 @@ def _load_consumed_from_cache(
     prompts: list[str],
     categories: list[str],
     suite_path: str = "/prompts/te_suite.yaml",
+    stream: str = "consumed_hidden",
 ) -> list[torch.Tensor]:
-    """Per-prompt consumed_hidden [L, 2560] for the sampled prompts.
+    """Per-prompt conditioning tensors for the sampled prompts.
+
+    z-image: consumed_hidden [L, 2560]. krea2: tap_stack [L, 30720]
+    (the flattened 12-tap interface the DiT consumes).
 
     The cache is keyed by the FULL suite hash (from run_analysis), so load
     the full artifact and slice to the sampled prompts by prompt text.
@@ -77,8 +95,8 @@ def _load_consumed_from_cache(
     art = load_artifact(cache_dir, key)
     if art is None:
         raise FileNotFoundError(f"No cached raw_hidden artifact for {Path(te_file).name}. Run run_analysis.py first.")
-    stream = art.streams["consumed_hidden"]
-    acts, mask = stream.activations, stream.mask
+    stream_data = art.streams[stream]
+    acts, mask = stream_data.activations, stream_data.mask
     full_idx = {p: i for i, p in enumerate(art.prompts)}
     out: list[torch.Tensor] = []
     for prompt_text in prompts:
@@ -97,13 +115,30 @@ def _load_consumed_from_cache(
 def main() -> int:
     args = parse_args()
     from src.text_encoder.backends import comfyui_loader
-    from src.text_encoder.backends.z_image_dit import load_zimage_dit, run_divergence
     from src.text_encoder.suite import load_suite
 
     comfyui_path = "/comfyui"
     comfyui_loader.import_comfy(comfyui_path, cpu=(args.device == "cpu"))
 
-    prompts, categories = load_suite("/prompts/te_suite.yaml")
+    if args.backend == "krea2":
+        from src.text_encoder.backends.krea2_dit import load_krea2_dit
+        from src.text_encoder.backends.krea2_dit import run_krea2_divergence as run_divergence
+
+        dit_loader = load_krea2_dit
+        cond_stream = "tap_stack"
+        default_steps, default_hw = 6, 64
+    else:
+        from src.text_encoder.backends.z_image_dit import load_zimage_dit, run_divergence
+
+        dit_loader = load_zimage_dit
+        cond_stream = "consumed_hidden"
+        default_steps, default_hw = 20, 128
+    if args.n_steps is None:
+        args.n_steps = default_steps
+    if args.latent_hw is None:
+        args.latent_hw = default_hw
+
+    prompts, categories = load_suite(args.suite)
     # One prompt per category (balanced sample) unless n_prompts covers all
     if args.n_prompts < len(prompts):
         seen: set[str] = set()
@@ -117,13 +152,17 @@ def main() -> int:
     log.info("Running divergence on %d prompts (one per category)", len(prompts))
 
     cache_dir = Path(args.cache_dir)
-    ctx_scope = f"zimage:{Path(args.dit).name}"
+    ctx_scope = f"{args.backend}:{Path(args.dit).name}"
 
-    base_ctxs = _load_consumed_from_cache(cache_dir, args.base, args.device, ctx_scope, prompts, categories)
-    var_ctxs = _load_consumed_from_cache(cache_dir, args.variant, args.device, ctx_scope, prompts, categories)
+    base_ctxs = _load_consumed_from_cache(
+        cache_dir, args.base, args.device, ctx_scope, prompts, categories, suite_path=args.suite, stream=cond_stream
+    )
+    var_ctxs = _load_consumed_from_cache(
+        cache_dir, args.variant, args.device, ctx_scope, prompts, categories, suite_path=args.suite, stream=cond_stream
+    )
 
-    log.info("Loading Z-Image DiT: %s", Path(args.dit).name)
-    dit = load_zimage_dit(args.dit, device=args.device)
+    log.info("Loading %s DiT: %s", args.backend, Path(args.dit).name)
+    dit = dit_loader(args.dit, device=args.device)
 
     log.info("Running paired trajectories: %d steps, %d prompts, seed %d", args.n_steps, len(prompts), args.seed)
     result = run_divergence(
@@ -141,7 +180,7 @@ def main() -> int:
     output = {
         "te_results_version": 1,
         "analysis": "dit_step_divergence",
-        "backend": "zimage",
+        "backend": args.backend,
         "base": args.base,
         "variant": args.variant,
         "variant_name": args.variant_name,

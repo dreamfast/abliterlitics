@@ -70,10 +70,66 @@ def _suite_entries(suite_path: str) -> tuple[list[str], list[str], list[str]]:
     return texts, cats, labels
 
 
+def encode_krea2_contexts(
+    te_file: str,
+    prompts: list[str],
+    cats: list[str],
+    dit_file: str,
+    comfyui_path: str,
+    device: str = "cpu",
+) -> tuple[list[torch.Tensor], list[list[str]]]:
+    """Encode prompts through a Krea2Backend; return (tap-stack contexts, token strings).
+
+    Contexts: per-prompt [L_i, 30720] float (template-stripped, mask-applied).
+    Token strings: decoded (Ġ/Ċ -> whitespace) and prefix-stripped to align
+    row-for-row with the contexts — the shared readout contract (attention
+    AND word-content runners).
+    """
+    from src.text_encoder.backends.krea2 import Krea2Backend
+
+    backend = Krea2Backend(comfyui_path=comfyui_path)
+    backend.load(te_file, device=device, dit_file=dit_file)
+    arts = backend.encode(prompts, cats)
+    raw = next(a for a in arts if a.stage == Stage.RAW_HIDDEN)
+    stack = raw.streams["tap_stack"]
+    mask = stack.mask
+    if mask is None:
+        raise RuntimeError("tap_stack stream lacks mask — backend contract broken")
+    ctxs: list[torch.Tensor] = []
+    for i in range(len(prompts)):
+        n = int(mask[i].sum())
+        ctxs.append(stack.activations[i, :n, :].float())
+    ids_all = backend.tokenize(prompts)["input_ids"]
+    tok_strings: list[list[str]] = []
+    inner = backend.tokenizer.qwen3vl_4b.tokenizer
+    for ids in ids_all:
+        toks = inner.convert_ids_to_tokens(ids)
+        # HF BPE markers -> whitespace (group_words expects decoded form)
+        toks = [t.replace("Ġ", " ").replace("Ċ", "\n") for t in toks]
+        # the tap stack is post-template-strip: drop the stripped prefix
+        # tokens (ids before the user text) so readout aligns with rows
+        tok_strings.append(_strip_prefix_tokens(toks, ids))
+    backend.close()
+    return ctxs, tok_strings
+
+
+def _strip_prefix_tokens(toks: list[str], ids: list[int]) -> list[str]:
+    # krea2 encode strips the system+user template prefix (2nd im_start,
+    # 'user', '\n' + 3) — mirror comfy's guards so a nonstandard template
+    # falls back to no strip instead of mis-labeling rows.
+    im_start, tok_user, tok_nl = 151644, 872, 198
+    starts = [i for i, t in enumerate(ids) if t == im_start]
+    if len(starts) < 2:
+        return toks
+    cut = starts[1]
+    if cut + 3 < len(ids) and ids[cut + 1] == tok_user and ids[cut + 2] == tok_nl:
+        cut += 3
+    return toks[cut:]
+
+
 def main() -> int:
     args = parse_args()
     from src.text_encoder.backends import comfyui_loader
-    from src.text_encoder.backends.krea2 import Krea2Backend
     from src.text_encoder.backends.krea2_dit import forward_krea2, load_krea2_dit, sigma_schedule_flow
 
     comfyui_loader.import_comfy(args.comfyui, cpu=(args.device == "cpu"))
@@ -91,43 +147,7 @@ def main() -> int:
 
     # --- conditioning: 12-tap stacks via the krea2 backend (CPU TE) --------
     def _encode(te_file: str) -> tuple[list[torch.Tensor], list[list[str]]]:
-        backend = Krea2Backend(comfyui_path=args.comfyui)
-        backend.load(te_file, device="cpu", dit_file=args.dit)
-        arts = backend.encode(prompts, cats)
-        raw = next(a for a in arts if a.stage == Stage.RAW_HIDDEN)
-        stack = raw.streams["tap_stack"]
-        mask = stack.mask
-        if mask is None:
-            raise RuntimeError("tap_stack stream lacks mask — backend contract broken")
-        ctxs: list[torch.Tensor] = []
-        for i in range(len(prompts)):
-            n = int(mask[i].sum())
-            ctxs.append(stack.activations[i, :n, :].float())
-        ids_all = backend.tokenize(prompts)["input_ids"]
-        tok_strings: list[list[str]] = []
-        inner = backend.tokenizer.qwen3vl_4b.tokenizer
-        for ids in ids_all:
-            toks = inner.convert_ids_to_tokens(ids)
-            # HF BPE markers -> whitespace (group_words expects decoded form)
-            toks = [t.replace("Ġ", " ").replace("Ċ", "\n") for t in toks]
-            # the tap stack is post-template-strip: drop the stripped prefix
-            # tokens (ids before the user text) so readout aligns with rows
-            tok_strings.append(_strip_prefix_tokens(toks, ids))
-        backend.close()
-        return ctxs, tok_strings
-
-    def _strip_prefix_tokens(toks: list[str], ids: list[int]) -> list[str]:
-        # krea2 encode strips the system+user template prefix (2nd im_start,
-        # 'user', '\n' + 3) — mirror comfy's guards so a nonstandard template
-        # falls back to no strip instead of mis-labeling rows.
-        im_start, tok_user, tok_nl = 151644, 872, 198
-        starts = [i for i, t in enumerate(ids) if t == im_start]
-        if len(starts) < 2:
-            return toks
-        cut = starts[1]
-        if cut + 3 < len(ids) and ids[cut + 1] == tok_user and ids[cut + 2] == tok_nl:
-            cut += 3
-        return toks[cut:]
+        return encode_krea2_contexts(te_file, prompts, cats, args.dit, args.comfyui)
 
     base_ctxs, token_strings = _encode(args.base)
     log.info("encoded %d base contexts (krea2 12-tap)", len(base_ctxs))

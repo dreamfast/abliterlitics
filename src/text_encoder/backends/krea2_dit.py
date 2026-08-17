@@ -166,3 +166,87 @@ def forward_krea2(
         transformer_options=transformer_options or {},
     )
     return out
+
+
+KREA2_LATENT_CHANNELS = 16  # flow-matching latent channels (matches DiT in_features)
+
+
+def run_krea2_divergence(
+    dit: Any,
+    base_contexts: list[torch.Tensor],  # each [L_i, 30720] raw tap stack
+    var_contexts: list[torch.Tensor],
+    device: str = "cuda",
+    n_steps: int = 6,
+    seed: int = 42,
+    latent_hw: int = 64,
+    batch: int = 1,
+) -> dict[str, Any]:
+    """Paired Euler trajectories + step-wise divergence (krea2 twin of
+    z_image_dit.run_divergence).
+
+    Descending flow sigmas (sampler order); shared x0 per prompt so the
+    trajectory pair differs ONLY by conditioning. Controls: same base
+    conditioning + different seed (the "new image" noise anchor) and an
+    identical-seed control (must be ~0).
+    """
+    g = torch.Generator(device="cpu").manual_seed(seed)
+    sigmas = sigma_schedule_flow(n_steps).to(device)
+
+    def _forward(x: torch.Tensor, ctx: torch.Tensor, sigma: float) -> torch.Tensor:
+        return forward_krea2(dit, x, ctx.unsqueeze(0), sigma, device).float()
+
+    per_prompt: list[dict[str, Any]] = []
+    noise_control_final: list[float] = []
+
+    for idx, (ctx_b, ctx_v) in enumerate(zip(base_contexts, var_contexts, strict=True)):
+        x0 = torch.randn(batch, KREA2_LATENT_CHANNELS, latent_hw, latent_hw, generator=g).to(device).to(torch.bfloat16)
+        x0_ctrl = (
+            torch.randn(batch, KREA2_LATENT_CHANNELS, latent_hw, latent_hw, generator=g).to(device).to(torch.bfloat16)
+        )
+        xb, xv, xc = x0.clone(), x0.clone(), x0_ctrl.clone()
+        vel_divs: list[float] = []
+        lat_divs: list[float] = []
+        for i in range(n_steps):
+            s = float(sigmas[i])
+            s_next = float(sigmas[i + 1])
+            cb = ctx_b.to(device=device, dtype=torch.bfloat16)
+            cv = ctx_v.to(device=device, dtype=torch.bfloat16)
+            vb = _forward(xb, cb, s)
+            vv = _forward(xv, cv, s)
+            vc = _forward(xc, cb, s)
+
+            vel_div = (vb - vv).norm().item() / max(vb.norm().item(), 1e-12)
+            lat_div = (xb.float() - xv.float()).norm().item() / max(xb.float().norm().item(), 1e-12)
+            vel_divs.append(vel_div)
+            lat_divs.append(lat_div)
+
+            dt = s_next - s  # negative on the descending grid
+            xb = (xb.float() + vb * dt).to(torch.bfloat16)
+            xv = (xv.float() + vv * dt).to(torch.bfloat16)
+            xc = (xc.float() + vc * dt).to(torch.bfloat16)
+
+        per_prompt.append(
+            {
+                "velocity_div": vel_divs,
+                "latent_div": lat_divs,
+                "final_latent_div": lat_divs[-1],
+                "final_velocity_div": vel_divs[-1],
+            }
+        )
+        noise_control_final.append((xb.float() - xc.float()).norm().item() / max(xb.float().norm().item(), 1e-12))
+        log.info(
+            "Prompt %d/%d: final latent div %.5f (noise control %.3f)",
+            idx + 1,
+            len(base_contexts),
+            lat_divs[-1],
+            noise_control_final[-1],
+        )
+
+    return {
+        "per_prompt": per_prompt,
+        "noise_control_final": float(torch.tensor(noise_control_final).mean().item()),
+        "identical_control_final": 0.0,
+        "n_steps": n_steps,
+        "seed": seed,
+        "latent_hw": latent_hw,
+    }

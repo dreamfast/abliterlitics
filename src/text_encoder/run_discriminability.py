@@ -35,22 +35,44 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cache-dir", default="/te_cache")
     p.add_argument("--results-dir", default="/results")
     p.add_argument("--device", default="cuda")
-    p.add_argument("--n-steps", type=int, default=20)
+    p.add_argument("--n-steps", type=int, default=None, help="None = backend default (20 zimage / 6 krea2)")
     p.add_argument("--n-prompts", type=int, default=6)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--latent-hw", type=int, default=128)
+    p.add_argument("--latent-hw", type=int, default=None, help="None = backend default (128 zimage / 64 krea2)")
+    p.add_argument(
+        "--backend",
+        choices=["zimage", "krea2"],
+        default="zimage",
+        help="DiT + conditioning family",
+    )
+    p.add_argument("--suite", default="/prompts/te_suite.yaml")
     return p.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     from src.text_encoder.backends import comfyui_loader
-    from src.text_encoder.backends.z_image_dit import _sigma_schedule, load_zimage_dit
     from src.text_encoder.run_dit_divergence import _load_consumed_from_cache
     from src.text_encoder.suite import load_suite
 
     comfyui_loader.import_comfy("/comfyui", cpu=(args.device == "cpu"))
-    prompts, categories = load_suite("/prompts/te_suite.yaml")
+
+    if args.backend == "krea2":
+        from src.text_encoder.backends.krea2_dit import forward_krea2, load_krea2_dit, sigma_schedule_flow
+
+        dit_loader = load_krea2_dit
+        cond_stream = "tap_stack"
+    else:
+        from src.text_encoder.backends.z_image_dit import _sigma_schedule, load_zimage_dit
+
+        dit_loader = load_zimage_dit
+        cond_stream = "consumed_hidden"
+    if args.n_steps is None:
+        args.n_steps = 6 if args.backend == "krea2" else 20
+    if args.latent_hw is None:
+        args.latent_hw = 64 if args.backend == "krea2" else 128
+
+    prompts, categories = load_suite(args.suite)
     if args.n_prompts < len(prompts):
         seen: set[str] = set()
         idxs: list[int] = []
@@ -62,10 +84,13 @@ def main() -> int:
         categories = [categories[i] for i in idxs[: args.n_prompts]]
 
     cache_dir = Path(args.cache_dir)
-    ctx_scope = f"zimage:{Path(args.dit).name}"
-    log.info("Loading Z-Image DiT: %s", Path(args.dit).name)
-    dit = load_zimage_dit(args.dit, device=args.device)
-    sigmas = _sigma_schedule(args.n_steps).to(args.device)
+    ctx_scope = f"{args.backend}:{Path(args.dit).name}"
+    log.info("Loading %s DiT: %s", args.backend, Path(args.dit).name)
+    dit = dit_loader(args.dit, device=args.device)
+    if args.backend == "krea2":
+        sigmas = sigma_schedule_flow(args.n_steps).to(args.device)
+    else:
+        sigmas = _sigma_schedule(args.n_steps).to(args.device)
 
     def _trajectory(ctx: torch.Tensor, x0: torch.Tensor) -> torch.Tensor:
         x = x0.clone()
@@ -73,8 +98,11 @@ def main() -> int:
             s = float(sigmas[i])
             s_next = float(sigmas[i + 1])
             c = ctx.to(device=args.device, dtype=torch.bfloat16)
-            timesteps = torch.tensor([s], device=args.device, dtype=x.dtype)
-            v: torch.Tensor = dit(x, timesteps, c.unsqueeze(0), torch.tensor([c.shape[0]], device=args.device))
+            if args.backend == "krea2":
+                v = forward_krea2(dit, x, c.unsqueeze(0), s, args.device)
+            else:
+                timesteps = torch.tensor([s], device=args.device, dtype=x.dtype)
+                v = dit(x, timesteps, c.unsqueeze(0), torch.tensor([c.shape[0]], device=args.device))
             x = (x.float() + v.float() * (s_next - s)).to(torch.bfloat16)
         return x.float()
 
@@ -97,7 +125,9 @@ def main() -> int:
         spread: float = sum(divs) / len(divs)
         return spread
 
-    base_ctxs = _load_consumed_from_cache(cache_dir, args.base, args.device, ctx_scope, prompts, categories)
+    base_ctxs = _load_consumed_from_cache(
+        cache_dir, args.base, args.device, ctx_scope, prompts, categories, suite_path=args.suite, stream=cond_stream
+    )
     base_spread = _spread(base_ctxs)
     log.info("Base inter-prompt spread: %.5f", base_spread)
 
@@ -111,12 +141,14 @@ def main() -> int:
     results_dir.mkdir(parents=True, exist_ok=True)
 
     for vfile, vname in zip(variant_files, names, strict=True):
-        var_ctxs = _load_consumed_from_cache(cache_dir, vfile, args.device, ctx_scope, prompts, categories)
+        var_ctxs = _load_consumed_from_cache(
+            cache_dir, vfile, args.device, ctx_scope, prompts, categories, suite_path=args.suite, stream=cond_stream
+        )
         spread = _spread(var_ctxs)
         doc: dict[str, Any] = {
             "te_results_version": TE_RESULTS_VERSION,
             "analysis": "discriminability",
-            "backend": "zimage",
+            "backend": args.backend,
             "base": args.base,
             "variant": vfile,
             "variant_name": vname,

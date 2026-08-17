@@ -54,6 +54,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cache-dir", default="/te_cache")
     p.add_argument("--results-dir", default="/results")
     p.add_argument("--device", default="cuda", help="Cache-key device (artifacts load to CPU for compare)")
+    p.add_argument(
+        "--backend",
+        choices=["zimage", "krea2"],
+        default="zimage",
+        help="Conditioning family: zimage (cache consumed_hidden + _token_strings) or "
+        "krea2 (encode_krea2_contexts for contexts AND aligned token strings)",
+    )
     return p.parse_args()
 
 
@@ -68,13 +75,30 @@ def main() -> int:
     comfyui_loader.import_comfy("/comfyui", cpu=True)
     prompts, categories = load_suite(args.suite)
     labels = _suite_labels(args.suite)
-    token_strings = _token_strings(True, prompts)
 
     cache_dir = Path(args.cache_dir)
-    ctx_scope = f"zimage:{Path(args.dit).name}"
-    base_ctxs = _load_consumed_from_cache(
-        cache_dir, args.base, args.device, ctx_scope, prompts, categories, suite_path=args.suite
-    )
+    token_strings: dict[str, list[str]] = {}
+    if args.backend == "krea2":
+        from src.text_encoder.run_krea2_attention import encode_krea2_contexts
+
+        base_ctxs, toks_list = encode_krea2_contexts(args.base, prompts, categories, args.dit, "/comfyui", device="cpu")
+        token_strings = dict(zip(prompts, toks_list, strict=True))
+
+        def _load_variant_ctxs(vfile: str) -> list[Any]:
+            ctxs, _ = encode_krea2_contexts(vfile, prompts, categories, args.dit, "/comfyui", device="cpu")
+            return ctxs
+
+    else:
+        token_strings = _token_strings(True, prompts)
+        ctx_scope = f"zimage:{Path(args.dit).name}"
+        base_ctxs = _load_consumed_from_cache(
+            cache_dir, args.base, args.device, ctx_scope, prompts, categories, suite_path=args.suite
+        )
+
+        def _load_variant_ctxs(vfile: str) -> list[Any]:
+            return _load_consumed_from_cache(
+                cache_dir, vfile, args.device, ctx_scope, prompts, categories, suite_path=args.suite
+            )
 
     variant_files = [f for f in args.variants.split(",") if f.strip()]
     names = (
@@ -87,9 +111,7 @@ def main() -> int:
 
     out_variants: dict[str, dict[str, list[list[Any]]]] = {}
     for vfile, vname in zip(variant_files, names, strict=True):
-        var_ctxs = _load_consumed_from_cache(
-            cache_dir, vfile, args.device, ctx_scope, prompts, categories, suite_path=args.suite
-        )
+        var_ctxs = _load_variant_ctxs(vfile)
         per_label: dict[str, list[list[Any]]] = {}
         for pi, (b, v) in enumerate(zip(base_ctxs, var_ctxs, strict=True)):
             toks = token_strings.get(prompts[pi], [])
@@ -112,6 +134,7 @@ def main() -> int:
     doc = {
         "te_results_version": TE_RESULTS_VERSION,
         "analysis": "word_content",
+        "backend": args.backend,
         "base": args.base,
         "dit": args.dit,
         "suite": args.suite,
