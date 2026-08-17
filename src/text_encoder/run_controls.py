@@ -158,7 +158,14 @@ def main() -> int:
 
     def _load(te: str) -> list[torch.Tensor]:
         return _load_consumed_from_cache(
-            cache_dir, te, args.device, ctx_scope, prompts, categories, suite_path=args.suite, stream=cond_stream
+            cache_dir,
+            te,
+            args.cache_device,
+            ctx_scope,
+            prompts,
+            categories,
+            suite_path=args.suite,
+            stream=cond_stream,
         )
 
     base_ctxs = _load(args.base)
