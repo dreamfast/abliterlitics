@@ -1,4 +1,4 @@
-"""Refusal-vocabulary conditioning probe (krea2, base vs heretic).
+"""Refusal-vocabulary conditioning probe (krea2 or z-image, base vs heretic).
 
 Answers: does the DiT still receive legible conditioning for words that
 actually get REFUSED (explicit sexual terms, hard drugs, weapons) — and does
@@ -24,6 +24,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -55,7 +56,8 @@ PROBE_WORDS = {
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
-    p = argparse.ArgumentParser(description="Refusal-vocabulary conditioning probe (krea2)")
+    p = argparse.ArgumentParser(description="Refusal-vocabulary conditioning probe")
+    p.add_argument("--backend", choices=["krea2", "zimage"], default="krea2")
     p.add_argument("--dit", required=True)
     p.add_argument("--base", required=True)
     p.add_argument("--heretic", required=True)
@@ -64,40 +66,69 @@ def main() -> None:
     args = p.parse_args()
 
     from src.text_encoder.attention_metrics import token_groups
-    from src.text_encoder.backends.krea2 import Krea2Backend
     from src.text_encoder.directional import taboo_direction
 
     # tuples are (category, text)
     prompts = [text for _, text in REFUSAL_PROMPTS]
     cats = [cat for cat, _ in REFUSAL_PROMPTS]
 
-    def encode(te_file: str) -> tuple[list[torch.Tensor], list[list[str]]]:
-        backend = Krea2Backend(comfyui_path=args.comfyui)
-        backend.load(te_file, device="cpu", dit_file=args.dit)
-        arts = backend.encode(prompts, cats)
-        raw = next(a for a in arts if a.stage.value == "raw_hidden")
-        stack = raw.streams["tap_stack"]
-        mask = stack.mask
-        ctxs = []
-        for i in range(len(prompts)):
-            n = int(mask[i].sum())
-            ctxs.append(stack.activations[i, :n, :].float())
-        ids_all = backend.tokenize(prompts)["input_ids"]
+    if args.backend == "krea2":
+        from src.text_encoder.backends.krea2 import Krea2Backend
         from src.text_encoder.run_krea2_attention import _strip_prefix_tokens
 
-        toks_out = []
-        inner = backend.tokenizer.qwen3vl_4b.tokenizer
-        for ids in ids_all:
-            toks = inner.convert_ids_to_tokens(ids)
-            toks = [t.replace("Ġ", " ").replace("Ċ", "\n") for t in toks]
-            toks_out.append(_strip_prefix_tokens(toks, ids))
-        backend.close()
-        return ctxs, toks_out
+        def encode(te_file: str) -> tuple[list[torch.Tensor], list[list[str]]]:
+            backend = Krea2Backend(comfyui_path=args.comfyui)
+            backend.load(te_file, device="cpu", dit_file=args.dit)
+            arts = backend.encode(prompts, cats)
+            raw = next(a for a in arts if a.stage.value == "raw_hidden")
+            stack = raw.streams["tap_stack"]
+            mask = stack.mask
+            if mask is None:
+                raise RuntimeError("tap_stack lacks mask — backend contract broken")
+            ctxs = []
+            for i in range(len(prompts)):
+                n = int(mask[i].sum())
+                ctxs.append(stack.activations[i, :n, :].float())
+            ids_all = backend.tokenize(prompts)["input_ids"]
+            toks_out = []
+            inner = backend.tokenizer.qwen3vl_4b.tokenizer
+            for ids in ids_all:
+                toks = inner.convert_ids_to_tokens(ids)
+                toks = [t.replace("Ġ", " ").replace("Ċ", "\n") for t in toks]
+                toks_out.append(_strip_prefix_tokens(toks, ids))
+            backend.close()
+            return ctxs, toks_out
+
+    else:
+        from src.text_encoder.backends.z_image import ZImageBackend
+
+        def encode(te_file: str) -> tuple[list[torch.Tensor], list[list[str]]]:
+            # z-image: consumed_hidden IS the DiT input (layer -2, full seq).
+            # Token strings WITHOUT the krea2 template strip — z-image keeps
+            # its template; token_groups groups words anyway.
+            backend = ZImageBackend(comfyui_path=args.comfyui)
+            backend.load(te_file, device="cpu", dit_file=args.dit)
+            arts = backend.encode(prompts, cats)
+            raw = next(a for a in arts if a.stage.value == "raw_hidden")
+            stream = raw.streams["consumed_hidden"]
+            mask = stream.mask
+            ctxs = []
+            for i in range(len(prompts)):
+                n = int(mask[i].sum()) if mask is not None else stream.activations.shape[1]
+                ctxs.append(stream.activations[i, :n, :].float())
+            ids_all = backend.tokenize(prompts)["input_ids"]
+            toks_out = []
+            inner = backend.tokenizer.qwen3_4b.tokenizer
+            for ids in ids_all:
+                toks = inner.convert_ids_to_tokens(ids)
+                toks_out.append([t.replace("Ġ", " ").replace("Ċ", "\n") for t in toks])
+            backend.close()
+            return ctxs, toks_out
 
     base_ctxs, base_toks = encode(args.base)
     her_ctxs, her_toks = encode(args.heretic)
 
-    results: dict[str, dict] = {}
+    results: dict[str, dict[str, Any]] = {}
     for i, (text, cat) in enumerate(REFUSAL_PROMPTS):
         b, h = base_ctxs[i], her_ctxs[i]
         n = min(len(b), len(h))
@@ -128,7 +159,7 @@ def main() -> None:
         rows.append({"category": cats[i], "cos_delta_taboo": round(align, 4)})
     out = {
         "analysis": "refusal_word_probe",
-        "backend": "krea2",
+        "backend": args.backend,
         "base": args.base,
         "heretic": args.heretic,
         "dit": args.dit,

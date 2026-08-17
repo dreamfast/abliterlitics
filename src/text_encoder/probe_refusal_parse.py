@@ -19,6 +19,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -61,6 +62,7 @@ KEY_WORDS = [
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
     p = argparse.ArgumentParser()
+    p.add_argument("--backend", choices=["krea2", "zimage"], default="krea2")
     p.add_argument("--dit", required=True)
     p.add_argument("--base", required=True)
     p.add_argument("--heretic", required=True)
@@ -70,31 +72,56 @@ def main() -> None:
 
     from src.text_encoder.attention_metrics import token_groups
     from src.text_encoder.backends.krea2 import Krea2Backend
-    from src.text_encoder.run_krea2_attention import _strip_prefix_tokens
+    from src.text_encoder.backends.z_image import ZImageBackend
 
     prompts = [t for _, t in PROMPTS]
     cats = [c for c, _ in PROMPTS]
 
-    def encode(te_file: str) -> tuple[list[torch.Tensor], list[list[str]]]:
-        backend = Krea2Backend(comfyui_path=args.comfyui)
-        backend.load(te_file, device="cpu", dit_file=args.dit)
-        arts = backend.encode(prompts, cats)
-        conn = next(a for a in arts if a.stage.value == "connector_out")
-        stream = conn.streams["connector_out"]
-        mask = stream.mask
-        ctxs = []
-        for i in range(len(prompts)):
-            n = int(mask[i].sum()) if mask is not None else stream.activations.shape[1]
-            ctxs.append(stream.activations[i, :n, :].float())
-        ids_all = backend.tokenize(prompts)["input_ids"]
-        toks_out = []
-        inner = backend.tokenizer.qwen3vl_4b.tokenizer
-        for ids in ids_all:
-            toks = inner.convert_ids_to_tokens(ids)
-            toks = [t.replace("Ġ", " ").replace("Ċ", "\n") for t in toks]
-            toks_out.append(_strip_prefix_tokens(toks, ids))
-        backend.close()
-        return ctxs, toks_out
+    if args.backend == "krea2":
+        from src.text_encoder.run_krea2_attention import _strip_prefix_tokens
+
+        def encode(te_file: str) -> tuple[list[torch.Tensor], list[list[str]]]:
+            backend = Krea2Backend(comfyui_path=args.comfyui)
+            backend.load(te_file, device="cpu", dit_file=args.dit)
+            arts = backend.encode(prompts, cats)
+            conn = next(a for a in arts if a.stage.value == "connector_out")
+            stream = conn.streams["connector_out"]
+            mask = stream.mask
+            ctxs = []
+            for i in range(len(prompts)):
+                n = int(mask[i].sum()) if mask is not None else stream.activations.shape[1]
+                ctxs.append(stream.activations[i, :n, :].float())
+            ids_all = backend.tokenize(prompts)["input_ids"]
+            toks_out = []
+            inner = backend.tokenizer.qwen3vl_4b.tokenizer
+            for ids in ids_all:
+                toks = inner.convert_ids_to_tokens(ids)
+                toks = [t.replace("Ġ", " ").replace("Ċ", "\n") for t in toks]
+                toks_out.append(_strip_prefix_tokens(toks, ids))
+            backend.close()
+            return ctxs, toks_out
+
+    else:
+
+        def encode(te_file: str) -> tuple[list[torch.Tensor], list[list[str]]]:
+            backend = ZImageBackend(comfyui_path=args.comfyui)
+            backend.load(te_file, device="cpu", dit_file=args.dit)
+            arts = backend.encode(prompts, cats)
+            conn = next(a for a in arts if a.stage.value == "connector_out")
+            stream = conn.streams["refined_context"]
+            mask = stream.mask
+            ctxs = []
+            for i in range(len(prompts)):
+                n = int(mask[i].sum()) if mask is not None else stream.activations.shape[1]
+                ctxs.append(stream.activations[i, :n, :].float())
+            ids_all = backend.tokenize(prompts)["input_ids"]
+            toks_out = []
+            inner = backend.tokenizer.qwen3_4b.tokenizer
+            for ids in ids_all:
+                toks = inner.convert_ids_to_tokens(ids)
+                toks_out.append([t.replace("Ġ", " ").replace("Ċ", "\n") for t in toks])
+            backend.close()
+            return ctxs, toks_out
 
     base_ctxs, base_toks = encode(args.base)
     her_ctxs, her_toks = encode(args.heretic)
@@ -116,7 +143,7 @@ def main() -> None:
     her_words = word_vecs(her_ctxs, her_toks)
     log.info("vocabulary: %d base words / %d heretic words", len(base_words), len(her_words))
 
-    rows = []
+    rows: list[dict[str, Any]] = []
     for w in KEY_WORDS:
         if w not in her_words or w not in base_words:
             rows.append({"word": w, "status": "not tokenized as single word"})
@@ -142,8 +169,8 @@ def main() -> None:
 
     out = {
         "analysis": "refusal_word_parse_probe",
-        "backend": "krea2",
-        "stage": "connector_out (DiT input)",
+        "backend": args.backend,
+        "stage": "DiT input (connector_out krea2 / refined_context z-image)",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "key_words": rows,
         "note": "heretic word vector vs base word vectors at the DiT input; "
