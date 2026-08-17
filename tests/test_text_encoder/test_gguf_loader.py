@@ -22,7 +22,9 @@ from src.text_encoder.backends.gguf_loader import (  # noqa: E402
     LLAMA_SD_MAP,
     _quant_label_from_name,
     expected_qwen3_keys,
+    find_qwen3vl_mmproj,
     load_gguf_te_state_dict,
+    qwen3vl_mmproj_rename,
     sd_map_replace,
 )
 
@@ -84,9 +86,12 @@ def _write_tiny_gguf(
     """Write a minimal qwen3 GGUF. Returns (q8_logical, embed_fp32)."""
     rng = np.random.default_rng(seed)
     w = gguf.GGUFWriter(str(path), arch)
-    w.add_uint32("qwen3.block_count", N_LAYERS)
-    w.add_uint32("qwen3.embedding_length", HIDDEN)
-    w.add_uint32("qwen3.vocab_size", vocab)
+    # Metadata under the ARCH's own prefix (qwen3 vs qwen3vl) — locks the
+    # loader's arch-aware field reads, not just the fallback path.
+    w.add_uint32(f"{arch}.block_count", N_LAYERS)
+    w.add_uint32(f"{arch}.embedding_length", HIDDEN)
+    if arch == "qwen3":  # real qwen3vl ggufs carry no vocab_size field
+        w.add_uint32("qwen3.vocab_size", vocab)
     q8_logical = None
     for layer in range(N_LAYERS):
         for suffix, dims in F16_TENSORS:
@@ -358,3 +363,79 @@ class TestRealFileIntegration:
                 # transpose/remap bug would produce O(1) diffs instead.
                 assert torch.allclose(got, ref_t, rtol=0.01, atol=0.01), f"max diff {(got - ref_t).abs().max()}"
                 break
+
+
+class TestQwen3VL:
+    """qwen3vl text stack (identical layout to qwen3) + mmproj sidecar."""
+
+    def test_qwen3vl_arch_accepted_same_layout(self, tmp_path: Path) -> None:
+        """A qwen3vl-arch gguf's TEXT stack loads through the qwen3 path."""
+        f = tmp_path / "tiny-vl-q8_0.gguf"
+        _write_tiny_gguf(f, arch="qwen3vl")
+        sd, meta = load_gguf_te_state_dict(f, dtype=torch.bfloat16)
+        assert set(sd) == expected_qwen3_keys(N_LAYERS)
+        assert meta.arch == "qwen3vl"
+
+    def test_mmproj_rename_full_map(self) -> None:
+        """RAW llama.cpp mmproj names -> comfy model.visual.* (incl. temporal-conv concat)."""
+        vsd: dict = {}
+        vsd["v.position_embd.weight"] = torch.zeros(2)
+        for layer in (5, 11, 17):
+            vsd[f"v.deepstack.{layer}.fc1.weight"] = torch.zeros(2)
+            vsd[f"v.deepstack.{layer}.fc2.weight"] = torch.zeros(2)
+            vsd[f"v.deepstack.{layer}.norm.weight"] = torch.zeros(2)
+        # v.blk.N.* (raw block naming)
+        vsd["v.blk.0.ln1.weight"] = torch.zeros(2)
+        vsd["v.blk.0.ln2.weight"] = torch.zeros(2)
+        vsd["v.blk.0.attn_qkv.weight"] = torch.zeros(2)
+        vsd["v.blk.0.attn_out.weight"] = torch.zeros(2)
+        vsd["v.blk.0.ffn_up.weight"] = torch.zeros(2)
+        vsd["v.blk.0.ffn_down.weight"] = torch.zeros(2)
+        # patch embed: two temporal halves concatenated on dim 2
+        vsd["v.patch_embd.weight"] = torch.zeros(1, 3, 1, 2, 2)
+        vsd["v.patch_embd.weight.1"] = torch.ones(1, 3, 1, 2, 2)
+        vsd["v.patch_embd.bias"] = torch.zeros(1)
+        # post_ln + mm projector
+        vsd["v.post_ln.weight"] = torch.zeros(2)
+        vsd["mm.0.weight"] = torch.zeros(2)
+        vsd["mm.2.weight"] = torch.zeros(2)
+
+        out = qwen3vl_mmproj_rename(vsd)
+        assert out["model.visual.pos_embed.weight"] is vsd["v.position_embd.weight"]
+        assert "model.visual.deepstack_merger_list.0.linear_fc1.weight" in out
+        assert "model.visual.deepstack_merger_list.2.linear_fc2.weight" in out
+        assert "model.visual.blocks.0.norm1.weight" in out
+        assert "model.visual.blocks.0.norm2.weight" in out
+        assert "model.visual.blocks.0.attn.qkv.weight" in out
+        assert "model.visual.blocks.0.attn.proj.weight" in out
+        assert "model.visual.blocks.0.mlp.linear_fc1.weight" in out
+        assert "model.visual.blocks.0.mlp.linear_fc2.weight" in out
+        cat = out["model.visual.patch_embed.proj.weight"]
+        assert cat.shape == (1, 3, 2, 2, 2)
+        assert cat[:, :, 0].sum() == 0 and cat[:, :, 1].sum() == 12  # halves in order (6 ones each)
+        assert "model.visual.merger.norm.weight" in out
+        assert "model.visual.merger.linear_fc1.weight" in out
+        assert "model.visual.merger.linear_fc2.weight" in out
+        assert "_patch_half" not in out
+
+    def test_mmproj_rename_unknown_key_raises(self) -> None:
+        with pytest.raises(ValueError, match="unrecognized mmproj"):
+            qwen3vl_mmproj_rename({"v.weird.key": torch.zeros(1)})
+
+    def test_find_mmproj_matcher_semantics(self, tmp_path: Path) -> None:
+        """Q-arms strip to the bare stem; -f16 keeps its suffix (lesson 45)."""
+        (tmp_path / "mmproj-Qwen3-VL-4B-Instruct-f16.gguf").write_bytes(b"x")
+        (tmp_path / "mmproj-qwen3-vl-4b-f16.gguf").write_bytes(b"x")
+        (tmp_path / "mmproj-qwen3-vl-4b-heretic-f16.gguf").write_bytes(b"x")
+
+        # Q4 main -> stripped stem 'qwen3-vl-4b-q4-k-m'?? No: strip removes the q-suffix
+        got = find_qwen3vl_mmproj(tmp_path / "qwen3-vl-4b-Q4_K_M.gguf")
+        assert got is not None and "mmproj" in got.name
+        # f16 main keeps its suffix -> needs the f16-named sidecar
+        got16 = find_qwen3vl_mmproj(tmp_path / "qwen3-vl-4b-f16.gguf")
+        assert got16 is not None and got16.name == "mmproj-qwen3-vl-4b-f16.gguf"
+        # heretic main -> the heretic-named twin
+        goth = find_qwen3vl_mmproj(tmp_path / "qwen3-vl-4b-heretic-Q6_K.gguf")
+        assert goth is not None and goth.name == "mmproj-qwen3-vl-4b-heretic-f16.gguf"
+        # nothing matches -> None (caller raises)
+        assert find_qwen3vl_mmproj(tmp_path / "unrelated.gguf") is None

@@ -226,7 +226,7 @@ def load_gguf_te_state_dict(
     if arch_field is None:
         raise ValueError(f"{te_file.name}: missing general.architecture metadata")
     arch = bytes(arch_field.parts[arch_field.data[-1]]).decode("utf-8")
-    if arch != "qwen3":
+    if arch not in ("qwen3", "qwen3vl"):
         raise ValueError(
             f"{te_file.name}: architecture {arch!r} not supported — this loader "
             "replicates ComfyUI-GGUF's qwen3 path only (fidelity contract)"
@@ -238,10 +238,13 @@ def load_gguf_te_state_dict(
     total_storage_bytes = 0
     total_numel = 0
 
-    # Metadata read BEFORE the reader is released.
-    n_layers_meta = _get_meta_int(reader, "qwen3.block_count")
-    vocab_meta = _get_meta_int(reader, "qwen3.vocab_size")  # 151936 for qwen3-4b
-    hidden_meta = _get_meta_int(reader, "qwen3.embedding_length")  # 2560 (hidden dim, NOT vocab)
+    # Metadata read BEFORE the reader is released. qwen3vl GGUFs carry the
+    # same fields under the qwen3vl.* prefix (text stack == qwen3 layout;
+    # visual tower lives in the mmproj sidecar — see load_qwen3vl_mmproj).
+    meta_pfx = f"{arch}."
+    n_layers_meta = _get_meta_int(reader, f"{meta_pfx}block_count")
+    vocab_meta = _get_meta_int(reader, f"{meta_pfx}vocab_size")  # 151936 for qwen3-4b
+    hidden_meta = _get_meta_int(reader, f"{meta_pfx}embedding_length")  # 2560 (hidden dim, NOT vocab)
 
     try:
         for tensor in reader.tensors:
@@ -289,7 +292,7 @@ def load_gguf_te_state_dict(
     sd = sd_map_replace(sd, LLAMA_SD_MAP)
 
     # Fail-loud key-set validation against the file's own block count.
-    n_layers = n_layers_meta if n_layers_meta is not None else _infer_layer_count(sd)
+    n_layers = n_layers_meta if n_layers_meta is not None else infer_layer_count(sd)
     expected = expected_qwen3_keys(n_layers)
     actual = set(sd.keys())
     if actual != expected:
@@ -358,7 +361,134 @@ def load_gguf_te_state_dict(
     return sd, meta
 
 
-def _infer_layer_count(sd: dict[str, torch.Tensor]) -> int:
+def infer_layer_count(sd: dict[str, torch.Tensor]) -> int:
     """Infer layer count from mapped keys when metadata is absent."""
     counts = [int(k.split(".")[2]) for k in sd if k.startswith("model.layers.") and k.count(".") >= 3]
     return (max(counts) + 1) if counts else 0
+
+
+# --- qwen3vl mmproj sidecar (visual tower) ------------------------------------
+#
+# Text-only qwen3vl GGUFs lack the vision tower; comfy's VL detection keys
+# on it (deepstack keys). The ComfyUI-GGUF custom node merges the sidecar at
+# load (patched — see scripts/patch_comfyui_gguf_qwen3vl.py).
+#
+# IMPORTANT (shape caveat, verified against the real sidecar + safetensors):
+# the sidecar's BLOCK weights are llama.cpp's TEMPORAL-FUSED parameterization
+# (attn qkv in-features 2048 vs comfy's 1024; mm projector in-features 8192
+# vs comfy merger's 4096). They are NOT drop-in comfy weights — renaming is
+# sufficient for comfy's key-NAME-based VL detection (the tower is never
+# executed for text conditioning), but not for image-input inference.
+# The analysis backends therefore load gguf TEXT STACKS ONLY (visual keys
+# stay absent; krea2 12-tap conditioning is text-only).
+
+_DEEPSTACK_LAYERS = [5, 11, 17]
+
+_RAW_BLOCK_MAP = {
+    "ln1": "norm1",
+    "ln2": "norm2",
+    "attn_qkv": "attn.qkv",
+    "attn_out": "attn.proj",
+    "ffn_up": "mlp.linear_fc1",
+    "ffn_down": "mlp.linear_fc2",
+}
+
+
+def qwen3vl_mmproj_rename(vsd: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Rename RAW llama.cpp mmproj keys to comfy's ``model.visual.*`` layout.
+
+    Handles the raw on-disk naming (``v.blk.N.*``, ``v.patch_embd``,
+    ``v.post_ln``, ``mm.0/mm.2``, ``v.deepstack.*``) including the temporal
+    conv split (``v.patch_embd.weight`` + ``.weight.1`` concatenated on the
+    temporal axis). See the shape caveat above: renamed block weights keep
+    llama.cpp's fused shapes.
+    """
+    out: dict[str, torch.Tensor] = {}
+    patch_halves: list[tuple[str, torch.Tensor]] = []
+    for k, v in vsd.items():
+        if k == "v.position_embd.weight":
+            out["model.visual.pos_embed.weight"] = v
+        elif k in ("v.patch_embd.weight", "v.patch_embd.weight.1"):
+            patch_halves.append((k, v))
+        elif k == "v.patch_embd.bias":
+            out["model.visual.patch_embed.proj.bias"] = v
+        elif k == "v.post_ln.weight":
+            out["model.visual.merger.norm.weight"] = v
+        elif k == "v.post_ln.bias":
+            out["model.visual.merger.norm.bias"] = v
+        elif k.startswith("mm.0."):
+            out[f"model.visual.merger.linear_fc1.{k.split('.')[-1]}"] = v
+        elif k.startswith("mm.2."):
+            out[f"model.visual.merger.linear_fc2.{k.split('.')[-1]}"] = v
+        elif k.startswith("v.deepstack."):
+            parts = k.split(".")
+            layer, sub, param = int(parts[2]), parts[3], parts[4]
+            sub = {"fc1": "linear_fc1", "fc2": "linear_fc2"}.get(sub, sub)
+            idx = _DEEPSTACK_LAYERS.index(layer)
+            out[f"model.visual.deepstack_merger_list.{idx}.{sub}.{param}"] = v
+        elif k.startswith("v.blk."):
+            parts = k.split(".")
+            n, raw_sub, param = parts[2], parts[3], parts[4]
+            out[f"model.visual.blocks.{n}.{_RAW_BLOCK_MAP[raw_sub]}.{param}"] = v
+        else:
+            raise ValueError(f"unrecognized mmproj tensor name: {k}")
+    if patch_halves:
+        if len(patch_halves) != 2:
+            raise ValueError(f"patch_embd expects exactly 2 temporal halves, got {len(patch_halves)}")
+        patch_halves.sort(key=lambda kv: kv[0])  # '.weight' < '.weight.1' — explicit order
+        out["model.visual.patch_embed.proj.weight"] = torch.cat([h[1] for h in patch_halves], dim=2)
+    return out
+
+
+def _strip_quant_suffix(name: str) -> str:
+    """ComfyUI-GGUF's suffix strip: q-quants only (-f16 keeps its suffix)."""
+    m = re.search(r"[-_]?(?:ud-)?i?q[0-9]_[a-z0-9_\-]{1,8}$", name, re.IGNORECASE)
+    return name[: m.start()] if m else name
+
+
+def find_qwen3vl_mmproj(te_file: str | Path) -> Path | None:
+    """Locate the mmproj sidecar for a qwen3vl TE gguf (same-dir matcher).
+
+    Mirrors ComfyUI-GGUF's ``gguf_mmproj_loader``: sidecar = any *.gguf in
+    the same dir whose name contains 'mmproj' AND the main file's
+    quant-stripped stem. Ambiguity is benign when towers are identical
+    (verified byte-identical for base/heretic, 315/315).
+    """
+    te_file = Path(te_file)
+    tenc = _strip_quant_suffix(te_file.stem).lower()
+    for fname in sorted(te_file.parent.glob("*.gguf")):
+        if "mmproj" not in fname.name.lower():
+            continue
+        if tenc in fname.name.lower():
+            return fname
+    return None
+
+
+def load_qwen3vl_mmproj(te_file: str | Path) -> dict[str, torch.Tensor]:
+    """Load + rename the mmproj visual tower for a qwen3vl TE gguf.
+
+    Returns a comfy-named ``model.visual.*`` state dict (315 tensors for the
+    4B tower after the temporal-conv concat). See the shape caveat above.
+    Raises FileNotFoundError when no sidecar matches.
+    """
+    import gguf  # local import: only qwen3vl arms need the reader here
+
+    sidecar = find_qwen3vl_mmproj(te_file)
+    if sidecar is None:
+        raise FileNotFoundError(
+            f"No mmproj sidecar found next to {Path(te_file).name} (matcher: "
+            f"'mmproj' + quant-stripped stem). Build one via llama.cpp "
+            "convert_hf_to_gguf.py --mmproj-only."
+        )
+    reader = gguf.GGUFReader(str(sidecar))
+    vsd: dict[str, torch.Tensor] = {}
+    for tensor in reader.tensors:
+        data = torch.from_numpy(tensor.data.copy())  # copy: own the mmap
+        # mmproj ships f16; keep torch bf16 storage convention.
+        vsd[tensor.name] = data.to(torch.bfloat16)
+    out = qwen3vl_mmproj_rename(vsd)
+    if len(out) != 315:
+        raise ValueError(
+            f"{sidecar.name}: expected 315 renamed visual tensors, got {len(out)} (first keys: {sorted(out)[:4]})"
+        )
+    return out

@@ -91,12 +91,6 @@ if [[ -n "${VARIANT_FILTER}" ]]; then
     VAR_NAMES="${VARIANT_FILTER}"
 else
     for name in "${!VARIANTS[@]}"; do
-        local_f="${VARIANTS[${name}]}"
-        [[ -f "${local_f}" ]] || local_f="${COMPARISON_DIR}/models/te/$(basename "${local_f}")"
-        if [[ "${local_f}" == *.gguf ]]; then
-            log "SKIP ${name}: GGUF arm — attention backend is safetensors-only (generation-only arm)"
-            continue
-        fi
         [[ -z "${VAR_ARGS}" ]] && VAR_ARGS="${VARIANTS[${name}]}" || VAR_ARGS="${VAR_ARGS},${VARIANTS[${name}]}"
         [[ -z "${VAR_NAMES}" ]] && VAR_NAMES="${name}" || VAR_NAMES="${VAR_NAMES},${name}"
     done

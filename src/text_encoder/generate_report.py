@@ -63,6 +63,76 @@ BACKEND_CONSUMED_LAYER: dict[str, int | None] = {
     "ltx2": None,  # aggregates ALL layers through the projection - no single point
 }
 
+# Backend-facing text fragments (model name, generation stack line, layer
+# semantics). z-image is the historical default; krea2 describes the 12-tap
+# txtfusion interface. Anything unknown falls back to the z-image wording.
+BACKEND_TEXTS: dict[str, dict[str, str]] = {
+    "zimage": {
+        "model_name": "Z-Image",
+        "gen_stack": "Z-Image Turbo, 9 steps, cfg 1, euler/simple",
+        "layer_marker": "layer 34, the layer Z-Image actually reads",
+        "consumed_desc": (
+            "34 (second-to-last of 36 layers, index -2), the exact tensor Z-Image's conditioning pipeline consumes"
+        ),
+    },
+    "krea2": {
+        "model_name": "Krea 2",
+        "gen_stack": "Krea 2 Turbo, two-stage 6+2 steps (denoise 0.2 refine), cfg 1",
+        "layer_marker": "the 12 tap layers (2,5,8,...,35) Krea 2 actually reads — all of them are consumed, so no single marker line",
+        "consumed_desc": (
+            "s 2,5,8,...,35 of 36 layers, the 12 hidden states Krea 2's txtfusion "
+            "adapter consumes as a stacked (seq, 12x2560) interface"
+        ),
+    },
+}
+
+
+def _backend_text(backend: str) -> dict[str, str]:
+    return BACKEND_TEXTS.get(backend, BACKEND_TEXTS["zimage"])
+
+
+STREAM_GLOSSARY_ZIMAGE = (
+    "<details class='glossary'><summary>Stream and stage names (click to expand)</summary>"
+    "<dl>"
+    "<dt>layer_00 ... layer_35 <dd>stage <code>raw_hidden</code>: the mean-pooled hidden state of "
+    "that text-encoder layer. These rows build the per-layer divergence profile.</dd></dt>"
+    "<dt>consumed_hidden <dd>stage <code>raw_hidden</code>: the full token-sequence output of layer "
+    "34 (second-to-last of 36 layers, index -2), the exact tensor Z-Image's conditioning pipeline "
+    "consumes. Not pooled: every token position counts.</dd></dt>"
+    "<dt>cap_embedded <dd>stage <code>projected</code>: consumed_hidden after the DiT checkpoint's "
+    "cap_embedder (RMSNorm plus a 2560 to 3840 linear projection). The first tensor inside the "
+    "diffusion model's own coordinate space.</dd></dt>"
+    "<dt>refined_context <dd>stage <code>connector_out</code>: after the DiT's context_refiner (two "
+    "transformer blocks, with ComfyUI's pad-to-32 applied). This is the tensor that enters "
+    "cross-attention: literally what the DiT sees, and the headline stream for divergence.</dd></dt>"
+    "</dl>"
+    "</details>"
+)
+
+STREAM_GLOSSARY_KREA2 = (
+    "<details class='glossary'><summary>Stream and stage names (click to expand)</summary>"
+    "<dl>"
+    "<dt>layer_02 ... layer_35 <dd>stage <code>raw_hidden</code>: the mean-pooled hidden state of "
+    "that text-encoder layer. These rows build the per-layer divergence profile (Krea 2 taps 12 "
+    "of the 36 layers: 2,5,8,...,35).</dd></dt>"
+    "<dt>tap_stack <dd>stage <code>raw_hidden</code>: the full token-sequence stack of the 12 tap "
+    "layers' hidden states, the exact tensor Krea 2's txtfusion adapter consumes as a "
+    "(seq, 12x2560) interface. Not pooled: every token position counts.</dd></dt>"
+    "<dt>txtfusion_out <dd>stage <code>projected</code>: tap_stack after the DiT's txtfusion "
+    "adapter (per-tap layerwise blocks, projector, two refiners). The first tensor inside the "
+    "diffusion model's own coordinate space.</dd></dt>"
+    "<dt>connector_out <dd>stage <code>connector_out</code>: after txtmlp (RMSNorm plus a 30720 "
+    "to 6144 projection), fused into the DiT's single-stream context. This is the tensor that "
+    "enters the stream: literally what the DiT sees, and the headline stream for divergence.</dd></dt>"
+    "</dl>"
+    "</details>"
+)
+
+
+def _stream_glossary(backend: str) -> str:
+    return STREAM_GLOSSARY_KREA2 if backend == "krea2" else STREAM_GLOSSARY_ZIMAGE
+
+
 # Streams shown in the divergence-ranking chart (the transmission pipeline).
 PIPELINE_STREAMS = ["consumed_hidden", "cap_embedded", "refined_context", "video_proj", "audio_proj"]
 
@@ -1315,6 +1385,7 @@ over warm images demonstrates generation-time consistency.</p>
     seed_badge = (
         f'<span class="ab-seed">seed {manifest.get("seed", "?")}</span>' if manifest.get("seed") is not None else ""
     )
+    gen_stack = _backend_text(variants[0].get("backend", "") if variants else "")["gen_stack"]
     split_note = (
         "<p class='meta'>This report references images in the sibling "
         "<code>ab_images/</code> folder - keep them together when hosting.</p>"
@@ -1339,8 +1410,8 @@ over warm images demonstrates generation-time consistency.</p>
     return f"""
 <h2 id="sec-ab">A/B image evidence: same seed, only the text encoder swapped {seed_badge}</h2>
 {split_note}
-<p>Paired generations from fixed seeds through the real ComfyUI stack (Z-Image
-Turbo, 9 steps, cfg 1, euler/simple). Pick two variants and hover over the
+<p>Paired generations from fixed seeds through the real ComfyUI stack
+({gen_stack}). Pick two variants and hover over the
 image to reveal: <b>left of the divider = variant A, right = variant B</b>.
 Identical-looking images at very different divergence levels demonstrate DiT
 robustness; visible differences localize what the conditioning perturbation
@@ -1673,6 +1744,7 @@ image.</p>
 
 def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path, split_images: bool = False) -> None:
     backend = variants[0]["backend"]
+    stream_glossary = _stream_glossary(backend)
     floor_label = variants[0].get("floor", "fakequant_int8")
     graphs_dir = out.parent
     svgs = {
@@ -1696,10 +1768,10 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path, 
                 "Where the divergence lands vs where the DiT reads",
                 "Each line is one variant's per-layer MSE vs the base model (log y-axis). "
                 "Grey dashed lines are pure base quantizations (the noise floor every variant "
-                "must be compared against); colored lines are abliterated variants. The green "
-                "vertical line marks layer 34, the layer Z-Image actually reads. The abliteration "
-                "shift concentrates in late layers (30+), while the consumed layer stays near "
-                "the quantization floor.",
+                "must be compared against); colored lines are abliterated variants. "
+                f"The green vertical line marks {_backend_text(backend)['layer_marker']}. "
+                "The abliteration shift concentrates in late layers, while the consumed "
+                "layer stays near the quantization floor.",
             ),
             (
                 "damage_ranking",
@@ -1927,21 +1999,7 @@ far conditioning moves when the prompt describes an unrelated scene), and <b>one
 (how far the final latent moves when only the noise differs - the "different image" level).</dd></dt>
 </dl>
 </details>
-<details class="glossary"><summary>Stream and stage names (click to expand)</summary>
-<dl>
-<dt>layer_00 ... layer_35 <dd>stage <code>raw_hidden</code>: the mean-pooled hidden state of
-that text-encoder layer. These rows build the per-layer divergence profile.</dd></dt>
-<dt>consumed_hidden <dd>stage <code>raw_hidden</code>: the full token-sequence output of layer
-34 (second-to-last of 36 layers, index -2), the exact tensor Z-Image's conditioning pipeline
-consumes. Not pooled: every token position counts.</dd></dt>
-<dt>cap_embedded <dd>stage <code>projected</code>: consumed_hidden after the DiT checkpoint's
-cap_embedder (RMSNorm plus a 2560 to 3840 linear projection). The first tensor inside the
-diffusion model's own coordinate space.</dd></dt>
-<dt>refined_context <dd>stage <code>connector_out</code>: after the DiT's context_refiner (two
-transformer blocks, with ComfyUI's pad-to-32 applied). This is the tensor that enters
-cross-attention: literally what the DiT sees, and the headline stream for divergence.</dd></dt>
-</dl>
-</details>
+{stream_glossary}
 <table>
 <tr><th>Variant</th><th>vs reference</th><th>Stage</th><th>Stream</th><th>CKA (linear)</th><th>Cos (all)</th><th>MSE</th><th>Divergence (quant units)</th><th>Div (semantic)</th></tr>
 {_table_rows(variants)}

@@ -90,6 +90,12 @@ te_readable() {
     local host_f="${f}"
     [[ -f "${host_f}" ]] || host_f="${COMPARISON_DIR}/models/te/$(basename "${f}")"
     [[ -f "${host_f}" ]] || { error "TE file not found: ${f}"; return 2; }
+    # GGUF arms load via the backend's gguf path (text stack + mmproj sidecar)
+    # — safetensors probing does not apply; file-exists is the gate.
+    if [[ "${host_f}" == *.gguf ]]; then
+        echo "ok"
+        return 0
+    fi
     python3 - "${host_f}" <<'PYEOF'
 import sys
 from safetensors import safe_open

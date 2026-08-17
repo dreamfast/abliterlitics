@@ -47,7 +47,7 @@ import torch.nn as nn
 from safetensors import safe_open
 
 from src.text_encoder.artifact import ConditioningArtifact, Pooling, Stage, Stream, StreamSpec
-from src.text_encoder.backends import comfyui_loader
+from src.text_encoder.backends import comfyui_loader, gguf_loader
 from src.text_encoder.backends.base import BaseBackend, fake_quantize_weights
 from src.text_encoder.metrics import pool_mean
 
@@ -256,6 +256,7 @@ class Krea2Backend(BaseBackend):
         self._te_sd: dict[str, torch.Tensor] | None = None
         self._quantized = False
         self._te_fake_quant: str | None = None
+        self._gguf_meta: gguf_loader.GGUFMeta | None = None
         self._dit_name = ""
         self._dit_dequantized = 0
         self._device = "cpu"
@@ -274,24 +275,42 @@ class Krea2Backend(BaseBackend):
         ]
 
     def load(self, ckpt: str, dtype: str = "bf16", device: str = "cpu", dit_file: str = "") -> None:
-        """Load the qwen3vl_4b backbone (comfy quant path) + txtfusion modules."""
+        """Load the qwen3vl_4B backbone (comfy quant path) + txtfusion modules."""
         if not dit_file:
             raise ValueError("Krea2Backend requires dit_file (Krea2 DiT with txtfusion/txtmlp)")
 
-        n_layers, has_visual = _probe_te(ckpt)
-        if n_layers != N_LAYERS or not has_visual:
-            kind = "plain Qwen3-4B (z-image TE — no visual tower)" if n_layers == N_LAYERS else f"{n_layers} layers"
-            raise ValueError(
-                f"Unexpected TE for krea2: {kind}, has_visual={has_visual}. Krea2 needs the FULL "
-                "Qwen3-VL-4B (36 LLM layers + visual tower); a truncated or text-only TE is not "
-                "comparable at the 12-tap interface"
-            )
+        is_gguf = str(ckpt).endswith(".gguf")
+        if is_gguf:
+            # llama.cpp container: text stack via the shared qwen3 loader
+            # (identical layout; arch=qwen3vl guarantees the right model).
+            # The visual tower is ABSENT in text-only ggufs and INERT for
+            # krea2 text conditioning (the 12-tap interface reads the LLM
+            # stack only) — same situation as the live ComfyUI pipeline,
+            # where the tower exists for key-name detection but never runs
+            # on text prompts. Missing visual.* keys are tolerated below.
+            self._te_sd, self._gguf_meta = gguf_loader.load_gguf_te_state_dict(ckpt)
+            n_layers = gguf_loader.infer_layer_count(self._te_sd)
+            if n_layers != N_LAYERS:
+                raise ValueError(
+                    f"GGUF text stack has {n_layers} layers, expected {N_LAYERS} — wrong model or truncated container"
+                )
+            has_visual = False
+        else:
+            n_layers, has_visual = _probe_te(ckpt)
+            if n_layers != N_LAYERS or not has_visual:
+                kind = "plain Qwen3-4B (z-image TE — no visual tower)" if n_layers == N_LAYERS else f"{n_layers} layers"
+                raise ValueError(
+                    f"Unexpected TE for krea2: {kind}, has_visual={has_visual}. Krea2 needs the FULL "
+                    "Qwen3-VL-4B (36 LLM layers + visual tower); a truncated or text-only TE is not "
+                    "comparable at the 12-tap interface"
+                )
 
         comfyui_loader.import_comfy(self.comfyui_path, cpu=(device == "cpu"))
 
         self.ckpt_id = str(ckpt)
         self._device = device
-        self._te_sd = comfyui_loader.load_te_state_dict(ckpt)
+        if not is_gguf:
+            self._te_sd = comfyui_loader.load_te_state_dict(ckpt)
 
         import comfy.text_encoders.hunyuan_video as hv
         import comfy.text_encoders.krea2 as krea2_te
@@ -322,7 +341,20 @@ class Krea2Backend(BaseBackend):
         self.model = model_cls(device=device, dtype=torch.float32)
         result = self.model.load_sd(self._te_sd)
         if result is not None and hasattr(result, "missing_keys"):
-            missing = [k for k in result.missing_keys if k != "spiece_model"]
+            if is_gguf:
+                # Text-only gguf: the visual tower is absent by design and
+                # inert for text conditioning — tolerate its missing keys
+                # (bare `visual.*` after the prefix replace).
+                def _is_visual(k: str) -> bool:
+                    return k == "spiece_model" or ".visual." in k or k.startswith("visual.")
+
+                missing = [k for k in result.missing_keys if not _is_visual(k)]
+                log.info(
+                    "GGUF arm: visual tower absent (%d visual keys missing — inert for text conditioning)",
+                    sum(1 for k in result.missing_keys if _is_visual(k) and k != "spiece_model"),
+                )
+            else:
+                missing = [k for k in result.missing_keys if k != "spiece_model"]
             if missing:
                 raise RuntimeError(f"Backbone load failed: {len(missing)} missing keys (first 5: {missing[:5]})")
         # Sentinel: embed_tokens must not be all-zero (silent load failure)
@@ -339,9 +371,10 @@ class Krea2Backend(BaseBackend):
         self.txtfusion, self.txtmlp = build_txtfusion_modules(cond_sd, device=device)
 
         log.info(
-            "Krea2Backend loaded: %s (quantized=%s) + DiT %s",
+            "Krea2Backend loaded: %s (quantized=%s gguf=%s) + DiT %s",
             Path(ckpt).name,
             self._quantized,
+            self._gguf_meta.quant_label if self._gguf_meta else "-",
             self._dit_name,
         )
 
@@ -482,6 +515,8 @@ class Krea2Backend(BaseBackend):
     ) -> ConditioningArtifact:
         if self._te_fake_quant:
             dtype_str = f"fakequant_{self._te_fake_quant}"
+        elif self._gguf_meta is not None:
+            dtype_str = f"gguf_{self._gguf_meta.quant_label}"
         elif self._quantized:
             dtype_str = "comfy_int8_tensorwise"
         else:
@@ -494,6 +529,9 @@ class Krea2Backend(BaseBackend):
             "dit_file": self._dit_name,
             "dit_cond_dequantized": self._dit_dequantized,  # int8 tensors dequantized (0 = plain bf16 DiT)
         }
+        if self._gguf_meta is not None:
+            meta["gguf"] = self._gguf_meta.to_dict()
+            meta["gguf_visual"] = "absent (text-only container; tower inert for text conditioning)"
         return ConditioningArtifact(
             model="krea2",
             backend="Krea2Backend",
