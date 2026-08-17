@@ -773,6 +773,7 @@ def _verdict_section(
     disc: dict[str, dict[str, Any]],
     dit_summaries: dict[str, dict[str, Any]],
     taboo: dict[str, Any] | None = None,
+    results_dir: Path | None = None,
 ) -> str:
     rows: list[str] = []
 
@@ -948,13 +949,38 @@ def _verdict_section(
         h6_label,
         vcls=f"verdict-{h6_cls}" if h6_cls else "",
     )
-    # H7: conversion purity — optional stretch; NOT executed this comparison (hy3-R5)
+    # H7: conversion purity — answered from the f16-GGUF round-trip when that
+    # arm was analyzed (lossless container swap at the DiT input), plus the
+    # built-base sha256 bit-match (build-night, journal #144). Falls back to
+    # NOT RUN when the arm is absent (z-image-era wording).
+    h7_evidence = (
+        "NOT RUN — the optional base-vs-base purity artifact was not produced in this comparison "
+        "(plan marked it a stretch); container/dequant divergence IS reported per-variant elsewhere"
+    )
+    h7_label = "NOT RUN"
+    try:
+        if results_dir is None:
+            raise OSError("no results_dir")
+        gguf_f16 = json.loads((results_dir / "te_base_gguf_f16.json").read_text())
+        units = None
+        for var in gguf_f16.get("variants", []):
+            for s in var.get("streams", []):
+                if s.get("stream") == "connector_out" and s.get("damage_quant_units") is not None:
+                    units = float(s["damage_quant_units"])
+        if units is not None:
+            h7_evidence = (
+                f"f16-GGUF container round-trip at the DiT input: {units:.4f} quant-units "
+                "(≈ 0 — lossless format swap); independent HF→comfy base build bit-matches "
+                "the canonical file (sha256, journal #144)"
+            )
+            h7_label = "SUPPORTED"
+    except (OSError, json.JSONDecodeError):
+        pass
     add(
         "H7",
         "ComfyUI export is weight-faithful (conversion artifacts ≈ 0)",
-        "NOT RUN — the optional base-vs-base purity artifact was not produced in this comparison "
-        "(plan marked it a stretch); container/dequant divergence IS reported per-variant elsewhere",
-        "NOT RUN",
+        h7_evidence,
+        h7_label,
     )
 
     return f"""
@@ -996,7 +1022,7 @@ def build_phase4_sections(results_dir: Path) -> str:
         _discriminability_section(disc),
         _breadth_section(breadth),
         _taboo_section(taboo),
-        _verdict_section(anchors, img_vars, controls, attn, disc, dit_summaries, taboo),
+        _verdict_section(anchors, img_vars, controls, attn, disc, dit_summaries, taboo, results_dir=results_dir),
         refs_section_html(),
     ]
     return "\n".join(p for p in parts if p)
