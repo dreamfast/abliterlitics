@@ -62,7 +62,7 @@ REFS: dict[str, tuple[str, str, str]] = {
     ),
     "kornblith2019": (
         "Kornblith et al. 2019 — CKA similarity",
-        "https://arxiv.org/abs/1905.11745",
+        "https://arxiv.org/abs/1905.00414",
         "Our conditioning-similarity metric (linear + RBF CKA).",
     ),
     "lpips2018": (
@@ -74,12 +74,6 @@ REFS: dict[str, tuple[str, str, str]] = {
         "Hessel et al. 2021 — CLIPScore",
         "https://arxiv.org/abs/2104.08718",
         "Prompt-adherence metric (P8) and the taboo compliance-gap building block.",
-    ),
-    "sdissue35": (
-        "CompVis Stable Diffusion issue #35 — same seed, different image",
-        "https://github.com/CompVis/stable-diffusion/issues/35",
-        "The oldest community observation of chaotic same-seed divergence - our seed "
-        "anchor (0.516) turns it into a unit of measurement.",
     ),
 }
 

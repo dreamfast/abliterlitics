@@ -433,6 +433,13 @@ The runner now has `NLTK_CACHE="${ABL_ROOT}/.cache/nltk_data"` and `-v "${NLTK_C
 
 ---
 
+### 47. Citation registry links must be verified against the live source, not trusted at authorship
+
+**Symptom** (te-zimage website review, 2026-08-17, journal #166): the CKA citation in the te-zimage report and website draft pointed at `arxiv.org/abs/1905.11745`, which is an ultralight-dark-matter paper, not Kornblith et al. 2019. The user caught it pre-publication.
+**Cause**: `src/text_encoder/citations.py` shipped the wrong ID from initial authorship and was never checked against arXiv. Dual code review validates numbers and logic, not link targets, so it propagated silently into the generated reports for BOTH te-zimage and te-krea2, then into the website draft built from the report.
+**Fix**: registry corrected to the verified ID `1905.00414`, all generated artifacts sed-fixed, website rebuilt. Every other arXiv ID in `citations.py` was then audited against live arXiv titles and all were correct.
+**Detection**: whenever adding an ID to `citations.py`, `curl -s https://arxiv.org/abs/<id> | grep -oP '(?<=<title>).*'` and confirm the title matches the intended paper. In reviews of generated reports, spot-check citation link targets, not just the prose around them.
+
 ## Benchmark Tasks
 
 Default suite: **Open LLM Leaderboard v2** + GSM8K + TruthfulQA + **v1 forensic supplement** + HumanEval. The v1 tasks were dropped from OLL for "saturation" — but **saturation is irrelevant for delta-detection** (a benchmark at 80%→77% still shows the 3pp damage signal).

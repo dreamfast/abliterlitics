@@ -140,7 +140,6 @@ def _img_section(anchors: dict[str, Any] | None, img_vars: dict[str, dict[str, A
     if seed_m is not None and floor_m is not None:
         anchor_line = (
             f"<p><b>Anchors (shared, bootstrap-CI'd)</b>: seed change (same TE, different noise — "
-            f"the oldest observation in diffusion communities, now a unit — {ref('sdissue35')}; "
             f'"a different image") LPIPS = <b>{seed_m:.3f}</b>'
             + (f" [{seed_lo:.3f}, {seed_hi:.3f}]" if seed_lo is not None else "")
             + f"; quant-floor band (int8 vs fp8 — two known-good encoders) LPIPS = <b>{floor_m:.3f}</b>"

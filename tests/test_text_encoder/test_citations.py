@@ -6,7 +6,7 @@ from src.text_encoder.citations import REFS, ref, refs_section_html
 
 
 def test_refs_entries_wellformed() -> None:
-    assert len(REFS) >= 12
+    assert len(REFS) >= 11
     for key, (label, url, rel) in REFS.items():
         assert label and rel, f"{key}: label/relationship must be non-empty"
         assert url.startswith("https://"), f"{key}: url must be https, got {url}"

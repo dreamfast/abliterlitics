@@ -56,10 +56,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", default="cuda", help="Cache-key device (artifacts load to CPU for compare)")
     p.add_argument(
         "--backend",
-        choices=["zimage", "krea2"],
+        choices=["zimage", "krea2", "h3"],
         default="zimage",
-        help="Conditioning family: zimage (cache consumed_hidden + _token_strings) or "
-        "krea2 (encode_krea2_contexts for contexts AND aligned token strings)",
+        help="Conditioning family: zimage (cache consumed_hidden + _token_strings), "
+        "krea2 (encode_krea2_contexts for contexts AND aligned token strings), or "
+        "h3 (CPU direct encode of refined_context, raw un-templated tokens)",
     )
     return p.parse_args()
 
@@ -87,6 +88,34 @@ def main() -> int:
         def _load_variant_ctxs(vfile: str) -> list[Any]:
             ctxs, _ = encode_krea2_contexts(vfile, prompts, categories, args.dit, "/comfyui", device="cpu")
             return ctxs
+
+    elif args.backend == "h3":
+        from src.text_encoder.backends.h3 import H3Backend
+
+        def _load_variant_ctxs(vfile: str) -> list[Any]:
+            from src.text_encoder.artifact import Stage
+
+            backend = H3Backend(comfyui_path="/comfyui")
+            backend.load(vfile, device="cpu", dit_file=args.dit)
+            arts = backend.encode(prompts, categories, stages=[Stage.CONNECTOR_OUT])
+            conn = next(a for a in arts if a.stage.value == "connector_out")
+            stream = conn.streams["refined_context"]
+            ids_all = backend.tokenize(prompts)["input_ids"]
+            inner = backend.tokenizer.qwen3vl_32b.tokenizer
+            out: list[torch.Tensor] = []
+            for i, p in enumerate(prompts):
+                acts = stream.activations[i]
+                mask = stream.mask[i] if stream.mask is not None else None
+                n = int(mask.sum()) if mask is not None else acts.shape[0]
+                toks = [t.replace("Ġ", " ").replace("Ċ", "\n") for t in inner.convert_ids_to_tokens(ids_all[i])]
+                if n != len(toks):
+                    log.warning("%s: prompt %d mask %d vs %d tokens — using min", Path(vfile).name, i, n, len(toks))
+                token_strings.setdefault(p, toks[: min(n, len(toks))])
+                out.append(acts[: min(n, len(toks))])
+            backend.close()
+            return out
+
+        base_ctxs = _load_variant_ctxs(args.base)
 
     else:
         token_strings = _token_strings(True, prompts)
