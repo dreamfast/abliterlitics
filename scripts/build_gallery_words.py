@@ -22,7 +22,6 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Any
 
 log = logging.getLogger(__name__)
 

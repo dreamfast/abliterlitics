@@ -80,9 +80,11 @@ IFS=',' read -ra VAR_ARRAY <<< "$VARIANTS"
 for variant in "${VAR_ARRAY[@]}"; do
     variant="${variant// /}"   # trim stray spaces
     [[ -z "$variant" ]] && continue
-    variant_slug="$(echo "$variant" | tr '-' '_')"
+    # tr '.-' '__': also map dots — dotted variant dirs must yield the same
+    # slug as _load_comparison.py's [^A-Za-z0-9_] normalization (lesson #64)
+    variant_slug="$(echo "$variant" | tr '.-' '__')"
     variant_path_var="VARIANT_PATH_${variant_slug}"
-    variant_path="${!variant_path_var}"
+    variant_path="${!variant_path_var:-}"
     if [[ -z "${variant_path}" ]]; then
         error "no path for variant ${variant} (VARIANT_PATH_${variant_slug} unset)"; continue
     fi
@@ -94,12 +96,17 @@ for variant in "${VAR_ARRAY[@]}"; do
         continue
     fi
     log "Phase 2: collect-variant ${variant} (${variant_path})"
+    # Same HF-cache mount + offline env as Phase 1 (lesson #6 family):
+    # dataset-dependent collect paths must never attempt a live HF download.
     docker_run "$GPU" "$FORENSICS_IMAGE" \
         -v "${variant_path}:/model:ro" \
         -v "${TOKENIZER_DIR}:/tokenizer:ro" \
         -v "${EXP_RESULTS}:/results" \
         -v "${ABL_ROOT}:/app:ro" \
+        -v "${HF_CACHE_DIR}:/root/.cache/huggingface" \
         -e PYTHONPATH=/app \
+        -e HF_HOME=/root/.cache/huggingface \
+        -e HF_DATASETS_OFFLINE=1 -e HF_HUB_OFFLINE=1 \
         -- \
         /app/src/kl/kl_experiment.py collect-variant \
             --model /model --tokenizer /tokenizer \

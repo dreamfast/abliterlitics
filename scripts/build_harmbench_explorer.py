@@ -48,9 +48,11 @@ import re
 import sqlite3
 import sys
 from collections import defaultdict
-from decimal import Decimal, ROUND_HALF_UP
+from collections.abc import Callable
 from datetime import datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
+from typing import Any
 
 CSS = """
 :root {
@@ -189,18 +191,18 @@ JS = """
 """
 
 
-def _pct(x):
+def _pct(x: object) -> float | None:
     """Fraction -> percentage 0-100, half-up (house convention)."""
     if x is None:
         return None
     return float((Decimal(str(x)) * 100).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
 
 
-def esc(s) -> str:
+def esc(s: object) -> str:
     return html.escape(str(s) if s is not None else "", quote=True)
 
 
-def fmt_int(n) -> str:
+def fmt_int(n: int) -> str:
     return f"{int(n):,}"
 
 
@@ -220,7 +222,7 @@ def judge_badge(verdict: str | None) -> str:
     return '<span class="hb-badge hb-j-none">no judge</span>'
 
 
-def clf_badge(label, confidence) -> str:
+def clf_badge(label: object, confidence: object) -> str:
     if not label:
         return '<span class="hb-badge hb-j-none">no classifier</span>'
     extra = f" &middot; {esc(confidence)}" if confidence else ""
@@ -231,8 +233,7 @@ def is_thinkmode(model_name: str) -> bool:
     return "thinkmode" in model_name.lower()
 
 
-def fallback_display_name(model_name: str, models_map: dict[str, str],
-                          base_display: str = "Base") -> str:
+def fallback_display_name(model_name: str, models_map: dict[str, str], base_display: str = "Base") -> str:
     """Derive a display name for arms absent (or blank) in the models table."""
     if is_thinkmode(model_name):
         stem = model_name
@@ -251,8 +252,11 @@ def fallback_display_name(model_name: str, models_map: dict[str, str],
     return model_name
 
 
-def load_data(db: sqlite3.Connection, comparison: str,
-              exclude: set[str] = frozenset()):
+def load_data(
+    db: sqlite3.Connection,
+    comparison: str,
+    exclude: set[str] | frozenset[str] = frozenset(),
+) -> tuple[dict[str, str], dict[str, list[dict[str, Any]]], str]:
     models_map = {
         r[0]: r[1]
         for r in db.execute(
@@ -264,41 +268,46 @@ def load_data(db: sqlite3.Connection, comparison: str,
     arms = [
         r[0]
         for r in db.execute(
-            "SELECT model_name, COUNT(*) FROM responses "
-            "WHERE comparison = ? GROUP BY model_name ORDER BY model_name",
+            "SELECT model_name, COUNT(*) FROM responses WHERE comparison = ? GROUP BY model_name ORDER BY model_name",
             (comparison,),
         )
         if r[0] not in exclude
     ]
     behaviors = {
         r[0]: {"text": r[1] or "", "cat": r[2] or "uncategorized"}
-        for r in db.execute(
-            "SELECT behavior_id, behavior_text, semantic_category FROM behaviors"
-        )
+        for r in db.execute("SELECT behavior_id, behavior_text, semantic_category FROM behaviors")
     }
+
     # Latest review per (model, behavior) wins if several reviewers exist.
     # Display name strips internal rubric-era suffixes (glm-5.3-flash-v2 -> glm-5.3-flash);
     # the DB reviewer id is untouched.
     def reviewer_display(r: str) -> str:
         return re.sub(r"-v\d+$", "", r or "")
-    reviews: dict[tuple[str, str], dict] = {}
-    for mid, bid, reviewer, verdict, reasoning, at in db.execute(
+
+    reviews: dict[tuple[str, str], dict[str, Any]] = {}
+    for mid, bid, reviewer, verdict, reasoning, _at in db.execute(
         "SELECT model_name, behavior_id, reviewer_model, verdict, review_reasoning, reviewed_at "
         "FROM llm_reviews WHERE comparison = ? ORDER BY reviewed_at",
         (comparison,),
     ):
         reviews[(mid, bid)] = {
-            "reviewer": reviewer_display(reviewer), "verdict": verdict, "reasoning": reasoning,
+            "reviewer": reviewer_display(reviewer),
+            "verdict": verdict,
+            "reasoning": reasoning,
         }
-    clas: dict[tuple[str, str], dict] = {}
+    clas: dict[tuple[str, str], dict[str, Any]] = {}
     for mid, bid, label, is_ref, layer, reason, conf, clf in db.execute(
         "SELECT model_name, behavior_id, label, is_refusal, layer, reason, confidence, classifier "
         "FROM v_latest_classification WHERE comparison = ?",
         (comparison,),
     ):
         clas[(mid, bid)] = {
-            "label": label, "is_refusal": is_ref, "layer": layer,
-            "reason": reason, "confidence": conf, "classifier": clf,
+            "label": label,
+            "is_refusal": is_ref,
+            "layer": layer,
+            "reason": reason,
+            "confidence": conf,
+            "classifier": clf,
         }
     arms_data = {}
     for arm in arms:
@@ -313,36 +322,40 @@ def load_data(db: sqlite3.Connection, comparison: str,
             b = behaviors.get(bid, {"text": "", "cat": "uncategorized"})
             rv = reviews.get((arm, bid))
             cl = clas.get((arm, bid))
-            items.append({
-                "behavior_id": bid, "behavior_text": b["text"], "cat": b["cat"],
-                "response": resp or "", "reasoning": reasoning or "",
-                "tokens": toks or 0, "finish": finish or "?", "error": error,
-                "reasoning_chars": rchars or len(reasoning or ""),
-                "judge_verdict": rv["verdict"] if rv else None,
-                "judge_reviewer": rv["reviewer"] if rv else None,
-                "judge_reasoning": rv["reasoning"] if rv else "",
-                "clf": cl,
-            })
+            items.append(
+                {
+                    "behavior_id": bid,
+                    "behavior_text": b["text"],
+                    "cat": b["cat"],
+                    "response": resp or "",
+                    "reasoning": reasoning or "",
+                    "tokens": toks or 0,
+                    "finish": finish or "?",
+                    "error": error,
+                    "reasoning_chars": rchars or len(reasoning or ""),
+                    "judge_verdict": rv["verdict"] if rv else None,
+                    "judge_reviewer": rv["reviewer"] if rv else None,
+                    "judge_reasoning": rv["reasoning"] if rv else "",
+                    "clf": cl,
+                }
+            )
         arms_data[arm] = items
     base_row = db.execute(
         "SELECT display_name FROM models WHERE comparison=? AND variant_type='base'",
         (comparison,),
     ).fetchone()
-    base_display = (base_row[0] if base_row and base_row[0] else "Base")
+    base_display = base_row[0] if base_row and base_row[0] else "Base"
     return models_map, arms_data, base_display
 
 
-def arm_stats(items: list[dict]) -> dict:
+def arm_stats(items: list[dict[str, Any]]) -> dict[str, Any]:
     """Per-arm judge tallies. Verdict families are rubric-agnostic:
     no-refusal family = no_refusal + legacy complied; refusal family =
     refusal + legacy refused. Four-way arms (2026-09 rubric) additionally
     count soft_refusal and degenerate, and judge ASR uses the determinate
     denominator judged - degenerate."""
     n = len(items)
-    fourway = any(
-        i["judge_verdict"] in ("no_refusal", "soft_refusal", "refusal", "degenerate")
-        for i in items
-    )
+    fourway = any(i["judge_verdict"] in ("no_refusal", "soft_refusal", "refusal", "degenerate") for i in items)
     j_nr = sum(1 for i in items if i["judge_verdict"] in ("no_refusal", "complied"))
     j_rf = sum(1 for i in items if i["judge_verdict"] in ("refusal", "refused"))
     j_sf = sum(1 for i in items if i["judge_verdict"] == "soft_refusal")
@@ -362,16 +375,26 @@ def arm_stats(items: list[dict]) -> dict:
     else:
         asr = _pct(Decimal(j_nr) / Decimal(n)) if n and judged_n else None
     return {
-        "n": n, "j_complied": j_nr, "j_refused": j_rf, "j_soft": j_sf,
-        "j_degen": j_dg, "j_none": j_n, "fourway": fourway,
+        "n": n,
+        "j_complied": j_nr,
+        "j_refused": j_rf,
+        "j_soft": j_sf,
+        "j_degen": j_dg,
+        "j_none": j_n,
+        "fourway": fourway,
         "judged": judged_n > 0,
-        "asr": asr, "empty": empty, "trunc": trunc, "avg_tok": avg_tok, "avg_rc": avg_rc,
+        "asr": asr,
+        "empty": empty,
+        "trunc": trunc,
+        "avg_tok": avg_tok,
+        "avg_rc": avg_rc,
     }
 
 
-def order_arms(arms_data: dict[str, list[dict]]):
+def order_arms(arms_data: dict[str, list[dict[str, Any]]]) -> tuple[list[str], list[str]]:
     """Default arms by judge ASR desc (unjudged last, by name), then think-mode arms."""
-    def key(arm):
+
+    def key(arm: str) -> tuple[float, str]:
         s = arm_stats(arms_data[arm])
         return (-(s["asr"] if s["asr"] is not None else -1.0), arm)
 
@@ -404,39 +427,46 @@ def topnav(comparison: str, site_prefix: str, prev_link: str, next_link: str) ->
     )
 
 
-def render_card(i: dict) -> str:
+def render_card(i: dict[str, Any]) -> str:
     resp, reasoning = i["response"], i["reasoning"]
     empty = not resp.strip()
     jv = i["judge_verdict"]
-    vcls = {"complied": "hb-vc", "no_refusal": "hb-vc", "refused": "hb-vr",
-            "refusal": "hb-vr", "soft_refusal": "hb-vs",
-            "degenerate": "hb-vd"}.get(jv, "hb-vn")
+    vcls = {
+        "complied": "hb-vc",
+        "no_refusal": "hb-vc",
+        "refused": "hb-vr",
+        "refusal": "hb-vr",
+        "soft_refusal": "hb-vs",
+        "degenerate": "hb-vd",
+    }.get(jv, "hb-vn")
     clf = i["clf"]
     judge_html = ""
     if jv:
         judge_html = (
-            f'<div class="hb-judge"><b>LLM-judge ({esc(i["judge_reviewer"])}):</b> '
-            f'{esc(i["judge_reasoning"])}</div>'
+            f'<div class="hb-judge"><b>LLM-judge ({esc(i["judge_reviewer"])}):</b> {esc(i["judge_reasoning"])}</div>'
         )
     error_html = f'<div class="hb-error">runner error: {esc(i["error"])}</div>' if i["error"] else ""
-    return f"""<article class="hb-card {vcls}" data-verdict="{esc(jv or 'none')}" data-cat="{esc(i['cat'])}">
+    return f"""<article class="hb-card {vcls}" data-verdict="{esc(jv or "none")}" data-cat="{esc(i["cat"])}">
   <div class="hb-cardhead">
-    <span class="hb-bid">{esc(i['behavior_id'])}</span>
-    <span class="hb-chip">{esc(i['cat'])}</span>
+    <span class="hb-bid">{esc(i["behavior_id"])}</span>
+    <span class="hb-chip">{esc(i["cat"])}</span>
     {judge_badge(jv)}
-    {clf_badge(clf['label'] if clf else None, clf['confidence'] if clf else None)}
-    <span class="hb-meta">{fmt_int(i['tokens'])} tok &middot; finish {esc(i['finish'])} &middot; {fmt_int(i['reasoning_chars'])} reasoning chars</span>
+    {clf_badge(clf["label"] if clf else None, clf["confidence"] if clf else None)}
+    <span class="hb-meta">{fmt_int(i["tokens"])} tok &middot; finish {esc(i["finish"])} &middot;
+    {fmt_int(i["reasoning_chars"])} reasoning chars</span>
   </div>
-  <p class="hb-behavior">{esc(i['behavior_text'])}</p>
+  <p class="hb-behavior">{esc(i["behavior_text"])}</p>
   {error_html}
   {judge_html}
   <details class="hb-block">
     <summary>response ({fmt_int(len(resp))} chars{", EMPTY" if empty else ""})</summary>
-    <pre class="{'hb-empty' if empty else ''}">{esc(resp) if resp else "(empty response)"}</pre>
+    <pre class="{"hb-empty" if empty else ""}">{esc(resp) if resp else "(empty response)"}</pre>
   </details>
   <details class="hb-block">
     <summary>reasoning trace ({fmt_int(len(reasoning))} chars, full)</summary>
-    <pre class="{'hb-empty' if not reasoning.strip() else ''}">{esc(reasoning) if reasoning else "(no reasoning captured)"}</pre>
+    <pre class="{"hb-empty" if not reasoning.strip() else ""}">{
+        esc(reasoning) if reasoning else "(no reasoning captured)"
+    }</pre>
   </details>
 </article>"""
 
@@ -445,20 +475,30 @@ def static_link(arm: str) -> str:
     return f"{arm}.html"
 
 
-def hugo_link(site_prefix: str, comparison: str):
+def hugo_link(site_prefix: str, comparison: str) -> Callable[[str], str]:
     def link(arm: str) -> str:
         return f"{site_prefix}/{comparison}/{arm}/"
+
     return link
 
 
-def build_arm_body(comparison: str, arm: str, display: str, items: list[dict],
-                   categories: list[str], site_prefix: str, report_url: str,
-                   prev_arm: str | None, next_arm: str | None,
-                   generated_at: str, link=static_link) -> str:
+def build_arm_body(
+    comparison: str,
+    arm: str,
+    display: str,
+    items: list[dict[str, Any]],
+    categories: list[str],
+    site_prefix: str,
+    report_url: str,
+    prev_arm: str | None,
+    next_arm: str | None,
+    generated_at: str,
+    link: Callable[[str], str] = static_link,
+) -> str:
     s = arm_stats(items)
     asr_big = f"{s['asr']:.1f}%" if s["asr"] is not None else "—"
     if s["fourway"]:
-        per_cat = defaultdict(lambda: {"n": 0, "nr": 0, "sf": 0, "rf": 0, "dg": 0})
+        per_cat: defaultdict[str, dict[str, int]] = defaultdict(lambda: {"n": 0, "nr": 0, "sf": 0, "rf": 0, "dg": 0})
         for i in items:
             d = per_cat[i["cat"]]
             d["n"] += 1
@@ -472,10 +512,13 @@ def build_arm_body(comparison: str, arm: str, display: str, items: list[dict],
             elif jv == "degenerate":
                 d["dg"] += 1
         cat_rows = [
-            f'<tr><td>{esc(cat)}</td><td class="hb-num">{d["n"]}</td>'
-            f'<td class="hb-num">{d["nr"]}</td><td class="hb-num">{d["sf"]}</td>'
-            f'<td class="hb-num">{d["rf"]}</td><td class="hb-num">{d["dg"]}</td></tr>'
-            for cat in categories if (d := per_cat.get(cat))
+            f'<tr><td>{esc(cat)}</td><td class="hb-num">{per_cat[cat]["n"]}</td>'
+            f'<td class="hb-num">{per_cat[cat]["nr"]}</td>'
+            f'<td class="hb-num">{per_cat[cat]["sf"]}</td>'
+            f'<td class="hb-num">{per_cat[cat]["rf"]}</td>'
+            f'<td class="hb-num">{per_cat[cat]["dg"]}</td></tr>'
+            for cat in categories
+            if cat in per_cat
         ]
         cat_header = (
             '<table class="hb-table"><thead><tr><th>category</th><th class="hb-num">n</th>\n'
@@ -501,30 +544,37 @@ def build_arm_body(comparison: str, arm: str, display: str, items: list[dict],
             else:
                 d["x"] += 1
         cat_rows = [
-            f'<tr><td>{esc(cat)}</td><td class="hb-num">{d["n"]}</td>'
-            f'<td class="hb-num">{d["c"]}</td><td class="hb-num">{d["r"]}</td>'
-            f'<td class="hb-num">{d["x"]}</td></tr>'
-            for cat in categories if (d := per_cat.get(cat))
+            f'<tr><td>{esc(cat)}</td><td class="hb-num">{per_cat[cat]["n"]}</td>'
+            f'<td class="hb-num">{per_cat[cat]["c"]}</td>'
+            f'<td class="hb-num">{per_cat[cat]["r"]}</td>'
+            f'<td class="hb-num">{per_cat[cat]["x"]}</td></tr>'
+            for cat in categories
+            if cat in per_cat
         ]
         cat_header = (
             '<table class="hb-table"><thead><tr><th>category</th><th class="hb-num">n</th>\n'
-            '      <th class="hb-num">complied</th><th class="hb-num">refused</th><th class="hb-num">no judge</th></tr></thead>'
+            '      <th class="hb-num">complied</th><th class="hb-num">refused</th>'
+            '<th class="hb-num">no judge</th></tr></thead>'
         )
         verdict_stats = (
             f'<div class="hb-stat"><b>{fmt_int(s["j_complied"])}</b><span>complied (judge)</span></div>\n'
             f'    <div class="hb-stat"><b>{fmt_int(s["j_refused"])}</b><span>refused (judge)</span></div>\n'
             f'    <div class="hb-stat"><b>{fmt_int(s["j_none"])}</b><span>no judge</span></div>'
         )
-    verdict_btns = ('<button class="hb-btn hb-on" data-verdict="all" type="button">all</button>\n  '
-                    + '\n  '.join(
-                        f'<button class="hb-btn" data-verdict="{fam}" type="button">{fam}</button>'
-                        for fam, cnt in (
-                            (("no_refusal", s["j_complied"]), ("soft_refusal", s["j_soft"]),
-                             ("refusal", s["j_refused"]), ("degenerate", s["j_degen"]))
-                            if s["fourway"] else
-                            (("complied", s["j_complied"]), ("refused", s["j_refused"]))
-                        ) if cnt
-                    ))
+    verdict_btns = '<button class="hb-btn hb-on" data-verdict="all" type="button">all</button>\n  ' + "\n  ".join(
+        f'<button class="hb-btn" data-verdict="{fam}" type="button">{fam}</button>'
+        for fam, cnt in (
+            (
+                ("no_refusal", s["j_complied"]),
+                ("soft_refusal", s["j_soft"]),
+                ("refusal", s["j_refused"]),
+                ("degenerate", s["j_degen"]),
+            )
+            if s["fourway"]
+            else (("complied", s["j_complied"]), ("refused", s["j_refused"]))
+        )
+        if cnt
+    )
     if s["j_none"]:
         verdict_btns += '\n  <button class="hb-btn" data-verdict="none" type="button">no-judge</button>'
     cat_opts = ['<option value="all">all categories</option>'] + [
@@ -542,22 +592,23 @@ def build_arm_body(comparison: str, arm: str, display: str, items: list[dict],
 </div></header>
 <div class="hb-toolbar"><div class="hb-wrap">
   {verdict_btns}
-  <select class="hb-select" id="hb-cat">{''.join(cat_opts)}</select>
-  <input class="hb-search" id="hb-search" type="search" placeholder="search behavior id, text, response, reasoning&hellip;" aria-label="search">
-  <span class="hb-count" id="hb-count">showing {fmt_int(s['n'])} of {fmt_int(s['n'])}</span>
+  <select class="hb-select" id="hb-cat">{"".join(cat_opts)}</select>
+  <input class="hb-search" id="hb-search" type="search"
+   placeholder="search behavior id, text, response, reasoning&hellip;" aria-label="search">
+  <span class="hb-count" id="hb-count">showing {fmt_int(s["n"])} of {fmt_int(s["n"])}</span>
 </div></div>
 <div class="hb-wrap">
   <div class="hb-stats">
     <div class="hb-stat hb-hero"><b>{asr_big}</b><span>judge ASR</span></div>
     {verdict_stats}
-    <div class="hb-stat"><b>{fmt_int(s['empty'])}</b><span>empty responses</span></div>
-    <div class="hb-stat"><b>{fmt_int(s['trunc'])}</b><span>truncated (length)</span></div>
-    <div class="hb-stat"><b>{fmt_int(s['avg_tok'])}</b><span>avg completion tokens</span></div>
-    <div class="hb-stat"><b>{fmt_int(s['avg_rc'])}</b><span>avg reasoning chars</span></div>
+    <div class="hb-stat"><b>{fmt_int(s["empty"])}</b><span>empty responses</span></div>
+    <div class="hb-stat"><b>{fmt_int(s["trunc"])}</b><span>truncated (length)</span></div>
+    <div class="hb-stat"><b>{fmt_int(s["avg_tok"])}</b><span>avg completion tokens</span></div>
+    <div class="hb-stat"><b>{fmt_int(s["avg_rc"])}</b><span>avg reasoning chars</span></div>
   </div>
   <section class="hb-section"><h2>Category breakdown (judge verdict)</h2>
     {cat_header}
-    <tbody>{''.join(cat_rows)}</tbody></table>
+    <tbody>{"".join(cat_rows)}</tbody></table>
   </section>
   <main class="hb-cards">
 {cards}
@@ -568,36 +619,63 @@ def build_arm_body(comparison: str, arm: str, display: str, items: list[dict],
     return body
 
 
-def render_arm_page(comparison: str, arm: str, display: str, items: list[dict],
-                    categories: list[str], site_prefix: str, report_url: str,
-                    prev_arm: str | None, next_arm: str | None,
-                    generated_at: str, link=static_link) -> str:
-    body = build_arm_body(comparison, arm, display, items, categories, site_prefix,
-                          report_url, prev_arm, next_arm, generated_at, link)
+def render_arm_page(
+    comparison: str,
+    arm: str,
+    display: str,
+    items: list[dict[str, Any]],
+    categories: list[str],
+    site_prefix: str,
+    report_url: str,
+    prev_arm: str | None,
+    next_arm: str | None,
+    generated_at: str,
+    link: Callable[[str], str] = static_link,
+) -> str:
+    body = build_arm_body(
+        comparison, arm, display, items, categories, site_prefix, report_url, prev_arm, next_arm, generated_at, link
+    )
     return page_skeleton(f"{display} — HarmBench explorer — {comparison}", body)
 
 
-def render_arm_fragment(comparison: str, arm: str, display: str, items: list[dict],
-                        categories: list[str], site_prefix: str, report_url: str,
-                        prev_arm: str | None, next_arm: str | None,
-                        generated_at: str, link=static_link) -> str:
-    body = build_arm_body(comparison, arm, display, items, categories, site_prefix,
-                          report_url, prev_arm, next_arm, generated_at, link)
+def render_arm_fragment(
+    comparison: str,
+    arm: str,
+    display: str,
+    items: list[dict[str, Any]],
+    categories: list[str],
+    site_prefix: str,
+    report_url: str,
+    prev_arm: str | None,
+    next_arm: str | None,
+    generated_at: str,
+    link: Callable[[str], str] = static_link,
+) -> str:
+    body = build_arm_body(
+        comparison, arm, display, items, categories, site_prefix, report_url, prev_arm, next_arm, generated_at, link
+    )
     return f'<div class="hb-root">\n{body}\n</div>\n'
 
 
-def build_index_body(comparison: str, models_map: dict[str, str],
-                     default: list[str], think: list[str], arms_data: dict[str, list[dict]],
-                     reviewers: list[str], site_prefix: str, generated_at: str,
-                     base_display: str = "Base", link=static_link,
-                     hf_url: str | None = None, report_url: str = "") -> str:
+def build_index_body(
+    comparison: str,
+    models_map: dict[str, str],
+    default: list[str],
+    think: list[str],
+    arms_data: dict[str, list[dict[str, Any]]],
+    reviewers: list[str],
+    site_prefix: str,
+    generated_at: str,
+    base_display: str = "Base",
+    link: Callable[[str], str] = static_link,
+    hf_url: str | None = None,
+    report_url: str = "",
+) -> str:
     total_resp = sum(len(v) for v in arms_data.values())
-    total_reviews = sum(
-        1 for items in arms_data.values() for i in items if i["judge_verdict"]
-    )
+    total_reviews = sum(1 for items in arms_data.values() for i in items if i["judge_verdict"])
     fourway_any = any(arm_stats(items)["fourway"] for items in arms_data.values())
 
-    def verdict_cells(s: dict) -> str:
+    def verdict_cells(s: dict[str, Any]) -> str:
         if fourway_any and s["fourway"]:
             return (
                 f'<td class="hb-num">{fmt_int(s["j_complied"])}</td>'
@@ -605,16 +683,15 @@ def build_index_body(comparison: str, models_map: dict[str, str],
                 f'<td class="hb-num">{fmt_int(s["j_refused"])}</td>'
                 f'<td class="hb-num">{fmt_int(s["j_degen"])}</td>'
             )
-        return (
-            f'<td class="hb-num">{fmt_int(s["j_complied"])}</td>'
-            f'<td class="hb-num">{fmt_int(s["j_refused"])}</td>'
-        )
+        return f'<td class="hb-num">{fmt_int(s["j_complied"])}</td><td class="hb-num">{fmt_int(s["j_refused"])}</td>'
 
     verdict_ths = (
-        ('<th class="hb-num">no_refusal</th><th class="hb-num">soft_refusal</th>\n'
-         '      <th class="hb-num">refusal</th><th class="hb-num">degenerate</th>')
-        if fourway_any else
-        ('<th class="hb-num">complied</th><th class="hb-num">refused</th>')
+        (
+            '<th class="hb-num">no_refusal</th><th class="hb-num">soft_refusal</th>\n'
+            '      <th class="hb-num">refusal</th><th class="hb-num">degenerate</th>'
+        )
+        if fourway_any
+        else ('<th class="hb-num">complied</th><th class="hb-num">refused</th>')
     )
 
     def index_rows(arms: list[str]) -> str:
@@ -624,11 +701,7 @@ def build_index_body(comparison: str, models_map: dict[str, str],
             s = arm_stats(items)
             display = models_map.get(arm) or fallback_display_name(arm, models_map, base_display)
             asr = f"{s['asr']:.1f}%" if s["asr"] is not None else "—"
-            clf_only = (
-                ""
-                if s["judged"]
-                else '<span class="hb-badge hb-j-none">classifier-only</span>'
-            )
+            clf_only = "" if s["judged"] else '<span class="hb-badge hb-j-none">classifier-only</span>'
             rows.append(
                 f'<tr><td><a href="{esc(link(arm))}">{esc(display)}</a> '
                 f'<code style="font-family:var(--hb-mono);font-size:.75rem;color:var(--hb-ink3)">{esc(arm)}</code></td>'
@@ -641,8 +714,8 @@ def build_index_body(comparison: str, models_map: dict[str, str],
     rubric_txt = (
         "before ruling <i>no_refusal</i>, <i>soft_refusal</i>, <i>refusal</i> or "
         "<i>degenerate</i>, with ASR over determinate items only"
-        if fourway_any else
-        "before ruling <i>complied</i> or <i>refused</i>"
+        if fourway_any
+        else "before ruling <i>complied</i> or <i>refused</i>"
     )
     explain = (
         f"This explorer exposes every HarmBench response collected for comparison "
@@ -663,17 +736,17 @@ def build_index_body(comparison: str, models_map: dict[str, str],
             "(<code>enable_thinking=true</code>); see the site write-up for why the rendered "
             "prompt, not the weights, is the stronger behavioral lever.</p>"
         )
-    hf_link = (f'<a href="{esc(hf_url)}">Full dataset on HuggingFace</a> · ' if hf_url else "")
+    hf_link = f'<a href="{esc(hf_url)}">Full dataset on HuggingFace</a> · ' if hf_url else ""
     if think:
         think_section = (
             '  <div class="hb-grouplabel">Serving-mode arms, enable_thinking=true</div>\n'
             '  <section class="hb-section">\n'
             f"    {think_note}\n"
             '    <table class="hb-table"><thead><tr><th>arm</th><th class="hb-num">judge ASR</th>\n'
-            f'      {verdict_ths}\n'
+            f"      {verdict_ths}\n"
             '      <th class="hb-num">responses</th><th></th></tr></thead>\n'
             f"    <tbody>{index_rows(think)}</tbody></table>\n"
-            '  </section>\n'
+            "  </section>\n"
         )
     else:
         think_section = ""
@@ -701,35 +774,74 @@ def build_index_body(comparison: str, models_map: dict[str, str],
     return body
 
 
-def render_index(comparison: str, models_map: dict[str, str],
-                 default: list[str], think: list[str], arms_data: dict[str, list[dict]],
-                 reviewers: list[str], site_prefix: str, generated_at: str,
-                 base_display: str = "Base", link=static_link,
-                 hf_url: str | None = None, report_url: str = "") -> str:
-    body = build_index_body(comparison, models_map, default, think, arms_data,
-                            reviewers, site_prefix, generated_at, base_display, link,
-                            hf_url, report_url)
+def render_index(
+    comparison: str,
+    models_map: dict[str, str],
+    default: list[str],
+    think: list[str],
+    arms_data: dict[str, list[dict[str, Any]]],
+    reviewers: list[str],
+    site_prefix: str,
+    generated_at: str,
+    base_display: str = "Base",
+    link: Callable[[str], str] = static_link,
+    hf_url: str | None = None,
+    report_url: str = "",
+) -> str:
+    body = build_index_body(
+        comparison,
+        models_map,
+        default,
+        think,
+        arms_data,
+        reviewers,
+        site_prefix,
+        generated_at,
+        base_display,
+        link,
+        hf_url,
+        report_url,
+    )
     return page_skeleton(f"HarmBench explorer — {comparison}", body)
 
 
-def render_index_fragment(comparison: str, models_map: dict[str, str],
-                          default: list[str], think: list[str], arms_data: dict[str, list[dict]],
-                          reviewers: list[str], site_prefix: str, generated_at: str,
-                          base_display: str = "Base", link=static_link,
-                          hf_url: str | None = None, report_url: str = "") -> str:
-    body = build_index_body(comparison, models_map, default, think, arms_data,
-                            reviewers, site_prefix, generated_at, base_display, link,
-                            hf_url, report_url)
+def render_index_fragment(
+    comparison: str,
+    models_map: dict[str, str],
+    default: list[str],
+    think: list[str],
+    arms_data: dict[str, list[dict[str, Any]]],
+    reviewers: list[str],
+    site_prefix: str,
+    generated_at: str,
+    base_display: str = "Base",
+    link: Callable[[str], str] = static_link,
+    hf_url: str | None = None,
+    report_url: str = "",
+) -> str:
+    body = build_index_body(
+        comparison,
+        models_map,
+        default,
+        think,
+        arms_data,
+        reviewers,
+        site_prefix,
+        generated_at,
+        base_display,
+        link,
+        hf_url,
+        report_url,
+    )
     return f'<div class="hb-root">\n{body}\n</div>\n'
 
 
-def yq(s) -> str:
+def yq(s: str) -> str:
     """Double-quote a string for YAML front matter."""
     return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
 
 
-def hugo_front_matter(title: str, description: str, layout: str,
-                      url: str | None = None, extra: str = "") -> str:
+def hugo_front_matter(title: str, description: str, layout: str, url: str | None = None, extra: str = "") -> str:
     lines = [
         "---",
         f"title: {yq(title)}",
@@ -748,42 +860,56 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--comparison", required=True)
     ap.add_argument("--db", type=Path, default=Path("abliterlitics.db"))
-    ap.add_argument("--output-dir", type=Path, default=None,
-                    help="static mode: output dir "
-                         "(default: abliterlitics_website/static/harmbench/<comparison>)")
-    ap.add_argument("--hugo-content-dir", type=Path, default=None,
-                    help="hugo mode: emit content pages (.md + .body.frag) here instead "
-                         "of standalone static HTML; cross-links use the pretty-URL form "
-                         "/<site-prefix>/<comparison>/<arm>/")
-    ap.add_argument("--index-title", default=None,
-                    help="hugo mode: title for the _index.md page "
-                         "(default: 'HarmBench Response Explorer: <comparison>')")
-    ap.add_argument("--site-prefix", default="/harmbench",
-                    help="URL path prefix under which the site serves the explorer")
-    ap.add_argument("--report-url", default=None,
-                    help="cross-link to the comparison report page "
-                         "(default: /models/<comparison>/)")
-    ap.add_argument("--exclude", default="",
-                    help="comma-separated arm names to omit from the explorer "
-                         "(e.g. leftover control arms)")
-    ap.add_argument("--hf-url", default=None,
-                    help="optional HuggingFace dataset URL shown as a link row "
-                         "on the index page")
+    ap.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="static mode: output dir (default: abliterlitics_website/static/harmbench/<comparison>)",
+    )
+    ap.add_argument(
+        "--hugo-content-dir",
+        type=Path,
+        default=None,
+        help="hugo mode: emit content pages (.md + .body.frag) here instead "
+        "of standalone static HTML; cross-links use the pretty-URL form "
+        "/<site-prefix>/<comparison>/<arm>/",
+    )
+    ap.add_argument(
+        "--index-title",
+        default=None,
+        help="hugo mode: title for the _index.md page (default: 'HarmBench Response Explorer: <comparison>')",
+    )
+    ap.add_argument(
+        "--site-prefix", default="/harmbench", help="URL path prefix under which the site serves the explorer"
+    )
+    ap.add_argument(
+        "--report-url", default=None, help="cross-link to the comparison report page (default: /models/<comparison>/)"
+    )
+    ap.add_argument(
+        "--exclude", default="", help="comma-separated arm names to omit from the explorer (e.g. leftover control arms)"
+    )
+    ap.add_argument(
+        "--hf-url", default=None, help="optional HuggingFace dataset URL shown as a link row on the index page"
+    )
     args = ap.parse_args()
 
     hugo = args.hugo_content_dir is not None
-    out_dir = args.hugo_content_dir if hugo else (
-        args.output_dir or Path("abliterlitics_website/static/harmbench") / args.comparison)
+    out_dir = (
+        args.hugo_content_dir
+        if hugo
+        else (args.output_dir or Path("abliterlitics_website/static/harmbench") / args.comparison)
+    )
     report_url = args.report_url or f"/models/{args.comparison}/"
     site_prefix = args.site_prefix.rstrip("/")
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     link = hugo_link(site_prefix, args.comparison) if hugo else static_link
 
     db = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
-    exclude = {a.strip() for a in args.exclude.split(',') if a.strip()}
+    exclude = {a.strip() for a in args.exclude.split(",") if a.strip()}
     models_map, arms_data, base_display = load_data(db, args.comparison, exclude)
     reviewers = [
-        re.sub(r"-v\d+$", "", r[0]) for r in db.execute(
+        re.sub(r"-v\d+$", "", r[0])
+        for r in db.execute(
             "SELECT DISTINCT reviewer_model FROM llm_reviews WHERE comparison = ?",
             (args.comparison,),
         )
@@ -794,9 +920,7 @@ def main() -> None:
         print(f"ERROR: no responses found for comparison '{args.comparison}'", file=sys.stderr)
         sys.exit(1)
 
-    categories = sorted({
-        i["cat"] for items in arms_data.values() for i in items
-    })
+    categories = sorted({i["cat"] for items in arms_data.values() for i in items})
     default, think = order_arms(arms_data)
     ordered = default + think
 
@@ -806,27 +930,50 @@ def main() -> None:
 
     if hugo:
         index_title = args.index_title or f"HarmBench Response Explorer: {args.comparison}"
-        index_desc = (f"Browse all {fmt_int(total_resp)} HarmBench responses across "
-                      f"{len(arms_data)} arms with judge verdicts, classifier labels "
-                      "and complete reasoning traces.")
-        frag = render_index_fragment(args.comparison, models_map, default, think,
-                                     arms_data, reviewers, site_prefix, generated_at,
-                                     base_display, link, args.hf_url, report_url)
+        index_desc = (
+            f"Browse all {fmt_int(total_resp)} HarmBench responses across "
+            f"{len(arms_data)} arms with judge verdicts, classifier labels "
+            "and complete reasoning traces."
+        )
+        frag = render_index_fragment(
+            args.comparison,
+            models_map,
+            default,
+            think,
+            arms_data,
+            reviewers,
+            site_prefix,
+            generated_at,
+            base_display,
+            link,
+            args.hf_url,
+            report_url,
+        )
         frag_path = out_dir / "_index.body.frag"
         frag_path.write_text(frag, encoding="utf-8")
         md_path = out_dir / "_index.md"
         md_path.write_text(
-            hugo_front_matter(index_title, index_desc, "harmbench-index",
-                              extra="build: { publishResources: false }"),
-            encoding="utf-8")
+            hugo_front_matter(index_title, index_desc, "harmbench-index", extra="build: { publishResources: false }"),
+            encoding="utf-8",
+        )
         print(f"wrote {md_path} + {frag_path} ({frag_path.stat().st_size:,} bytes)")
     else:
-        index_html = render_index(args.comparison, models_map, default, think,
-                                  arms_data, reviewers, site_prefix, generated_at,
-                                  base_display, link=static_link, hf_url=args.hf_url,
-                                  report_url=report_url)
+        index_html = render_index(
+            args.comparison,
+            models_map,
+            default,
+            think,
+            arms_data,
+            reviewers,
+            site_prefix,
+            generated_at,
+            base_display,
+            link=static_link,
+            hf_url=args.hf_url,
+            report_url=report_url,
+        )
         (out_dir / "index.html").write_text(index_html, encoding="utf-8")
-        print(f"wrote {out_dir/'index.html'} ({(out_dir/'index.html').stat().st_size:,} bytes)")
+        print(f"wrote {out_dir / 'index.html'} ({(out_dir / 'index.html').stat().st_size:,} bytes)")
 
     for idx, arm in enumerate(ordered):
         items = arms_data[arm]
@@ -836,26 +983,48 @@ def main() -> None:
         s = arm_stats(items)
         asr = f"{s['asr']:.1f}%" if s["asr"] is not None else "clf-only"
         if hugo:
-            desc = (f"All {fmt_int(s['n'])} HarmBench responses for {display}, "
-                    "with judge verdicts, classifier labels and complete reasoning traces.")
-            frag = render_arm_fragment(args.comparison, arm, display, items, categories,
-                                       site_prefix, report_url, prev_arm, next_arm,
-                                       generated_at, link)
+            desc = (
+                f"All {fmt_int(s['n'])} HarmBench responses for {display}, "
+                "with judge verdicts, classifier labels and complete reasoning traces."
+            )
+            frag = render_arm_fragment(
+                args.comparison,
+                arm,
+                display,
+                items,
+                categories,
+                site_prefix,
+                report_url,
+                prev_arm,
+                next_arm,
+                generated_at,
+                link,
+            )
             arm_dir = out_dir / arm
             arm_dir.mkdir(parents=True, exist_ok=True)
             frag_path = arm_dir / "body.frag"
             frag_path.write_text(frag, encoding="utf-8")
             md_path = arm_dir / "index.md"
-            md_path.write_text(hugo_front_matter(display, desc, "harmbench-arm",
-                                                 url=link(arm),
-                                                 extra="build: { publishResources: false }"),
-                               encoding="utf-8")
-            print(f"wrote {md_path} + {frag_path} ({frag_path.stat().st_size:,} bytes, "
-                  f"{len(items)} cards, ASR {asr})")
+            md_path.write_text(
+                hugo_front_matter(
+                    display, desc, "harmbench-arm", url=link(arm), extra="build: { publishResources: false }"
+                ),
+                encoding="utf-8",
+            )
+            print(f"wrote {md_path} + {frag_path} ({frag_path.stat().st_size:,} bytes, {len(items)} cards, ASR {asr})")
         else:
-            page = render_arm_page(args.comparison, arm, display, items, categories,
-                                   site_prefix, report_url, prev_arm, next_arm,
-                                   generated_at)
+            page = render_arm_page(
+                args.comparison,
+                arm,
+                display,
+                items,
+                categories,
+                site_prefix,
+                report_url,
+                prev_arm,
+                next_arm,
+                generated_at,
+            )
             path = out_dir / f"{arm}.html"
             path.write_text(page, encoding="utf-8")
             print(f"wrote {path} ({path.stat().st_size:,} bytes, {len(items)} cards, ASR {asr})")

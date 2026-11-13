@@ -23,30 +23,29 @@ Abliterlitics downloads datasets (HarmBench behaviors, harmless_alpaca) from Hug
 
 ### Token Provisioning
 
-**Preferred method (environment variable):**
+**Preferred method (host token file — bind-mounted read-only):**
 ```bash
-export HF_TOKEN="hf_xxxxx"
+# After a one-time `huggingface-cli login`, the token lives in:
+#   ~/.cache/huggingface/token
+export HF_TOKEN="hf_xxxxx"   # fallback only, when no token file exists
 ./abliterlitics.sh auto ./my-comparison/
 ```
 
-The token is passed into Docker containers via `-e HF_TOKEN=...` when set in the host environment.
-
 ### Token Protection
 
-- Tokens are **never written to disk** by Abliterlitics (only in Docker env vars)
-- Docker command logs **redact** sensitive environment variables (see `docker_helpers.py`)
-- The `_redact_cmd()` function strips known sensitive keys (HF_TOKEN, API_KEY, etc.) from logged commands
-- Tokens are passed as Docker environment variables, not in command arguments
+- Tokens are **never written to disk** by Abliterlitics
+- The runners' preferred mechanism is a **read-only bind mount of the host's HF token
+  file** into the container (`~/.cache/huggingface/token` →
+  `/root/.cache/huggingface/token:ro`). The token never appears in a command line,
+  a log line, or `docker inspect` output.
+- When no token file exists but `HF_TOKEN` is set in the host environment, the runners
+  fall back to passing it as a Docker environment variable (`-e HF_TOKEN=...`). Note
+  that this makes the token visible via `docker inspect` to local users — prefer the
+  bind-mount path on shared machines.
 
-### Redacted Keys
-
-The following environment variable keys are redacted in logs:
-- `HF_TOKEN`
-- `HUGGING_FACE_HUB_TOKEN`
-- `API_KEY`
-- `SECRET`
-- `PASSWORD`
-- `TOKEN`
+There is **no log-redaction layer**: docker command logging (`log "..."` in the shell
+runners) does not scrub environment values. This is why the bind-mount mechanism is
+preferred — with it, no secret is ever part of the logged command.
 
 ---
 
@@ -119,7 +118,8 @@ print(f"BASE_DIR={shlex.quote(comp_dir + '/' + base)}")
 
 ### Dataset Pinning
 
-The HarmBench behaviors CSV is fetched from the HarmBench GitHub repository, pinned to a specific commit SHA:
+The HarmBench behaviors CSV is fetched from the HarmBench GitHub repository. The canonical
+pinned URL (specific commit SHA) lives in `src/benchmark/benchmark_eval.py`:
 
 ```python
 HARMBENCH_BEHAVIORS_CSV = (
@@ -129,11 +129,21 @@ HARMBENCH_BEHAVIORS_CSV = (
 )
 ```
 
-This SHA should be updated manually after reviewing changes to the upstream dataset. Both `harmbench_generate.py` and `benchmark_eval.py` use the same pinned URL.
+This SHA should be updated manually after reviewing changes to the upstream dataset.
+The other loaders (`src/benchmark/harmbench_generate.py` for generation,
+`src/db/core.py` for the importer) reference the same dataset file; as of this writing
+they still point at the unpinned `main` URL and are being aligned to the same pinned SHA
+as `benchmark_eval.py` — until that lands, do not rely on generation-time reproducibility
+of the exact upstream file contents.
 
-### Classifier Model
+### Classifier
 
-The HarmBench classifier model is loaded from a specific HuggingFace model ID. The model should be verified against known checksums before use in production evaluations.
+The production classifier (`src/benchmark/harmbench_classify.py`, v4.0) is **regex-based**
+— it makes no LLM calls and loads no classifier model. It normalizes responses
+(markdown, typographic quotes) and matches refusal/compliance patterns across layered
+heuristics (`L1_regex`, `L1_preamble`, `L1_soft`, `L2_ambiguous`). An optional LLM-review
+stage can post-review responses for substantive compliance; where present, its verdicts
+take precedence over the regex verdicts in reporting.
 
 ---
 

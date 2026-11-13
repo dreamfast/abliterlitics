@@ -73,6 +73,28 @@ docker_run_cpu() {
         "${command[@]}"
 }
 
+# Map a host path to its in-container path for the TE battery mounts.
+# Shared implementation (was byte-identical in 6 run_te_*/run_text_encoder
+# runners — audit 2026-10-14 duplication set #1). Relies on these globals
+# being set by the CALLER before first use:
+#   COMPARISON_DIR     → /comparison
+#   MODELS_HOST_ROOT   → /models
+#   COMFYUI_HOST_PATH  → /comfyui
+# Paths under none of these roots pass through unchanged (e.g. the comfyui
+# models dir, which is mounted 1:1 at its own absolute path — AGENTS.md #40).
+host_to_container() {
+    local host_path="$1"
+    if [[ "$host_path" == "$COMPARISON_DIR"/* ]]; then
+        echo "/comparison/${host_path#$COMPARISON_DIR/}"
+    elif [[ "$host_path" == "$MODELS_HOST_ROOT"/* ]]; then
+        echo "/models/${host_path#$MODELS_HOST_ROOT/}"
+    elif [[ "$host_path" == "$COMFYUI_HOST_PATH"/* ]]; then
+        echo "/comfyui/${host_path#$COMFYUI_HOST_PATH/}"
+    else
+        echo "$host_path"
+    fi
+}
+
 # Load comparison.json using a Python helper script.
 # All values are shlex-quoted to prevent shell injection.
 # Passes paths as sys.argv (no string interpolation into Python source).
@@ -124,6 +146,27 @@ db_init() {
 db_stage_start() {
     local comp="$1" model="$2" stage="$3"
     python3 -m src.db stage-start --comparison "$comp" --model "$model" --stage "$stage" 2>/dev/null || true
+}
+
+# Lesson #83 guard: read-only check whether a model stage is 'completed'.
+# No-work skip paths must never demote a completed stage — wrap status writes
+# as:  [[ "$(stage_completed C M S)" != "yes" ]] && db_stage_skip/start ...
+# Best-effort: on ANY error returns "no" (write proceeds exactly as before the
+# guard existed). DB is read via file:...?mode=ro; requires the runner's cwd
+# to be the repo root (same assumption as the db_stage_* helpers above).
+stage_completed() {
+    python3 - "$1" "$2" "$3" <<'PYEOF'
+import sqlite3, sys
+try:
+    conn = sqlite3.connect("file:abliterlitics.db?mode=ro", uri=True)
+    row = conn.execute(
+        "SELECT 1 FROM model_stages WHERE comparison=? AND model_name=? AND stage=? AND status='completed'",
+        (sys.argv[1], sys.argv[2], sys.argv[3]),
+    ).fetchone()
+    print("yes" if row else "no")
+except Exception:
+    print("no")
+PYEOF
 }
 
 db_stage_complete() {

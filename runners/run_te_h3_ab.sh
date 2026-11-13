@@ -78,12 +78,22 @@ WORKFLOW_C="${WORKFLOW/#${COMPARISON_DIR}//comp}"
 [[ -n "${VARIANTS}" ]] && EXTRA_ARGS+=("--variants" "${VARIANTS}")
 [[ -n "${LABELS}" ]] && EXTRA_ARGS+=("--labels" "${LABELS}")
 
+# ComfyUI models dir, mounted 1:1 at its own absolute path (host == container)
+# so te_file paths stay valid inside the container (AGENTS.md #40). Env
+# override replaces the machine-specific default (audit 2026-10-14).
+COMFYUI_MODELS_DIR="${COMFYUI_MODELS_DIR:-${HOME}/extra/comfyui-models}"
+
 log "H3 A/B generation: suite=${SUITE} seeds=${SEEDS} out=${OUT_DIR}"
+
+# --suite may be repo-relative (repo mounted at /app) or absolute; the
+# container only sees the /app mount, so prefix RELATIVE paths only — an
+# absolute path would otherwise be mangled to /app//x/y.yaml.
+[[ "${SUITE}" = /* ]] && SUITE_ARG="${SUITE}" || SUITE_ARG="/app/${SUITE}"
 
 docker_run_cpu "${TE_IMAGE}" \
     -v "${COMPARISON_DIR}:/comp:rw" \
     -v "${ABL_ROOT}:/app:ro" \
-    -v "/home/maxx/extra/comfyui-models:/home/maxx/extra/comfyui-models:ro" \
+    -v "${COMFYUI_MODELS_DIR}:${COMFYUI_MODELS_DIR}:ro" \
     --add-host=host.docker.internal:host-gateway \
     -e PYTHONPATH=/app \
     -- \
@@ -92,7 +102,7 @@ docker_run_cpu "${TE_IMAGE}" \
         --comparison /comp/comparison.json \
         --api-url http://host.docker.internal:8191 \
         --out-dir "/comp/results/${COMPARISON_NAME}/${OUT_SUBDIR}" \
-        --prompt-suite "/app/${SUITE}" \
+        --prompt-suite "${SUITE_ARG}" \
         --seeds "${SEEDS}" \
         --duration "${DURATION}" \
         ${SMOKE_FLAG[@]+"${SMOKE_FLAG[@]}"} \

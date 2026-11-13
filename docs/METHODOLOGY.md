@@ -110,8 +110,11 @@ Where P is the full-vocabulary first-token probability distribution.
 
 Implementation:
 ```python
-logits = scores[0]  # First generation step
-logprobs = F.log_softmax(logits, dim=-1)  # NO .float() cast — stays in bf16
+logits = scores[0]  # First generation step (float32 from generate internals)
+logprobs = F.log_softmax(logits, dim=-1)
+# Non-finite log-probs (-inf from log_softmax underflow on large vocabs) are
+# clamped to a floor (-100.0) before F.kl_div — exp(-inf) * anything is NaN
+# per IEEE 754, and one NaN element poisons the batchmean.
 kl = F.kl_div(logprobs_variant, logprobs_base, reduction="batchmean", log_target=True)
 ```
 
@@ -162,35 +165,50 @@ Uses [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness
 
 ### 3.1 Task Selection
 
-| Task | What It Measures | Type |
-|------|-----------------|------|
-| MMLU | General knowledge (57 subjects) | Multiple choice |
-| GSM8K | Mathematical reasoning | Generate until |
-| HellaSwag | Commonsense reasoning | Multiple choice |
-| ARC-Challenge | Scientific reasoning | Multiple choice |
-| WinoGrande | Coreference resolution | Multiple choice |
-| TruthfulQA | Factual accuracy | Generate until |
-| PiQA | Physical reasoning | Multiple choice |
-| Lambada (OpenAI) | Language modeling / word prediction | Perplexity |
+The default suite is the Open LLM Leaderboard v2 core plus GSM8K and TruthfulQA
+(7 tasks, matching the runner's defaults):
+
+| Task | What It Measures | Type | Shots |
+|------|-----------------|------|------:|
+| leaderboard_mmlu_pro | General knowledge (14 disciplines, 10 choices) | Multiple choice | 5 |
+| leaderboard_gpqa_diamond | PhD-level science questions | Multiple choice | 0 |
+| leaderboard_bbh | 23 Big-Bench Hard subtasks | Multiple choice | 3 |
+| leaderboard_musr | Logical deduction / murder mysteries | Multiple choice | 0 |
+| leaderboard_ifeval | Instruction-following | Generative | 0 |
+| gsm8k | Mathematical reasoning | Generative | 0 |
+| truthfulqa | Factual accuracy / imitability | Mixed | 0 |
+
+An **extended suite** is available by setting `lm_eval_tasks` explicitly; it adds the
+legacy v1 tasks (`hellaswag`, `winogrande`, `arc_challenge`, `piqa`, `lambada_openai`)
+and `humaneval`. Saturation makes the v1 tasks weak absolute references, but they remain
+useful for delta-detection between base and variant.
+
+Execution is phased inside one container (vLLM server + lm-eval `local-completions`):
+Phase 1 (loglikelihood MC + generative, with chat template), Phase 2 (GSM8K with
+thinking budget, `num_fewshot=0`), Phase 3 (raw-completion tasks without chat template).
+A response-level cache makes interrupted runs resumable.
 
 ### 3.2 Default Parameters
 
 ```yaml
 dtype: bfloat16
-batch_size: 32
+batch_size: auto
 gpu_memory_utilization: 0.9
-max_model_len: 4096
-max_gen_toks: 2048
+max_model_len: 16384
+max_gen_toks: 4096        # Phase 1 generative; GSM8K Phase 2 uses its own budget (7168 default)
 trust_remote_code: true
-tensor_parallel_size: 1  # (auto-selected for multi-GPU)
+tensor_parallel_size: 1   # (auto-selected for multi-GPU)
 ```
 
 ### 3.3 Large Model Handling
 
-For models that exceed single-GPU VRAM:
-1. **BitsAndBytes 4-bit quantization**: Reduces VRAM ~4x with minimal accuracy loss
-2. **Tensor parallelism (TP=2)**: Splits model across two GPUs with NCCL flags
-3. **GGUF + llama.cpp fallback**: Convert to quantized GGUF format for CPU/GPU hybrid inference
+For models that exceed single-GPU VRAM (in priority order):
+1. **Dynamic FP8 quantization** (`--quantization fp8`): halves the weight footprint with the default online load path — the recommended lever for large models on a single GPU
+2. **Tensor parallelism (TP=2)**: splits the model across two GPUs with NCCL flags
+3. **GGUF + llama.cpp fallback**: quantized GGUF format for CPU/GPU hybrid inference
+
+BitsAndBytes 4-bit is legacy: it is score-damaging and no longer auto-selected
+(BF16 is the default dtype for every model; see also §3.2).
 
 The `auto` backend selects the appropriate strategy based on model size and available VRAM.
 
@@ -218,10 +236,10 @@ Uses [HarmBench](https://github.com/centerforaisafety/HarmBench) — a standardi
 - Refusal detection using keyword matching
 
 **Phase 2: Classification**
-- Responses classified by a separate classifier model
+- Responses classified by a regex-based classifier (`harmbench_classify.py` v4.0 — no LLM calls; markdown and typographic-quote normalization, layered refusal/compliance patterns)
 - Binary classification: harmful completion vs. refusal/deflection
 - Per-category breakdown (5 categories: standard, contextual, copyright, etc.)
-- Classification uses regex-based pattern matching as fallback
+- An optional LLM-review stage can post-review responses; where covered, its verdicts take precedence in reporting
 
 **Phase 3: Scoring**
 - Attack Success Rate (ASR): fraction of prompts where model produced harmful output
@@ -231,7 +249,7 @@ Uses [HarmBench](https://github.com/centerforaisafety/HarmBench) — a standardi
 ### 4.2 Generation Parameters
 
 ```yaml
-max_tokens: 2048
+max_tokens: 8096  # schema default; raised for thinking models (thinking + answer must fit)
 temperature: 0.0  # Greedy for reproducibility
 ```
 

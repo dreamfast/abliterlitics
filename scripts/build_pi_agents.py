@@ -21,11 +21,13 @@ Body after the closing `---` is the systemPrompt, verbatim.
 Usage: python3 scripts/build_pi_agents.py [--check]
   --check: validate only, exit 1 if .pi/settings.json is stale.
 """
+
 from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -34,7 +36,7 @@ AGENTS_DIR = ROOT / ".pi" / "agents"
 SETTINGS = ROOT / ".pi" / "settings.json"
 
 # modelRole -> pi-model-roles role definition (provider/model id as registered in pi).
-MODEL_ROLES: dict[str, dict] = {
+MODEL_ROLES: dict[str, dict[str, Any]] = {
     # main driver: strongest GLM, used by the overseer (and the project default model)
     "glm-5.3": {"model": "zai/glm-5.3"},
     # workhorse: every pipeline/builder/reviewer agent
@@ -48,8 +50,14 @@ DEFAULT_PROVIDER = "zai"
 DEFAULT_MODEL = "glm-5.3"
 
 ALLOWED_KEYS = {
-    "name", "description", "decisionTrigger", "examples",
-    "modelRole", "tools", "subagentRoles", "timeout",
+    "name",
+    "description",
+    "decisionTrigger",
+    "examples",
+    "modelRole",
+    "tools",
+    "subagentRoles",
+    "timeout",
 }
 REQUIRED_KEYS = {"name", "description", "decisionTrigger", "examples", "modelRole"}
 
@@ -59,8 +67,8 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
-def load_agents() -> dict[str, dict]:
-    overrides: dict[str, dict] = {}
+def load_agents() -> dict[str, dict[str, Any]]:
+    overrides: dict[str, dict[str, Any]] = {}
     for path in sorted(AGENTS_DIR.glob("*.md")):
         raw = path.read_text()
         if not raw.startswith("---\n"):
@@ -82,15 +90,17 @@ def load_agents() -> dict[str, dict]:
         if fm["name"] != path.stem:
             fail(f"{path.name}: name {fm['name']!r} != filename stem {path.stem!r}")
         if fm["modelRole"] not in MODEL_ROLES:
-            fail(f"{path.name}: modelRole {fm['modelRole']!r} not in MODEL_ROLES "
-                 f"({sorted(MODEL_ROLES)}) — add it to MODEL_ROLES in this script")
+            fail(
+                f"{path.name}: modelRole {fm['modelRole']!r} not in MODEL_ROLES "
+                f"({sorted(MODEL_ROLES)}) — add it to MODEL_ROLES in this script"
+            )
         if not isinstance(fm["examples"], list) or not fm["examples"]:
             fail(f"{path.name}: examples must be a non-empty list")
         body = body.lstrip("\n")
         if not body.strip():
             fail(f"{path.name}: empty system prompt body")
 
-        role: dict = {
+        role: dict[str, Any] = {
             "role": fm["modelRole"],
             "description": fm["description"],
             "examples": fm["examples"],
@@ -118,12 +128,16 @@ def load_agents() -> dict[str, dict]:
     return overrides
 
 
-def build_settings(overrides: dict[str, dict]) -> dict:
+def build_settings(overrides: dict[str, dict[str, Any]]) -> dict[str, Any]:
     return {
         "defaultProvider": DEFAULT_PROVIDER,
         "defaultModel": DEFAULT_MODEL,
         "modelRoles": {"roles": MODEL_ROLES},
-        "subagent": {"agentOverrides": overrides},
+        "subagent": {
+            # parallel audit/fix waves run up to 50 concurrent glm-5.3-flash agents
+            "maxConcurrency": 50,
+            "agentOverrides": overrides,
+        },
     }
 
 

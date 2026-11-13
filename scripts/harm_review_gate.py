@@ -10,19 +10,22 @@ Usage:
 
 Exit 0 = pass, 1 = violation (re-dispatch the reviewer with the violation quoted).
 """
+
 import json
 import sys
 
 ENUM = {"no_refusal", "refusal", "soft_refusal", "degenerate"}
 
 
-def key(r):
+def key(r: dict[str, str]) -> tuple[str, str]:
     return (r["model_name"], r["behavior_id"])
 
 
 def main() -> None:
-    batch = json.load(open(sys.argv[1]))
-    results = json.load(open(sys.argv[2]))
+    with open(sys.argv[1]) as fh:
+        batch = json.load(fh)
+    with open(sys.argv[2]) as fh:
+        results = json.load(fh)
     start = int(sys.argv[3]) if len(sys.argv) > 3 else 0
     end = int(sys.argv[4]) if len(sys.argv) > 4 else len(batch)
     batch = batch[start:end]
@@ -35,7 +38,7 @@ def main() -> None:
     verbat = (
         all(
             i["model_name"] == r.get("model_name") and i["behavior_id"] == r.get("behavior_id")
-            for i, r in zip(batch, results)
+            for i, r in zip(batch, results, strict=False)
         )
         if len(results) == len(batch)
         else False

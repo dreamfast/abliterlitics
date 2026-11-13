@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Weight analysis orchestrator — runs 11 weight scripts via Docker
+# Weight analysis orchestrator — runs 10 weight scripts via Docker
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,7 +10,8 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS] <comparison_dir>
 
-Weight analysis pipeline (11 scripts):
+Weight analysis pipeline (10 scripts — stacking_analysis.py is orphaned
+from the pipeline and not invoked here):
    panel        — Panel comparison (which tensors changed, by how much)
    edit         — Edit vector analysis (direction and magnitude)
    svd          — SVD decomposition of edit vectors
@@ -20,7 +21,6 @@ Weight analysis pipeline (11 scripts):
    subspace     — Subspace alignment
    lowrank      — Low-rank reconstruction
    expert       — Expert analysis (MoE models only)
-   stacking     — Stacking investigation
    cross_arch   — Cross-architecture comparison
 
 Options:
@@ -64,15 +64,42 @@ fi
 
 # Run a weight analysis script inside Docker.
 # Mounts comparison dir at /comparison and results at /results.
-# Usage: run_script <script_name> <output_file> [extra_args...]
+# Usage: run_script <script_name> <output_spec>
+#   output_spec tells the skip-check which files the script ACTUALLY writes,
+#   as paths RELATIVE to RESULTS_DIR (lesson #28c — the old check looked under
+#   ${RESULTS_DIR}/${COMPARISON_NAME}/weight/<file>, which nothing writes, so
+#   the skip never triggered and every re-run re-executed all 10 phases):
+#     file:<name>          single aggregate at the results root
+#     per-variant:<prefix> <variant>/<prefix>_<variant>.json for every variant
+#     per-pair:<prefix>    <prefix>_<a>_vs_<b>.json for every unordered pair
+#   (paths verified against src/weight/*.py output code and the gemma4-12b
+#   results layout; _common.py:variant_output_path + pairwise run_analysis.)
 run_script() {
     local script_name="$1"
-    local output_file="$2"
-    shift 2
+    local spec="$2"
 
-    local out_path="${RESULTS_DIR}/${COMPARISON_NAME}/weight/${output_file}"
-    if result_exists "$out_path"; then
-        log "Skipping (exists): ${output_file}"
+    local -a expected=()
+    local kind="${spec%%:*}" arg="${spec#*:}"
+    local v
+    case "$kind" in
+        file)        expected=("$arg") ;;
+        per-variant) for v in $VARIANT_NAMES; do expected+=("${v}/${arg}_${v}.json"); done ;;
+        per-pair)    local -a pair_names=($VARIANT_NAMES)
+                     local pi pj pn=${#pair_names[@]}
+                     for ((pi=0; pi<pn; pi++)); do
+                         for ((pj=pi+1; pj<pn; pj++)); do
+                             expected+=("${arg}_${pair_names[pi]}_vs_${pair_names[pj]}.json")
+                         done
+                     done ;;
+        *) error "run_script: bad output spec '${spec}'"; return 1 ;;
+    esac
+
+    local p all_exist=1
+    for p in "${expected[@]}"; do
+        if [[ ! -f "${RESULTS_DIR}/${p}" ]]; then all_exist=0; break; fi
+    done
+    if [[ $all_exist -eq 1 ]] && result_exists "${RESULTS_DIR}/${expected[0]}"; then
+        log "Skipping (all ${#expected[@]} outputs exist): ${script_name}"
         return 0
     fi
 
@@ -91,15 +118,21 @@ run_script() {
         -- \
         "/app/src/weight/${script_name}" \
             --comparison /comparison \
-            --results-dir /results \
-            "$@"
+            --results-dir /results
+}
+
+# Lesson #83 guard: only mark a stage 'running' when it isn't already
+# 'completed' — skip-existing re-runs would otherwise demote completed stages
+# that this runner never restores (stage-complete is done externally).
+mark_weights_stage_start() {
+    if [[ $DRY_RUN -eq 0 ]] && [[ "$(stage_completed "$1" "$2" "weights")" != "yes" ]]; then
+        db_stage_start "$1" "$2" "weights"
+    fi
 }
 
 # Phase 1: Panel comparison
-if [[ $DRY_RUN -eq 0 ]]; then
-    db_stage_start "$COMPARISON_NAME" "all" "weights"
-fi
-run_script "panel_comparison.py" "panel_comparison.json"
+mark_weights_stage_start "$COMPARISON_NAME" "all"
+run_script "panel_comparison.py" "file:multi_model_panel.json"
 
 # NOTE: Each analysis script, when invoked with --comparison, loops over ALL
 # variants (or ALL variant pairs) internally. They are therefore invoked ONCE
@@ -108,37 +141,35 @@ run_script "panel_comparison.py" "panel_comparison.json"
 
 # Phase 2: Edit vectors (script loops all variants internally)
 for variant in $VARIANT_NAMES; do
-    if [[ $DRY_RUN -eq 0 ]]; then
-        db_stage_start "$COMPARISON_NAME" "$variant" "weights"
-    fi
+    mark_weights_stage_start "$COMPARISON_NAME" "$variant"
 done
-run_script "edit_vector_analysis.py" "edit_vectors.json"
+run_script "edit_vector_analysis.py" "per-variant:edit_vector"
 
 # Phase 3: SVD (script loops all variants internally)
-run_script "svd_analysis.py" "svd_all.json"
+run_script "svd_analysis.py" "per-variant:svd"
 
 # Phase 4: Technique fingerprint (script loops all variants internally)
-run_script "technique_fingerprint.py" "fingerprint_all.json"
+run_script "technique_fingerprint.py" "per-variant:fingerprint"
 
 # Phase 5: Layer analysis (script loops all variants internally)
-run_script "layer_analysis.py" "layer_all.json"
+run_script "layer_analysis.py" "per-variant:layer_analysis"
 
 # Phase 6: Cross-technique correlation (script loops all pairs internally w/ skip)
-run_script "technique_correlation.py" "correlation_all.json"
+run_script "technique_correlation.py" "per-pair:correlation"
 
 # Phase 7: Subspace alignment (script loops all pairs internally w/ skip)
-run_script "subspace_alignment.py" "subspace_all.json"
+run_script "subspace_alignment.py" "per-pair:subspace"
 
 # Phase 8: Low-rank reconstruction (script loops all pairs internally w/ skip)
-run_script "lowrank_reconstruction.py" "lowrank_all.json"
+run_script "lowrank_reconstruction.py" "per-pair:lowrank"
 
 # Phase 9: Expert analysis (only for MoE models)
-run_script "expert_analysis.py" "expert_analysis.json"
+run_script "expert_analysis.py" "per-variant:expert_analysis"
 
 # Phase 10: Cross-architecture comparison (only meaningful when multiple
 # architectures/comparisons are available; non-fatal — single-architecture
 # runs are expected to skip it).
-if ! run_script "cross_arch_comparison.py" "cross_arch.json"; then
+if ! run_script "cross_arch_comparison.py" "file:cross_arch.json"; then
     log "cross_arch_comparison.py did not complete (expected for single-architecture comparisons) — continuing"
 fi
 

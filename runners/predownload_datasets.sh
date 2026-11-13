@@ -8,12 +8,20 @@
 #
 # USAGE:
 #   bash runners/predownload_datasets.sh
+#   IMAGE=abliterlitics-lmeval-gemma4unified:1.0.0 bash runners/predownload_datasets.sh
+#
+# IMAGE COUPLING (AGENTS.md lesson #29): the image's lm-eval version decides
+# how a task name resolves to a dataset CONFIG (e.g. truthfulqa → mc2 on
+# lm-eval 0.4.11 vs generation on 0.4.12). Comparisons that set a non-default
+# settings.lmeval_image MUST pre-download with THAT image, or Phase 1 crashes
+# with "Couldn't find cache for ..." under HF_DATASETS_OFFLINE=1. Check the
+# comparison's comparison.json → settings.lmeval_image and pass IMAGE=<it>.
 #
 # REQUIREMENTS:
 #   - HF authenticated on host (hf auth login, or token in
 #     ~/.cache/huggingface/token)
 #   - GPQA terms accepted at https://huggingface.co/datasets/Idavidrein/gpqa
-#   - Docker with abliterlitics-lmeval:1.0.0 image
+#   - Docker with the selected lm-eval image (default: abliterlitics-lmeval:1.0.0)
 #
 # WHAT IT DOES:
 #   For each task, runs lm_eval --limit 1 with gpt2 (tiny dummy model) to
@@ -29,7 +37,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-IMAGE="abliterlitics-lmeval:1.0.0"
+# Lesson #29: the image's lm-eval version determines task→dataset-config
+# mapping — override to match the comparison's settings.lmeval_image when
+# pre-caching for nightly/unified-image comparisons (see header note).
+IMAGE="${IMAGE:-abliterlitics-lmeval:1.0.0}"
 
 cd "${PROJECT_ROOT}"
 

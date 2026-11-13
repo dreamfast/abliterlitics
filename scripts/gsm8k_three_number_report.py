@@ -24,6 +24,7 @@ Usage:
 Baseline adds delta_vs_base fields (headline + answered-only, in pp) using the
 existing gsm8k_3num_<baseline>.json report.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -31,11 +32,12 @@ import json
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 
-def compute(samples_path: Path) -> dict:
+def compute(samples_path: Path) -> dict[str, Any]:
     """Compute the 3-number report from one samples JSONL (flexible-extract rows)."""
-    per_doc: dict[str, dict] = {}
+    per_doc: dict[Any, dict[str, Any]] = {}
     total_rows = 0
     with samples_path.open() as fh:
         for line in fh:
@@ -83,7 +85,9 @@ def main() -> int:
     ap.add_argument("--comparison-dir", required=True, type=Path)
     ap.add_argument("--model", required=True)
     ap.add_argument("--samples", required=True, type=Path)
-    ap.add_argument("--baseline", default=None, help="Model name of an existing gsm8k_3num_<baseline>.json for delta columns")
+    ap.add_argument(
+        "--baseline", default=None, help="Model name of an existing gsm8k_3num_<baseline>.json for delta columns"
+    )
     args = ap.parse_args()
 
     results_dir = args.comparison_dir / "results" / "lm_eval"
@@ -95,7 +99,6 @@ def main() -> int:
     # path creation in that dir returns ENOENT — unrepaired fs anomaly). The
     # dir is root-owned (files written by the lm-eval container), so host-side
     # shutil falls back to a docker alpine copy (root inside container).
-    bridged = None
     needs_bridge = args.samples.parent != model_dir or not args.samples.name.startswith(f"{args.model}__")
     if needs_bridge:
         dest_name = f"{args.model}__{args.samples.name}"
@@ -104,19 +107,39 @@ def main() -> int:
             import os
             import subprocess
 
-            repo_root = Path(__file__).resolve().parent.parent
-            rel_model_dir = model_dir.resolve().relative_to(repo_root)
-            rel_src = args.samples.resolve().relative_to(repo_root)
-            docker_cmd = [
-                "docker", "run", "--rm", "-v", f"{repo_root}:/w", "alpine",
-                "sh", "-c", f"cd /w/{rel_model_dir} && cp /w/{rel_src} ./{dest_name}",
-            ]
             try:
                 model_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(os.path.relpath(args.samples.resolve(), model_dir), dest_name)
+                # Lesson #51: creation inside __model/ must use a RELATIVE
+                # path (absolute-path creation in that dir returns ENOENT),
+                # so chdir into the dir around the copyfile — which also
+                # means the src must be spelled relative to model_dir, not
+                # to the (arbitrary) CWD the script was invoked from.
+                src_rel = os.path.relpath(args.samples.resolve(), model_dir)
+                prev_cwd = os.getcwd()
+                os.chdir(model_dir)
+                try:
+                    shutil.copyfile(src_rel, dest_name)
+                finally:
+                    os.chdir(prev_cwd)
             except (PermissionError, OSError):
+                # __model/ is root-owned (files written by the lm-eval
+                # container): fall back to a docker alpine copy (root inside
+                # the container). Comparison dirs live under the repo root.
+                repo_root = Path(__file__).resolve().parent.parent
+                rel_model_dir = model_dir.resolve().relative_to(repo_root)
+                rel_src = args.samples.resolve().relative_to(repo_root)
+                docker_cmd = [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "-v",
+                    f"{repo_root}:/w",
+                    "alpine",
+                    "sh",
+                    "-c",
+                    f"cd /w/{rel_model_dir} && cp /w/{rel_src} ./{dest_name}",
+                ]
                 subprocess.run(docker_cmd, check=True)
-        bridged = dest
         print(f"[bridge] {args.samples} -> {dest}")
 
     # Deltas vs baseline report.
@@ -126,7 +149,9 @@ def main() -> int:
             base = json.loads(base_file.read_text())
             report["delta_vs_base"] = {
                 "headline_pp": round(100.0 * (report["headline_exact_match"] - base["headline_exact_match"]), 2),
-                "answered_only_pp": round(100.0 * (report["answered_only_exact_match"] - base["answered_only_exact_match"]), 2),
+                "answered_only_pp": round(
+                    100.0 * (report["answered_only_exact_match"] - base["answered_only_exact_match"]), 2
+                ),
                 "empty_pct_pp": round(report["empty_pct"] - base["empty_pct"], 2),
             }
         else:

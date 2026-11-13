@@ -68,7 +68,7 @@ if [[ -z "$TEBENCH_BASE_TE_FILE" || -z "$TEBENCH_DIT_FILE" ]]; then
 fi
 
 # Default ComfyUI path (host side)
-COMFYUI_HOST_PATH="${TEBENCH_COMFYUI_PATH:-/home/maxx/comfyui-docker/comfyui}"
+COMFYUI_HOST_PATH="${TEBENCH_COMFYUI_PATH:-${HOME}/comfyui-docker/comfyui}"
 if [[ ! -d "$COMFYUI_HOST_PATH/comfy" ]]; then
     error "ComfyUI source not found at: $COMFYUI_HOST_PATH (expected comfy/ subdir)"
     exit 1
@@ -97,26 +97,12 @@ if [[ $DRY_RUN -eq 0 ]]; then
     db_stage_start "$COMPARISON_NAME" "all" "text_encoder"
 fi
 
-# Translate host paths to container paths.
-# Mounts: comparison dir -> /comparison, models root -> /models, comfyui -> /comfyui
-host_to_container() {
-    local host_path="$1"
-    if [[ "$host_path" == "$COMPARISON_DIR"/* ]]; then
-        echo "/comparison/${host_path#$COMPARISON_DIR/}"
-    elif [[ "$host_path" == "$MODELS_HOST_ROOT"/* ]]; then
-        echo "/models/${host_path#$MODELS_HOST_ROOT/}"
-    elif [[ "$host_path" == "$COMFYUI_HOST_PATH"/* ]]; then
-        echo "/comfyui/${host_path#$COMFYUI_HOST_PATH/}"
-    else
-        echo "$host_path"
-    fi
-}
 
 PROMPT_SUITE_PATH="${ABL_ROOT}/prompts/te_suite.yaml"
 
 # Run for each variant
 for variant in $VARIANT_NAMES; do
-    var_slug="$(echo "$variant" | tr '-' '_')"
+    var_slug="$(echo "$variant" | tr '.-' '__')"
     skip_var="VARIANT_SKIP_TE_${var_slug}"
     te_file_var="VARIANT_TE_FILE_${var_slug}"
     ref_name_resolved=""
@@ -146,7 +132,7 @@ for variant in $VARIANT_NAMES; do
     ref_name_resolved=""
     ref_args=()
     if [[ -n "$ref_name" ]]; then
-        ref_slug="$(echo "$ref_name" | tr '-' '_')"
+        ref_slug="$(echo "$ref_name" | tr '.-' '__')"
         ref_file_var="VARIANT_TE_FILE_${ref_slug}"
         ref_host="${!ref_file_var:-}"
         if [[ -n "$ref_host" && -f "$ref_host" ]]; then

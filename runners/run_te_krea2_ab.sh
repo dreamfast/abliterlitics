@@ -68,12 +68,17 @@ WORKFLOW="${COMPARISON_DIR}/workflows/krea2_t2i_api.json"
 [[ -n "${VARIANTS}" ]] && EXTRA_ARGS+=("--variants" "${VARIANTS}")
 [[ -n "${LABELS}" ]] && EXTRA_ARGS+=("--labels" "${LABELS}")
 
+# ComfyUI models dir, mounted 1:1 at its own absolute path (host == container)
+# so te_file paths stay valid inside the container (AGENTS.md #40). Env
+# override replaces the machine-specific default (audit 2026-10-14).
+COMFYUI_MODELS_DIR="${COMFYUI_MODELS_DIR:-${HOME}/extra/comfyui-models}"
+
 log "Krea2 A/B generation: suite=${SUITE} seeds=${SEEDS} out=${OUT_DIR}"
 
 docker_run_cpu "${TE_IMAGE}" \
     -v "${COMPARISON_DIR}:/comp:rw" \
     -v "${ABL_ROOT}:/app:ro" \
-    -v "/home/maxx/extra/comfyui-models:/home/maxx/extra/comfyui-models:ro" \
+    -v "${COMFYUI_MODELS_DIR}:${COMFYUI_MODELS_DIR}:ro" \
     --add-host=host.docker.internal:host-gateway \
     -e PYTHONPATH=/app \
     -- \

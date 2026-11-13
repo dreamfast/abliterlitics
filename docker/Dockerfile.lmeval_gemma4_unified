@@ -1,8 +1,11 @@
 # Abliterlitics LM-Eval — vLLM with Gemma4Unified support
 #
-# Built on top of Google's pinned vllm/vllm-openai:gemma4-unified image
-# (vLLM 0.23.0+ required for Gemma4UnifiedForConditionalGeneration — see
-# vllm-project/vllm#44429). The standard abliterlitics-lmeval:1.0.0 (vLLM
+# Built on top of Google's vllm/vllm-openai:gemma4-unified image, pinned by
+# digest (the upstream tag is a floating dev snapshot; the pinned manifest is
+# on the vLLM 0.26 line — Gemma4UnifiedForConditionalGeneration support
+# landed in vLLM 0.23.0, see vllm-project/vllm#44429, and AGENTS.md lesson
+# #11 records the built image as shipping vLLM 0.26.0 / lm-eval 0.4.12). The
+# standard abliterlitics-lmeval:1.0.0 (vLLM
 # 0.19.0) and abliterlitics-lmeval-nightly:1.0.0 (vLLM 0.20.1) images do
 # NOT register Gemma4UnifiedForConditionalGeneration and will fail at model
 # load with "model type gemma4_unified but Transformers does not recognize
@@ -22,7 +25,7 @@
 # Set in comparison.json:
 #   "settings": { "lmeval_image": "abliterlitics-lmeval-gemma4unified:1.0.0" }
 
-FROM vllm/vllm-openai:gemma4-unified
+FROM vllm/vllm-openai:gemma4-unified@sha256:e828735fba48bca2cf9701864d41693c91953394c5b1455b4668edd7563ed450
 
 USER root
 

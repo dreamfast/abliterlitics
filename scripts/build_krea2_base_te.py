@@ -22,7 +22,7 @@ tensors); scale satisfies 127*scale == max|W| to bf16 precision.
 Usage:
     python3 scripts/build_krea2_base_te.py \
         --hf-dir .cache/hf-te/Qwen3-VL-4B-Instruct \
-        --heretic-int8 /home/maxx/extra/comfyui-models/text_encoders/qwen3-vl-4b-heretic_int8.safetensors \
+        --heretic-int8 <comfy-models-dir>/text_encoders/qwen3-vl-4b-heretic_int8.safetensors \
         --out-dir comparisons/te-krea2/models/te
 """
 

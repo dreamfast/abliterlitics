@@ -29,6 +29,7 @@ import argparse
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import matplotlib
 
@@ -45,19 +46,57 @@ C_SEED = "#1b9e77"
 C_FLOOR = "#7f7f7f"
 
 FUNCTION_WORDS = {
-    "a", "an", "the", "and", "or", "but", "we", "it", "do", "does", "her",
-    "his", "they", "them", "you", "i", "is", "are", "was", "were", "in",
-    "on", "at", "to", "of", "for", "with", "that", "this", "there", "here",
-    "he", "she", "my", "your", "our", "as", "so", "then", "than", "from",
+    "a",
+    "an",
+    "the",
+    "and",
+    "or",
+    "but",
+    "we",
+    "it",
+    "do",
+    "does",
+    "her",
+    "his",
+    "they",
+    "them",
+    "you",
+    "i",
+    "is",
+    "are",
+    "was",
+    "were",
+    "in",
+    "on",
+    "at",
+    "to",
+    "of",
+    "for",
+    "with",
+    "that",
+    "this",
+    "there",
+    "here",
+    "he",
+    "she",
+    "my",
+    "your",
+    "our",
+    "as",
+    "so",
+    "then",
+    "than",
+    "from",
 }
 
 
-def _load(path: Path) -> dict:
+def _load(path: Path) -> dict[str, Any]:
     with open(path) as fh:
-        return json.load(fh)
+        data: dict[str, Any] = json.load(fh)
+    return data
 
 
-def _layer_profile(variants: list[dict]) -> tuple[list[int], list[float]]:
+def _layer_profile(variants: list[dict[str, Any]]) -> tuple[list[int], list[float]]:
     """Per-layer MSE rows live in the raw_hidden stream group (variants is a
     list of per-stage stream groups for the SAME variant, not a variant list)."""
     layers: list[int] = []
@@ -84,8 +123,10 @@ def fig01(results: Path, out: Path) -> None:
     axa.axvspan(31, 49, color=C_HERETIC, alpha=0.10)
     axa.annotate(
         "edit band\n(layers 31-49)",
-        xy=(40, mses[40]), xytext=(12, 3e-2),
-        fontsize=9, color=C_HERETIC,
+        xy=(40, mses[40]),
+        xytext=(12, 3e-2),
+        fontsize=9,
+        color=C_HERETIC,
         arrowprops=dict(arrowstyle="->", color=C_HERETIC, lw=1),
     )
     axa.set_xlabel("encoder layer")
@@ -103,7 +144,9 @@ def fig01(results: Path, out: Path) -> None:
             target.append(cos)
     axb.hist(
         [cos_content, cos_func],
-        bins=40, range=(0.75, 1.0005), color=[C_QUANT, C_HERETIC],
+        bins=40,
+        range=(0.75, 1.0005),
+        color=[C_QUANT, C_HERETIC],
         label=[f"content words (n={len(cos_content)})", f"function words (n={len(cos_func)})"],
         stacked=True,
     )
@@ -120,17 +163,17 @@ def fig01(results: Path, out: Path) -> None:
 
 def fig02(results: Path, out: Path) -> None:
     ad = _load(results / "tebench_h3_audio_damage.json")
-    rows = {
-        (r["config"], r["metric_name"]): r["metric_value"]
-        for r in ad["rows"]
-    }
+    rows = {(r["config"], r["metric_name"]): r["metric_value"] for r in ad["rows"]}
 
     fig, (axa, axb) = plt.subplots(1, 2, figsize=(10.5, 4.0))
 
     # (a) frame-cosine ladder, turbo config, by channel
     labels = [
-        "speech\nte swap", "speech\nquant floor", "speech\nseed reroll",
-        "ambient\nte swap", "ambient\nquant floor",
+        "speech\nte swap",
+        "speech\nquant floor",
+        "speech\nseed reroll",
+        "ambient\nte swap",
+        "ambient\nquant floor",
     ]
     vals = [
         rows[("turbo", "te_swap_speech_frame")],
@@ -140,7 +183,7 @@ def fig02(results: Path, out: Path) -> None:
         rows[("turbo", "floor_ambient_frame")],
     ]
     colors = [C_HERETIC, C_QUANT, C_SEED, C_HERETIC, C_QUANT]
-    bars = axa.bar(range(len(vals)), vals, color=colors, alpha=0.85)
+    axa.bar(range(len(vals)), vals, color=colors, alpha=0.85)
     axa.set_xticks(range(len(vals)), labels, fontsize=8)
     axa.set_ylabel("frame cosine (higher = closer to base)")
     axa.set_ylim(0, 1.05)
@@ -148,7 +191,9 @@ def fig02(results: Path, out: Path) -> None:
     axa.grid(alpha=0.25, axis="y")
     axa.annotate(
         "te swap ~= pure-quant floor\n(both far above a seed reroll)",
-        xy=(0.5, 0.80), xytext=(1.6, 0.45), fontsize=8,
+        xy=(0.5, 0.80),
+        xytext=(1.6, 0.45),
+        fontsize=8,
         arrowprops=dict(arrowstyle="->", lw=1),
     )
 
@@ -176,16 +221,14 @@ def fig03(results: Path, out: Path) -> None:
     anchor = vid["seed_change_anchor_lpips"]
 
     fig, ax = plt.subplots(figsize=(10.5, 4.0))
-    for pos, (name, color) in enumerate(
-        [("base_nvfp4", C_QUANT), ("heretic", C_HERETIC)]
-    ):
+    for pos, (name, color) in enumerate([("base_nvfp4", C_QUANT), ("heretic", C_HERETIC)]):
         v = vid["variants"][name]
         xs = [pos + (i % 8) * 0.09 - 0.36 for i in range(len(v["lpips_values"]))]
-        ax.scatter(xs, v["lpips_values"], s=26, color=color, alpha=0.7,
-                   label=f"{name} (mean {v['mean_frame_lpips']:.3f})")
+        ax.scatter(
+            xs, v["lpips_values"], s=26, color=color, alpha=0.7, label=f"{name} (mean {v['mean_frame_lpips']:.3f})"
+        )
         ax.hlines(v["mean_frame_lpips"], pos - 0.42, pos + 0.42, color=color, lw=2)
-    ax.axhline(anchor, color=C_SEED, ls="--", lw=1.4,
-               label=f"seed-change anchor ({anchor:.3f})")
+    ax.axhline(anchor, color=C_SEED, ls="--", lw=1.4, label=f"seed-change anchor ({anchor:.3f})")
     ax.set_xticks([0, 1], ["base_nvfp4 (quant control)", "heretic"])
     ax.set_ylabel("same-seed frame LPIPS vs base")
     ax.set_title("video battery, 16 prompts x seeds")
@@ -200,8 +243,8 @@ def fig03(results: Path, out: Path) -> None:
 def fig04(results: Path, out: Path) -> None:
     at = _load(results / "tebench_attention_heretic.json")
 
-    def find(x: dict, key: str) -> dict:
-        out_d: dict = {}
+    def find(x: dict[str, Any], key: str) -> dict[str, Any]:
+        out_d: dict[str, Any] = {}
         if isinstance(x, dict):
             for k, v in x.items():
                 if key in k and isinstance(v, dict):
@@ -234,8 +277,7 @@ def fig04(results: Path, out: Path) -> None:
 
     idx = sorted(int(k) for k in per_layer)
     axb.plot(idx, [per_layer[str(i)] for i in idx], color=C_QUANT, lw=1.8, marker="o", ms=3)
-    axb.axhline(mean_all, color=C_HERETIC, ls="--", lw=1.2,
-                label=f"mean over all reads ({mean_all:.4f})")
+    axb.axhline(mean_all, color=C_HERETIC, ls="--", lw=1.2, label=f"mean over all reads ({mean_all:.4f})")
     axb.set_xlabel("DiT block")
     axb.set_ylabel("attention JSD vs base")
     axb.set_title("(b) readout shift by DiT block")

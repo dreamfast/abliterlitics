@@ -68,25 +68,13 @@ if [[ -f "${RESULTS_DIR}/tebench_controls.json" && "${FORCE}" -eq 0 && "${#MERGE
 fi
 
 # Variant TE resolution: _load_comparison exports VARIANT_TE_FILE_<slug>
-heretic_slug="$(echo "${HERETIC}" | tr '-' '_')"
+heretic_slug="$(echo "${HERETIC}" | tr '.-' '__')"
 heretic_te_var="VARIANT_TE_FILE_${heretic_slug}"
 heretic_te_host="${!heretic_te_var:-}"
 [[ -z "${heretic_te_host}" || ! -f "${heretic_te_host}" ]] && { error "No te_file for variant ${HERETIC}"; exit 1; }
 
-COMFYUI_HOST_PATH="${TEBENCH_COMFYUI_PATH:-/home/maxx/comfyui-docker/comfyui}"
+COMFYUI_HOST_PATH="${TEBENCH_COMFYUI_PATH:-${HOME}/comfyui-docker/comfyui}"
 
-host_to_container() {
-    local host_path="$1"
-    if [[ "$host_path" == "$COMPARISON_DIR"/* ]]; then
-        echo "/comparison/${host_path#$COMPARISON_DIR/}"
-    elif [[ "$host_path" == "$MODELS_HOST_ROOT"/* ]]; then
-        echo "/models/${host_path#$MODELS_HOST_ROOT/}"
-    elif [[ "$host_path" == "$COMFYUI_HOST_PATH"/* ]]; then
-        echo "/comfyui/${host_path#$COMFYUI_HOST_PATH/}"
-    else
-        echo "$host_path"
-    fi
-}
 
 map_list_to_container() {
     # Map EACH comma-separated host path individually, rejoin with commas.
@@ -103,7 +91,7 @@ dose_args=""
 if [[ -n "${DOSE_VARIANTS}" ]]; then
     files=""
     for v in ${DOSE_VARIANTS//,/ }; do
-        slug="$(echo "$v" | tr '-' '_')"
+        slug="$(echo "$v" | tr '.-' '__')"
         te_var="VARIANT_TE_FILE_${slug}"
         f="${!te_var:-}"
         [[ -z "${f}" || ! -f "${f}" ]] && { error "No te_file for dose variant ${v}"; exit 1; }

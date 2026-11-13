@@ -44,7 +44,9 @@
 
 set -uo pipefail
 
-REPO="/home/maxx/projects/abliterlitics"
+# Repo root: derived from this script's location (never hardcode an absolute
+# home dir — audit 2026-10-14 GitHub-readiness). ABL_ROOT env override wins.
+REPO="${ABL_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 COMP_DIR="${REPO}/comparisons/qwen38-27b"
 COMP_SLUG="qwen38-27b"
 RESULTS_LMEVAL="${COMP_DIR}/results/lm_eval"

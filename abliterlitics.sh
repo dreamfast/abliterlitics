@@ -20,14 +20,15 @@ Commands:
   lm-eval       Run lm-evaluation-harness
   harmbench     Run HarmBench evaluation
   text-encoder  Text-encoder conditioning fidelity analysis (tebench)
+  te            Alias for text-encoder
   te-report     Generate SVG graphs + HTML report from text-encoder results
   te-img-metrics Image-space metrics over the A/B set (LPIPS/CLIP/SSIM)
   te-controls    Counterfactual conditioning battery (noise/taboo/shuffles/null)
   te-attention   Attention readout: what the DiT reads per TE
   te-discriminability Inter-prompt spread per TE (semantic-collapse detector)
   te-divergence DiT-step divergence analysis (paired sampling trajectories)
+  te-directional Directional analysis: ablation delta vs taboo direction (tebench)
   graphs        Generate all graphs from existing results
-  report        Generate provenance report from results
   build         Build Docker images
   status        Show status of comparison results
   db            Database operations (init, import-results, pipeline-status, etc.)
@@ -50,7 +51,9 @@ Examples:
   $(basename "$0") --force lm-eval ./my_comparison
   $(basename "$0") status ./my_comparison
 EOF
-    exit 0
+    # Optional exit-code arg: `USAGE 1` = usage-on-error (unknown command /
+    # no args must exit nonzero for scriptable/CI callers); bare USAGE exits 0.
+    exit "${1:-0}"
 }
 
 VERSION() { echo "Abliterlitics v${ABL_VERSION}"; exit 0; }
@@ -133,40 +136,35 @@ cmd_text_encoder() {
     bash "${RUNNERS_DIR}/run_text_encoder.sh" $(global_flags) "$@"
 }
 
+# te-controls/te-attention/te-discriminability/te-img-metrics/te-report all
+# receive the leading COMMAND slot (same dispatch shape as the other case
+# arms) and drop it with an unconditional shift. The old `[[ --* ]] && shift`
+# guard ran on USER args here (the case arm passed no $COMMAND) and silently
+# ate the first user flag (e.g. `te-report --split-images <dir>` lost
+# --split-images; audit root-packaging.md B3).
 cmd_te_controls() {
-    if [[ "${1:-}" == --* ]]; then
-        shift
-    fi
+    shift
     bash "${RUNNERS_DIR}/run_te_controls.sh" "$@"
 }
 
 cmd_te_attention() {
-    if [[ "${1:-}" == --* ]]; then
-        shift
-    fi
+    shift
     bash "${RUNNERS_DIR}/run_te_attention.sh" "$@"
 }
 
 cmd_te_discriminability() {
-    if [[ "${1:-}" == --* ]]; then
-        shift
-    fi
+    shift
     bash "${RUNNERS_DIR}/run_te_discriminability.sh" "$@"
 }
 
 cmd_te_img_metrics() {
-    if [[ "${1:-}" == --* ]]; then
-        shift
-    fi
+    shift
     bash "${RUNNERS_DIR}/run_te_img_metrics.sh" "$@"
 }
 
 cmd_te_report() {
-    # Pass ALL args (flags like --split-images + the comparison dir); drop
-    # the leading global-flag slot when present (same shape as siblings).
-    if [[ "${1:-}" == --* ]]; then
-        shift
-    fi
+    # Pass ALL user args (flags like --split-images + the comparison dir).
+    shift
     bash "${RUNNERS_DIR}/run_te_report.sh" "$@"
 }
 
@@ -210,40 +208,14 @@ cmd_graphs() {
 }
 
 cmd_report() {
-    local comp_dir
-    comp_dir="$(find_comp_dir "${1:-.}")"
-    load_comparison "$comp_dir"
-    local results_dir
-    results_dir="$(cd "${comp_dir}/results" && pwd)"
-    local report_dir
-    report_dir="$(cd "${comp_dir}" && pwd)/report"
-    mkdir -p "$report_dir"
-
-    log "Generating report for ${comp_dir}"
-    if [[ $GLOBAL_DRY_RUN -eq 1 ]]; then
-        log "  [dry-run] docker_run auto ${FORENSICS_IMAGE} provenance_report.py"
-        return
-    fi
-
-    # TODO: provenance_report.py requires --variant and --target per variant pair.
-    # For now, generate a report per variant vs base.
-    for variant in $VARIANT_NAMES; do
-        local variant_slug
-        variant_slug="$(echo "$variant" | tr '-' '_')"
-        local variant_path_var="VARIANT_PATH_${variant_slug}"
-        log "  Report: base -> ${variant}"
-        docker_run "${GLOBAL_GPU:-$(detect_best_gpu)}" "$FORENSICS_IMAGE" \
-            -v "${results_dir}:/results:ro" \
-            -v "${report_dir}:/report" \
-            -v "${ABL_ROOT}/src:/app/src:ro" \
-            -e PYTHONPATH=/app \
-            -- \
-            /app/src/report/provenance_report.py \
-                --results-dir /results \
-                --output-dir /report \
-                --variant "${variant}" \
-                --target "base" || log "  WARNING: report failed for ${variant}"
-    done
+    # RETIRED: the provenance_report.py generator has been removed (audit
+    # root-packaging.md B5 — it globbed for result files no runner produces
+    # and printed hardcoded one-off conclusions). Graphs and DB tables remain:
+    #   graphs → SVG graphs from result files (cmd_graphs)
+    #   tables → markdown tables from the DB (cmd_tables)
+    error "The 'report' subcommand was retired (provenance_report.py removed)."
+    error "Use 'graphs' for SVG graphs or 'tables' for markdown tables from the DB."
+    exit 1
 }
 
 cmd_build() {
@@ -258,6 +230,12 @@ cmd_build() {
     log "  Building ${LMEVAL_IMAGE}..."
     [[ $GLOBAL_DRY_RUN -eq 0 ]] && docker build -t "$LMEVAL_IMAGE" -f "${docker_dir}/Dockerfile.lmeval" "$docker_dir"
 
+    # Build gemma4unified lmeval image (Gemma4UnifiedForConditionalGeneration
+    # support — AGENTS.md image table; see docker/Dockerfile.lmeval_gemma4_unified)
+    local gemma4unified_image="${LMEVAL_GEMMA4UNIFIED_IMAGE:-abliterlitics-lmeval-gemma4unified:1.0.0}"
+    log "  Building ${gemma4unified_image}..."
+    [[ $GLOBAL_DRY_RUN -eq 0 ]] && docker build -t "$gemma4unified_image" -f "${docker_dir}/Dockerfile.lmeval_gemma4_unified" "$docker_dir"
+
     # Build llamacpp image (optional)
     log "  Building ${LLAMACPP_IMAGE}..."
     [[ $GLOBAL_DRY_RUN -eq 0 ]] && docker build -t "$LLAMACPP_IMAGE" -f "${docker_dir}/Dockerfile.llamacpp" "$docker_dir"
@@ -269,6 +247,11 @@ cmd_build() {
     # Build text-encoder image (for tebench analysis)
     log "  Building ${TE_IMAGE}..."
     [[ $GLOBAL_DRY_RUN -eq 0 ]] && docker build -t "$TE_IMAGE" -f "${docker_dir}/Dockerfile.te" "$SCRIPT_DIR"
+
+    # Not buildable from this repo: abliterlitics-lmeval-nightly:1.0.0 has no
+    # Dockerfile in docker/ (referenced by AGENTS.md lesson #11 and
+    # runners/common.sh) — see docker/README.md.
+    log "  Skipping ${LMEVAL_NIGHTLY_IMAGE:-abliterlitics-lmeval-nightly:1.0.0}: no Dockerfile in docker/ (see docker/README.md)"
 
     log "Build complete"
 }
@@ -302,7 +285,10 @@ _status_file_count() {
 }
 
 cmd_db() {
-    python3 -m src.db "$@"
+    # PYTHONPATH makes the module invocation cwd-independent (same pattern as
+    # cmd_tables); without it `python3 -m src.db` fails outside the repo root,
+    # and db_init's `2>/dev/null || true` would swallow that silently (B4).
+    PYTHONPATH="${ABL_ROOT}" python3 -m src.db "$@"
 }
 
 cmd_tables() {
@@ -340,7 +326,7 @@ cmd_validate() {
     local errors=0
     if [[ ! -d "${BASE_DIR}" ]]; then
         error "Base model not found: ${BASE_DIR}"
-        ((errors++))
+        errors=$((errors+1))
     fi
     for variant in $VARIANT_NAMES; do
         local variant_slug
@@ -348,7 +334,7 @@ cmd_validate() {
         local variant_path_var="VARIANT_PATH_${variant_slug}"
         if [[ ! -d "${!variant_path_var}" ]]; then
             error "Variant not found: ${!variant_path_var}"
-            ((errors++))
+            errors=$((errors+1))
         fi
     done
 
@@ -361,7 +347,8 @@ cmd_validate() {
 }
 
 if [[ $# -lt 1 ]]; then
-    USAGE
+    # Usage-on-error: nonzero exit so scriptable/CI callers detect it.
+    USAGE 1
 fi
 
 # Parse global args in the main scope (not a subshell)
@@ -389,20 +376,20 @@ case "$COMMAND" in
     harmbench) cmd_harmbench "$COMMAND" "$@" ;;
     text-encoder) cmd_text_encoder "$COMMAND" "$@" ;;
     te)           cmd_text_encoder "$COMMAND" "$@" ;;
-    te-report)    cmd_te_report "$@" ;;
-    te-img-metrics) cmd_te_img_metrics "$@" ;;
-    te-controls)    cmd_te_controls "$@" ;;
-    te-attention)   cmd_te_attention "$@" ;;
-    te-discriminability) cmd_te_discriminability "$@" ;;
+    te-report)    cmd_te_report "$COMMAND" "$@" ;;
+    te-img-metrics) cmd_te_img_metrics "$COMMAND" "$@" ;;
+    te-controls)    cmd_te_controls "$COMMAND" "$@" ;;
+    te-attention)   cmd_te_attention "$COMMAND" "$@" ;;
+    te-discriminability) cmd_te_discriminability "$COMMAND" "$@" ;;
     te-divergence) cmd_te_divergence "$COMMAND" "$@" ;;
     te-directional) cmd_te_directional "$COMMAND" "$@" ;;
     graphs)    cmd_graphs "${1:-.}" ;;
-    report)    cmd_report "${1:-.}" ;;
+    report)    cmd_report ;;
     build)     cmd_build ;;
     status)    cmd_status "${1:-.}" ;;
     db)        cmd_db "$@" ;;
     tables)    cmd_tables "$@" ;;
     clean)     cmd_clean "${1:-.}" ;;
     validate)  cmd_validate "${1:-.}" ;;
-    *)         error "Unknown command: ${COMMAND}"; USAGE ;;
+    *)         error "Unknown command: ${COMMAND}"; USAGE 1 ;;
 esac

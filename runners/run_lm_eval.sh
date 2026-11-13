@@ -257,7 +257,9 @@ run_lm_eval() {
     local skip_flag="VARIANT_SKIP_LM_${var_slug}"
     if [[ "${!skip_flag:-0}" == "1" ]]; then
         log "[skip] ${model_name}: skip_lm_eval=true"
-        if [[ $DRY_RUN -eq 0 ]]; then
+        # Lesson #83 guard: a no-work skip path must never demote a 'completed'
+        # stage — shared read-only check in common.sh (pattern from run_kl.sh).
+        if [[ $DRY_RUN -eq 0 ]] && [[ "$(stage_completed "$COMPARISON_NAME" "$model_name" "lm_eval")" != "yes" ]]; then
             db_stage_skip "$COMPARISON_NAME" "$model_name" "lm_eval"
         fi
         return 0
@@ -265,7 +267,8 @@ run_lm_eval() {
 
     if result_exists "$out_file" && [[ -z "${GSM8K_RERUN:-}" ]]; then
         log "Skipping (exists): ${model_name}"
-        if [[ $DRY_RUN -eq 0 ]]; then
+        # Lesson #83 guard (see above): preserve a 'completed' status on re-runs.
+        if [[ $DRY_RUN -eq 0 ]] && [[ "$(stage_completed "$COMPARISON_NAME" "$model_name" "lm_eval")" != "yes" ]]; then
             db_stage_skip "$COMPARISON_NAME" "$model_name" "lm_eval"
         fi
         return 0
@@ -595,7 +598,6 @@ except Exception:
         --entrypoint bash \
         -e "NVIDIA_VISIBLE_DEVICES=${nvidia_vis}" \
         -e "CUDA_VISIBLE_DEVICES=${cuda_vis}" \
-        -e "PYTORCH_ALLOC_CONF=expandable_segments:True" \
         "${nccl_env[@]+${nccl_env[@]}}" \
         -e "VLLM_FLAGS=${vllm_flags_str}" \
         -e "LM_EVAL_LIMIT_FLAGS=${lm_limit_flags_str}" \

@@ -64,7 +64,11 @@ mkdir -p "${RESULTS_DIR}" "${CACHE_DIR}"
 BACKEND="${TEBENCH_BACKEND:-}"
 DIT_FILE="${TEBENCH_DIT_FILE:-}"
 BASE_TE="${TEBENCH_BASE_TE_FILE:-}"
-COMFYUI_PATH="${TEBENCH_COMFYUI_PATH:-/home/maxx/comfyui-docker/comfyui}"
+COMFYUI_PATH="${TEBENCH_COMFYUI_PATH:-${HOME}/comfyui-docker/comfyui}"
+# ComfyUI models dir, mounted 1:1 at its own absolute path (host == container)
+# so comfy_te_name() can relativize te_file entries (AGENTS.md #40). Env
+# override replaces the machine-specific default (audit 2026-10-14).
+COMFYUI_MODELS_DIR="${COMFYUI_MODELS_DIR:-${HOME}/extra/comfyui-models}"
 PROMPT_SUITE="${TEBENCH_PROMPT_SUITE:-prompts/te_krea2_prompts.yaml}"
 
 [[ "${BACKEND}" == "krea2" ]] || { error "This runner is krea2-only (backend=${BACKEND})"; exit 1; }
@@ -149,7 +153,7 @@ run_one() {
         -v "${COMPARISON_DIR}:/comp:rw" \
         -v "${ABL_ROOT}:/app:ro" \
         -v "${COMFYUI_PATH}:/comfyui:ro" \
-        -v "/home/maxx/extra/comfyui-models:/home/maxx/extra/comfyui-models:ro" \
+        -v "${COMFYUI_MODELS_DIR}:${COMFYUI_MODELS_DIR}:ro" \
         -e PYTHONPATH=/app \
         -- \
         -m src.text_encoder.run_analysis \

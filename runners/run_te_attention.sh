@@ -55,20 +55,8 @@ COMPARISON_DIR="$(cd "$(dirname "${COMPARISON_DIR}")" && pwd)/$(basename "${COMP
 RESULTS_DIR="${COMPARISON_DIR}/results/${COMPARISON_NAME}/text_encoder"
 TE_CACHE_DIR="${COMPARISON_DIR}/.te_cache"
 MODELS_HOST_ROOT="$(dirname "$(dirname "$TEBENCH_DIT_FILE")")"
-COMFYUI_HOST_PATH="${TEBENCH_COMFYUI_PATH:-/home/maxx/comfyui-docker/comfyui}"
+COMFYUI_HOST_PATH="${TEBENCH_COMFYUI_PATH:-${HOME}/comfyui-docker/comfyui}"
 
-host_to_container() {
-    local host_path="$1"
-    if [[ "$host_path" == "$COMPARISON_DIR"/* ]]; then
-        echo "/comparison/${host_path#$COMPARISON_DIR/}"
-    elif [[ "$host_path" == "$MODELS_HOST_ROOT"/* ]]; then
-        echo "/models/${host_path#$MODELS_HOST_ROOT/}"
-    elif [[ "$host_path" == "$COMFYUI_HOST_PATH"/* ]]; then
-        echo "/comfyui/${host_path#$COMFYUI_HOST_PATH/}"
-    else
-        echo "$host_path"
-    fi
-}
 
 map_list_to_container() {
     # Map EACH comma-separated host path individually, rejoin with commas.
@@ -85,7 +73,7 @@ map_list_to_container() {
 files=""
 names=""
 for v in ${ATTN_VARIANTS//,/ }; do
-    slug="$(echo "$v" | tr '-' '_')"
+    slug="$(echo "$v" | tr '.-' '__')"
     te_var="VARIANT_TE_FILE_${slug}"
     f="${!te_var:-}"
     [[ -z "${f}" || ! -f "${f}" ]] && { error "No te_file for variant ${v}"; exit 1; }

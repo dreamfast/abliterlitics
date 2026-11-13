@@ -8,7 +8,12 @@ Usage:
     python3 merge_lora.py <base_dir> <adapter_dir> <output_dir>
 
 Output:
-    <output_dir>/model.safetensors      # merged weights (BF16)
+    <output_dir>/model.safetensors          # merged weights (BF16), single file
+                                            # for small models, OR
+    <output_dir>/model-0000N-of-0000M.safetensors + model.safetensors.index.json
+                                            # sharded — save_pretrained shards
+                                            # at 5GB by default, so any merge of
+                                            # a >5GB base lands here
     <output_dir>/config.json            # copied from base
     <output_dir>/generation_config.json # copied from base
     <output_dir>/chat_template.jinja    # copied from base
@@ -17,18 +22,78 @@ Output:
     <output_dir>/processor_config.json  # copied from base (for vLLM lesson #31)
 
 Verification:
-    - Tensor count must match base
-    - Output size must be within ~5% of base
-    - Merge is idempotent (skips if output already exists with correct size)
+    - Output safetensors (single file OR shard set per the index) must exist
+    - Output size must be within ~5% of base (base may itself be sharded)
+    - Merge is idempotent (skips if output already exists and is not a
+      partial file — measured against the BASE size, not a hardcoded byte
+      threshold)
 """
+
 import argparse
-import os
+import json
 import shutil
 import sys
 from pathlib import Path
 
 
-def main():
+def safetensors_files(d: Path) -> list[Path]:
+    """All safetensors weight files of a model dir (single-file OR sharded).
+
+    save_pretrained shards >5GB models into model-0000N-of-0000M.safetensors
+    plus a model.safetensors.index.json — a bare `model.safetensors` check
+    misses those entirely. Falls back to globbing `model*.safetensors` if the
+    index is absent (single-file convention).
+    """
+    single = d / "model.safetensors"
+    if single.is_file():
+        return [single]
+    index = d / "model.safetensors.index.json"
+    if index.is_file():
+        weight_map = json.loads(index.read_text()).get("weight_map", {})
+        shards = sorted({d / fname for fname in weight_map.values()})
+        if shards and all(s.is_file() for s in shards):
+            return shards
+    return sorted(d.glob("model*.safetensors"))
+
+
+def has_weights(d: Path) -> bool:
+    """True if the dir holds a complete-looking safetensors weight set."""
+    return bool(safetensors_files(d))
+
+
+def total_model_size(d: Path) -> int:
+    """Total bytes of the safetensors weight set (0 if none found)."""
+    return sum(f.stat().st_size for f in safetensors_files(d))
+
+
+def skip_reason(output_dir: Path, base_dir: Path) -> str | None:
+    """Reason to skip re-merging, or None if a (re-)merge should run.
+
+    A previously merged output is recognized by weight-set presence and a
+    total size >0.5x the base model size (BF16 merged ≈ base size; a partial
+    or placeholder file is far smaller). The old check (bare model.safetensors
+    + hardcoded >20GiB) both missed sharded outputs and re-merged every
+    7-13B single-file merge.
+    """
+    if not has_weights(output_dir):
+        return None
+    existing = total_model_size(output_dir)
+    base_size = total_model_size(base_dir)
+    # 0.5x base: a real merged BF16 model is ~= base size; a partial/placeholder
+    # file is far smaller. (The old hardcoded >20GiB re-merged every 7-13B merge.)
+    # Fallback only when the base itself has no readable safetensors.
+    threshold = (base_size // 2) if base_size else 20 * 1024**3
+    if existing > threshold:
+        return (
+            f"[SKIP] {output_dir} already has merged weights "
+            f"({existing / 1024**3:.2f} GiB, base {base_size / 1024**3:.2f} GiB). "
+            "Use --force to re-merge."
+        )
+    print(f"[WARN] {output_dir} has small weight set ({existing / 1024**2:.1f} MiB) — likely partial. Re-merging.")
+    return None
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(description="Merge PEFT LoRA into base model")
     parser.add_argument("base_dir", help="Path to base model directory")
     parser.add_argument("adapter_dir", help="Path to LoRA adapter directory (containing adapter_config.json)")
@@ -48,31 +113,32 @@ def main():
     if not (adapter_dir / "adapter_model.safetensors").is_file():
         sys.exit(f"ERROR: adapter_dir {adapter_dir} missing adapter_model.safetensors")
 
-    # Idempotency check
-    if (output_dir / "model.safetensors").is_file() and not args.force:
-        existing_size = (output_dir / "model.safetensors").stat().st_size
-        if existing_size > 20 * 1024**3:  # >20GB means it's a real merged model
-            print(f"[SKIP] {output_dir} already has model.safetensors ({existing_size / 1024**3:.2f} GiB). Use --force to re-merge.")
+    # Idempotency check (shard-aware, base-relative threshold)
+    if not args.force:
+        reason = skip_reason(output_dir, base_dir)
+        if reason:
+            print(reason)
             return
-        else:
-            print(f"[WARN] {output_dir} has small model.safetensors ({existing_size / 1024**2:.1f} MiB) — likely partial. Re-merging.")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Install peft if not present
     try:
         import peft
+
         print(f"[OK] peft {peft.__version__} already installed")
     except ImportError:
         print("[INSTALL] pip installing peft...")
         import subprocess
+
         subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "peft"], check=True)
         import peft
+
         print(f"[OK] peft {peft.__version__} installed")
 
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel
+    from transformers import AutoModelForCausalLM
 
     # Load base model in FP32 for the merge (AGENTS.md lesson #35).
     #
@@ -132,15 +198,20 @@ def main():
         else:
             print(f"[WARN] base missing {fname} — not copied")
 
-    # Verify output
-    out_safetensors = output_dir / "model.safetensors"
-    if not out_safetensors.is_file():
-        sys.exit(f"[FAIL] merged model.safetensors not created")
-    out_size = out_safetensors.stat().st_size
-    base_size = (base_dir / "model.safetensors").stat().st_size
-    print(f"[DONE] merged model: {out_size / 1024**3:.2f} GiB (base was {base_size / 1024**3:.2f} GiB)")
+    # Verify output (single-file OR sharded; base may be sharded too)
+    out_files = safetensors_files(output_dir)
+    if not out_files:
+        sys.exit("[FAIL] merged safetensors not created (no model*.safetensors found)")
+    out_size = total_model_size(output_dir)
+    base_size = total_model_size(base_dir)
+    if not base_size:
+        sys.exit(f"[FAIL] base {base_dir} has no readable safetensors to compare against")
+    print(
+        f"[DONE] merged model: {out_size / 1024**3:.2f} GiB in {len(out_files)} file(s) "
+        f"(base was {base_size / 1024**3:.2f} GiB)"
+    )
     if abs(out_size - base_size) / base_size > 0.05:
-        print(f"[WARN] merged size differs from base by >5% — check the output")
+        print("[WARN] merged size differs from base by >5% — check the output")
 
 
 if __name__ == "__main__":

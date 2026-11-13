@@ -750,6 +750,18 @@ runners/                          # all pipeline runners
 - **GPU 1**: NVIDIA RTX 4090 (24GB) — **leave alone unless user explicitly authorizes**
 - Docker needs `--runtime=nvidia --shm-size=16g --ipc=host`
 
+### 86. Parallel pi-subagent waves on zai/glm-5.3-flash: ~8 concurrent max; control concurrency via calls-per-turn, isolate parallel pytest with COVERAGE_FILE
+
+**Symptom** (2026-11-13 repo-cleanup wave): firing 20 concurrent `auditor` subagents on zai/glm-5.3-flash killed 11 of them within 35s with `429 Rate limit reached for requests`; a later 8-wide fixer batch also lost one member early.
+
+**Cause**: the zai API account rate-limits concurrent requests well below the pi-subagent `maxConcurrency: 50` configured in `.pi/settings.json`. Concurrency is bounded by how many `subagent_delegate` calls are emitted in ONE turn (foreground calls in a message run together; the next turn starts after) — not by the config gate.
+
+**Fix**: batch delegate calls per turn (≤8 on zai glm-5.3-flash; the failed-run-and-retry pattern is normal — relaunch the task, partial edits are rare but verify with `git status` on the scope first). For long waves use `background: true` + `subagent_wait` so orchestrator-side work (shared files: pyproject/schema/.gitignore/git index) can proceed while fixers run. Parallel fixers must NOT share files: each gets ONE module scope + its tests; shared files are orchestrator-only; parallel pytest runs MUST set distinct `COVERAGE_FILE=/tmp/cov_<slug>.coverage` (`.coverage` in cwd is a single file — 20 parallel writers corrupt each other).
+
+**Detection**: subagent result `failed — 429` with ~0 output tokens = rate limit, not a task bug. Relaunch when a slot frees. `/subagent:doctor` still reports OK (config-level health, not API quota).
+
+**Working pattern that shipped the 2026-11 cleanup**: 20 read-only `auditor` agents each writing a full report to `.cache/audit/<area>.md` + returning ≤25-line summaries (orchestrator context stays small; reports live on disk for the `fixer` wave to consume); then module-scoped `fixer` agents applying their module's report; then global gates (ruff/mypy/pytest) as the acceptance check — individual fixer reports are narrative, the gates are truth.
+
 ### 39. ComfyUI API A/B generation: poll the SERVER-assigned prompt_id, fetch /view with subfolder params, and capture status-message timings
 
 **Symptom** (te-zimage A/B, 2026-08-13): `run_ab_test.py` queued an image, ComfyUI generated it in ~4s, but the script hung until timeout. Once fixed, the image fetch 404'd.

@@ -71,26 +71,14 @@ if [[ ! -d "$TE_CACHE_DIR" ]] || [[ -z "$(ls -A "$TE_CACHE_DIR" 2>/dev/null)" ]]
 fi
 
 MODELS_HOST_ROOT="$(dirname "$(dirname "$TEBENCH_DIT_FILE")")"
-COMFYUI_HOST_PATH="${TEBENCH_COMFYUI_PATH:-/home/maxx/comfyui-docker/comfyui}"
+COMFYUI_HOST_PATH="${TEBENCH_COMFYUI_PATH:-${HOME}/comfyui-docker/comfyui}"
 
-host_to_container() {
-    local host_path="$1"
-    if [[ "$host_path" == "$COMPARISON_DIR"/* ]]; then
-        echo "/comparison/${host_path#$COMPARISON_DIR/}"
-    elif [[ "$host_path" == "$MODELS_HOST_ROOT"/* ]]; then
-        echo "/models/${host_path#$MODELS_HOST_ROOT/}"
-    elif [[ "$host_path" == "$COMFYUI_HOST_PATH"/* ]]; then
-        echo "/comfyui/${host_path#$COMFYUI_HOST_PATH/}"
-    else
-        echo "$host_path"
-    fi
-}
 
 GPU="${GPU:-0}"
 mkdir -p "$RESULTS_DIR"
 
 for variant in $VARIANT_NAMES; do
-    var_slug="$(echo "$variant" | tr '-' '_')"
+    var_slug="$(echo "$variant" | tr '.-' '__')"
     skip_var="VARIANT_SKIP_TE_${var_slug}"
     if [[ "${!skip_var}" == "1" ]]; then
         continue

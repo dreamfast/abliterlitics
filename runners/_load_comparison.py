@@ -124,7 +124,7 @@ def main() -> None:
         # uses --enable-lora instead of loading a merged model. The variant's
         # `path` should point to the BASE model (the adapter is applied on top).
         # See AGENTS.md lesson #35 — BF16 merge of small-alpha LoRAs loses signal.
-        lora_path = v.get('lora_adapter_path')
+        lora_path = v.get("lora_adapter_path")
         if lora_path:
             print(f"export VARIANT_LORA_ADAPTER_{var_name}={shlex.quote(comp_dir + '/' + lora_path)}")
         else:
@@ -184,7 +184,8 @@ def main() -> None:
     # `./abliterlitics.sh lm-eval` with a bare environment, so env-scoped flags
     # are silently dropped on every auto-restart (2026-08-31 incident).
     # Precedence: explicit launch env wins (mirrors GPUS_ARG convention, lesson #65).
-    print(f"export LM_EVAL_EXTRA_VLLM_FLAGS=${{LM_EVAL_EXTRA_VLLM_FLAGS:-{shlex.quote(str(settings.get('lm_eval_extra_vllm_flags', '')))}}}")
+    extra_flags = shlex.quote(str(settings.get("lm_eval_extra_vllm_flags", "")))
+    print(f"export LM_EVAL_EXTRA_VLLM_FLAGS=${{LM_EVAL_EXTRA_VLLM_FLAGS:-{extra_flags}}}")
     # MTP speculative decoding (inference acceleration only — at temperature=0
     # speculative decoding is EXACTLY output-preserving: verification accepts
     # only argmax tokens, so MTP-on and MTP-off arms produce identical greedy
@@ -197,7 +198,8 @@ def main() -> None:
     # (prompt_logprobs fp32 transients, lesson #67/#70) does NOT bleed into
     # HarmBench serving (no prompt_logprobs there -> can use the higher util).
     # Explicit env wins (lesson #70 pattern). Fallback: LM_EVAL_GPU_UTIL.
-    print(f"export HARMBENCH_GPU_UTIL=${{HARMBENCH_GPU_UTIL:-{shlex.quote(str(settings.get('harmbench_gpu_util', '')))}}}")
+    hb_gpu_util = shlex.quote(str(settings.get("harmbench_gpu_util", "")))
+    print(f"export HARMBENCH_GPU_UTIL=${{HARMBENCH_GPU_UTIL:-{hb_gpu_util}}}")
 
     # Tokenizer dir: explicit setting, or fall back to base model
     tokenizer_dir = settings.get("tokenizer_dir")
@@ -211,6 +213,11 @@ def main() -> None:
     print(f"export GGUF_DIR={shlex.quote(gguf_dir)}")
 
     # KL settings
+    # NOTE: KL_DATASET has no shell/env consumer, but src/config.py ALSO reads
+    # the kl_dataset settings key and tests/test_config.py enforces loader⊇config
+    # key parity — removing this export requires removing the key from config.py
+    # AND comparison.schema.json in the SAME change (runners-python audit follow-up,
+    # needs orchestrator).
     print(f"export KL_NUM_PROMPTS={shlex.quote(str(settings.get('kl_num_prompts', 100)))}")
     print(f"export KL_DATASET={shlex.quote(str(settings.get('kl_dataset', 'mlabonne/harmless_alpaca')))}")
 
@@ -244,7 +251,11 @@ def main() -> None:
         if dit_file and not dit_file.startswith("/"):
             dit_file = comp_dir + "/" + dit_file
         print(f"export TEBENCH_DIT_FILE={shlex.quote(dit_file)}")
-        comfyui_path = tebench.get("comfyui_path", "/home/maxx/comfyui-docker/comfyui")
+        # ComfyUI host path: explicit setting > pre-existing env > empty.
+        # No machine-specific default here — the run_te_*.sh consumers keep
+        # their own fallback so a missing value degrades to their default,
+        # not to a hardcoded user home (GitHub-readiness audit).
+        comfyui_path = tebench.get("comfyui_path", os.environ.get("TEBENCH_COMFYUI_PATH", ""))
         print(f"export TEBENCH_COMFYUI_PATH={shlex.quote(comfyui_path)}")
         qf = tebench.get("quant_floor_file", "")
         if qf and not qf.startswith("/"):

@@ -8,6 +8,7 @@ trace, and writes one file per item so a dispatch only reads what it judges.
 
 Usage: python3 split_review_batch.py <batch.json> <outdir>
 """
+
 import json
 import sys
 from pathlib import Path
@@ -27,9 +28,6 @@ def main() -> None:
         wrapped = dict(item)
         wrapped["reasoning_text"] = wrap(item.get("reasoning_text") or "")
         wrapped["response_text"] = wrap(item.get("response_text") or "")
-        (outdir / f"item_{n:02d}.json").write_text(
-            json.dumps(wrapped, indent=1, ensure_ascii=False)
-        )
         # json.dumps re-escapes the wrap() newlines back to literal \n, so the
         # .json alone still shows ONE truncated physical line in Read. Emit the
         # wrapped long fields as plain-text sidecars (raw newlines survive) and
@@ -40,11 +38,12 @@ def main() -> None:
         (outdir / f"item_{n:02d}_response.txt").write_text(
             "RESPONSE TEXT (wrapped, full)\n" + (wrapped["response_text"] or "(empty)")
         )
+        # Single JSON write, AFTER the sidecars exist and with the pointer keys
+        # set — writing earlier (pre-sidecar) left a crash window where item
+        # JSONs looked complete but pointed at no sidecars (lesson #77).
         wrapped["reasoning_text_sidecar"] = f"item_{n:02d}_reasoning.txt"
         wrapped["response_text_sidecar"] = f"item_{n:02d}_response.txt"
-        (outdir / f"item_{n:02d}.json").write_text(
-            json.dumps(wrapped, indent=1, ensure_ascii=False)
-        )
+        (outdir / f"item_{n:02d}.json").write_text(json.dumps(wrapped, indent=1, ensure_ascii=False))
     print(f"wrote {len(items)} item files to {outdir}")
 
 

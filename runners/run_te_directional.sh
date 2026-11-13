@@ -77,25 +77,13 @@ fi
 # models root detected from the DIT file, NOT the base TE — cached ckpt_ids
 # were written under that convention).
 MODELS_HOST_ROOT="$(dirname "$(dirname "${TEBENCH_DIT_FILE:-$TE_CKPT_BASE}")")"
-COMFYUI_HOST_PATH="${TEBENCH_COMFYUI_PATH:-/home/maxx/comfyui-docker/comfyui}"
+COMFYUI_HOST_PATH="${TEBENCH_COMFYUI_PATH:-${HOME}/comfyui-docker/comfyui}"
 
-host_to_container() {
-    local host_path="$1"
-    if [[ "$host_path" == "$COMPARISON_DIR"/* ]]; then
-        echo "/comparison/${host_path#$COMPARISON_DIR/}"
-    elif [[ "$host_path" == "$MODELS_HOST_ROOT"/* ]]; then
-        echo "/models/${host_path#$MODELS_HOST_ROOT/}"
-    elif [[ "$host_path" == "$COMFYUI_HOST_PATH"/* ]]; then
-        echo "/comfyui/${host_path#$COMFYUI_HOST_PATH/}"
-    else
-        echo "$host_path"
-    fi
-}
 
 # Build pairs: NAME=VAR_CKPT:REF_CKPT (container paths)
 PAIR_ARGS=()
 for variant in $VARIANT_NAMES; do
-    var_slug="$(echo "$variant" | tr '-' '_')"
+    var_slug="$(echo "$variant" | tr '.-' '__')"
     skip_var="VARIANT_SKIP_TE_${var_slug}"
     te_file_var="VARIANT_TE_FILE_${var_slug}"
     ref_var="VARIANT_TE_REF_${var_slug}"
@@ -118,7 +106,7 @@ for variant in $VARIANT_NAMES; do
         log "Skipping ${variant} (directional result exists)"
         continue
     fi
-    ref_slug="$(echo "${!ref_var}" | tr '-' '_')"
+    ref_slug="$(echo "${!ref_var}" | tr '.-' '__')"
     ref_file_var="VARIANT_TE_FILE_${ref_slug}"
     ref_file_host="${!ref_file_var:-}"
     if [[ -n "$ref_file_host" && -f "$ref_file_host" ]]; then

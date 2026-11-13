@@ -53,7 +53,7 @@ cd ~/abliterlitics/
 ./abliterlitics.sh weights ~/comparisons/qwen35-4b/
 ```
 
-This runs all 11 weight analysis scripts:
+This runs 10 weight analysis scripts:
 1. **Panel comparison** — Which tensors changed, by how much
 2. **Edit vector analysis** — Direction and magnitude of modifications
 3. **SVD analysis** — Decomposition of edit vectors
@@ -64,13 +64,14 @@ This runs all 11 weight analysis scripts:
 8. **Low-rank reconstruction** — Can edits be compressed?
 9. **Expert analysis** — MoE-specific analysis (GLM only)
 10. **Cross-architecture comparison** — Same technique, different models
-11. **Stacking analysis** — Additive vs. diminishing returns
 
-Results are saved to `~/comparisons/qwen35-4b/results/` with canonical filenames like:
-- `panel_comparison.json`
-- `edit_vector_heretic.json`
-- `svd_hauhau.json`
-- `correlation_heretic_vs_hauhau.json`
+(Stacking analysis is CLI-only — see Example 6. `duplicate_detect.py` is also CLI-only.)
+
+Results are saved under `~/comparisons/qwen35-4b/results/weight/` in a per-variant layout:
+per-variant files like `svd_<variant>.json`, plus aggregates
+(`multi_model_panel.json`, `fingerprint_all.json`, `correlation_all.json`, ...).
+The runner writes to `results/<comparison>/weight/` — check the aggregate file names
+there rather than assuming per-script filenames.
 
 ---
 
@@ -81,13 +82,16 @@ Results are saved to `~/comparisons/qwen35-4b/results/` with canonical filenames
 ```
 
 This runs all phases in order:
-1. Weight analysis (~5-15 minutes per variant)
+1. Weight analysis (~15-30 minutes per variant, CPU)
 2. KL divergence (~10-30 minutes per variant, requires GPU)
-3. lm-evaluation-harness (~2-6 hours per variant, requires GPU)
-4. HarmBench (~30-60 minutes per variant, requires GPU)
+3. lm-evaluation-harness (~5 hours per model for small models; 8-12+ hours for
+   large thinking models — thinking-generation tasks dominate the wall time)
+4. HarmBench (~30-60 minutes per model at default budgets; thinking models at high
+   token budgets can take 7-15 hours per arm)
 5. Graph + report generation
 
-**Tip:** Use `--skip-existing` (default) to resume interrupted runs.
+**Tip:** Use `--skip-existing` (default) to resume interrupted runs; lm-eval's
+response cache also resumes mid-phase after a crash.
 
 ---
 
@@ -178,10 +182,10 @@ Or use `ik_llamacpp` for faster inference:
 ./abliterlitics.sh --backend ik_llamacpp harmbench ~/comparisons/glm-47/
 ```
 
-With `--backend auto` (default), the tool selects the best backend based on:
-- Model size vs. available GPU VRAM
-- Whether BitsAndBytes 4-bit quantization can fit the model
-- Whether GGUF conversion is needed
+With `--backend auto` (default), the tool selects the backend based on:
+- Model size vs. available GPU VRAM (FP8 quantization is the lever for large models
+  on a single GPU; see [GPU_SETUP.md](GPU_SETUP.md))
+- Architecture compatibility with vLLM (GGUF conversion for the rest)
 
 ---
 

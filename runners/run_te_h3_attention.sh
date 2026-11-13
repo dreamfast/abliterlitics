@@ -56,7 +56,11 @@ RESULTS_DIR="${COMPARISON_DIR}/results/${COMPARISON_NAME}/text_encoder"
 DIT_FILE="${TEBENCH_DIT_FILE:-}"
 BASE_TE="${TEBENCH_BASE_TE_FILE:-}"
 if [[ -z "${SUITE_CLI:-}" ]]; then SUITE="${TEBENCH_PROMPT_SUITE:-prompts/te_h3_suite.yaml}"; fi
-COMFYUI_PATH="${TEBENCH_COMFYUI_PATH:-/home/maxx/comfyui-docker/comfyui}"
+COMFYUI_PATH="${TEBENCH_COMFYUI_PATH:-${HOME}/comfyui-docker/comfyui}"
+# ComfyUI models dir, mounted 1:1 at its own absolute path (host == container)
+# so comfy_te_name() can relativize te_file entries (AGENTS.md #40). Env
+# override replaces the machine-specific default (audit 2026-10-14).
+COMFYUI_MODELS_DIR="${COMFYUI_MODELS_DIR:-${HOME}/extra/comfyui-models}"
 
 [[ "${TEBENCH_BACKEND:-}" == "h3" ]] || { error "This runner is h3-only"; exit 1; }
 [[ -n "${DIT_FILE}" ]] || { error "TEBENCH_DIT_FILE not set"; exit 1; }
@@ -104,7 +108,7 @@ fi
     -v "${COMPARISON_DIR}:/comp:rw" \
     -v "${ABL_ROOT}:/app:ro" \
     -v "${COMFYUI_PATH}:/comfyui:ro" \
-    -v "/home/maxx/extra/comfyui-models:/home/maxx/extra/comfyui-models:ro" \
+    -v "${COMFYUI_MODELS_DIR}:${COMFYUI_MODELS_DIR}:ro" \
     -e PYTHONPATH=/app \
     -- \
     -m src.text_encoder.run_h3_attention \
