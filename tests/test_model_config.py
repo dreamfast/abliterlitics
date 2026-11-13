@@ -296,3 +296,36 @@ class TestComputeChangedKeys:
 
         changed = compute_changed_keys(base_map, reduced_map)
         assert len(changed) > 0
+
+    def test_noise_floor_excludes_storage_noise(self, tmp_path):
+        """noise_floor filters 16-bit round-trip storage noise (AGENTS.md #63).
+
+        A variant identical to base except for one tiny perturbation is
+        reported changed with the default threshold=0, but suppressed when a
+        noise_floor above the perturbation is passed.
+        """
+        from safetensors.torch import load_file, save_file
+
+        base_dir = create_mock_model(tmp_path / "base", arch="qwen3", seed=42)
+        variant_dir = create_mock_model(tmp_path / "variant", arch="qwen3", seed=42)
+
+        cfg = detect_architecture(str(base_dir))
+        base_map = build_shard_map(str(base_dir), cfg)
+        variant_map = build_shard_map(str(variant_dir), cfg)
+
+        # Perturb one tensor by an amount ABOVE the BF16 ULP of the mock
+        # tensors (~2^-8 relative) so the diff survives storage rounding, but
+        # below the noise floor passed to the second call. (A sub-ULP
+        # perturbation rounds away entirely — the lesson-#35 merge-dithering
+        # mechanism.)
+        target = "model.layers.0.self_attn.q_proj.weight"
+        raw_key, shard = variant_map[target]
+        tensors = load_file(shard)
+        tensors[raw_key] = tensors[raw_key] + 0.05
+        save_file(tensors, shard)
+
+        changed_default = compute_changed_keys(base_map, variant_map)
+        changed_filtered = compute_changed_keys(base_map, variant_map, noise_floor=0.5)
+        assert [e["canonical"] for e in changed_default] == [target]
+        assert changed_default[0]["mean_abs_diff"] > 0
+        assert changed_filtered == []

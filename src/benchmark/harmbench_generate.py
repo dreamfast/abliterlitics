@@ -8,6 +8,7 @@ import csv
 import io
 import json
 import logging
+import os
 import re
 import time
 import urllib.request
@@ -18,13 +19,22 @@ import requests
 
 from src import RESULTS_VERSION
 
+# HTTP read timeout. Must cover server-side queueing (KV-pool-bound scheduling can
+# hold a request behind 3 near-full-budget items) PLUS solo decode of the full
+# max_tokens budget (~15360 tok at ~25 tok/s eager ≈ 10+ min). 600s was too
+# tight for 15360-token thinking budgets — long items timed out client-side,
+# were retried (re-running full generations server-side), and ended as error
+# items. Default 3600s; override with HARMBENCH_HTTP_TIMEOUT.
+_HTTP_TIMEOUT = float(os.environ.get("HARMBENCH_HTTP_TIMEOUT", "3600"))
+
 log = logging.getLogger(__name__)
 
 # Pinned to specific commit SHA for supply chain integrity.
 # Last verified: 2025-04. Update only after manual review of changes.
 HARMBENCH_BEHAVIORS_CSV = (
     "https://raw.githubusercontent.com/centerforaisafety/HarmBench/"
-    "main/data/behavior_datasets/harmbench_behaviors_text_all.csv"
+    "9d0e87a7e6776614c546f2e3d4392635e6e0cf8a/"
+    "data/behavior_datasets/harmbench_behaviors_text_all.csv"
 )
 
 REFUSAL_SUBSTRINGS = [
@@ -110,6 +120,11 @@ def load_harmbench_behaviors():
 
 # Module-level flag set from CLI args.
 _ENABLE_THINKING = True
+# Explicit "model" field for API requests. When set (e.g. a LoRA adapter name
+# like "smoothed" or the served path "/model" on a multi-model server), requests
+# route to that model. When None, the field is omitted and the server uses its
+# default model — which on a LoRA-enabled server is the BASE, not the adapter.
+_API_MODEL: str | None = None
 
 
 def _split_reasoning(raw_content: str, api_reasoning: str) -> tuple[str, str]:
@@ -175,6 +190,25 @@ def _split_reasoning(raw_content: str, api_reasoning: str) -> tuple[str, str]:
 
     # Qwen format: <think>...</think> tags
     if _THINK_OPEN not in raw_content:
+        # Qwen3.x thinking templates PREFILL the opening <think> in the
+        # generation prompt (verified on Qwen3.8: template renders
+        # "<|im_start|>assistant\n<think>\n" with enable_thinking=True), so
+        # the model output contains ONLY the closing </think>. Split at the
+        # FIRST close tag: reasoning = everything before, content = after.
+        if _THINK_CLOSE in raw_content:
+            c = raw_content.find(_THINK_CLOSE)
+            return raw_content[:c].strip(), raw_content[c + len(_THINK_CLOSE) :].strip()
+        if _ENABLE_THINKING:
+            # Unclosed deliberation (reasoning-first convention): the template
+            # prefilled <think> and the model NEVER emitted </think> — either
+            # the budget cut it off mid-think (finish_reason=length) or it hit
+            # EOS inside the unclosed block (finish_reason=stop). ALL raw
+            # output is deliberation; there is no finalized answer. Storing it
+            # as `response` was wrong: it made the classifier regex-scan
+            # deliberation text and deflated reasoning-effort metrics.
+            return raw_content.strip(), ""
+        # Thinking disabled (--no-thinking): the template did not prefill an
+        # opener, so untagged output is genuine content, not deliberation.
         return "", raw_content
 
     reasoning_parts = []
@@ -206,10 +240,12 @@ def generate_one(session, base_url, prompt, max_tokens, request_id):
             }
             if _ENABLE_THINKING:
                 payload["chat_template_kwargs"] = {"enable_thinking": True}
+            if _API_MODEL:
+                payload["model"] = _API_MODEL
             r = session.post(
                 f"{base_url}/v1/chat/completions",
                 json=payload,
-                timeout=600,
+                timeout=_HTTP_TIMEOUT,
             )
             if r.status_code == 200:
                 choice = r.json()["choices"][0]
@@ -250,14 +286,23 @@ def main():
     parser.add_argument("--concurrent", type=int, default=1)
     parser.add_argument("--model-name", default="unknown", help="Model name for metadata")
     parser.add_argument(
+        "--api-model",
+        default=None,
+        help="Explicit 'model' field for API requests (e.g. LoRA adapter name or '/model' on a multi-model server). "
+        "Default: omit the field (server routes to its default model).",
+    )
+    parser.add_argument(
         "--no-thinking", action="store_true", help="Disable thinking token params for non-reasoning models"
     )
     args = parser.parse_args()
 
-    global _ENABLE_THINKING
+    global _ENABLE_THINKING, _API_MODEL
     if args.no_thinking:
         _ENABLE_THINKING = False
         log.info("Thinking params disabled (non-reasoning model)")
+    if args.api_model:
+        _API_MODEL = args.api_model
+        log.info("Routing requests to API model: %s", _API_MODEL)
 
     behaviors = load_harmbench_behaviors()
 

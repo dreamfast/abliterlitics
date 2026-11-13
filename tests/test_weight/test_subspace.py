@@ -66,3 +66,59 @@ class TestSafeDeviceForStack:
         with patch("src.weight.subspace_alignment.MAX_GPU_BYTES", 1000):
             dev = _safe_device_for_stack(vecs, torch.device("cuda"))
             assert dev == torch.device("cpu")  # fallback triggered
+
+
+class TestSubspaceShapeSkipped:
+    """Lesson #79 observability: emitted shape_skipped on both report paths."""
+
+    def test_normal_path_emits_shape_skipped(self, tmp_path):
+        import json
+
+        from src.weight.subspace_alignment import run_analysis
+        from tests.conftest import create_mock_model
+        from tests.test_weight._arch_extending import make_arch_extending_variant
+
+        base_dir = create_mock_model(tmp_path / "base", arch="qwen3", seed=42)
+        var_a = create_mock_model(tmp_path / "va", arch="qwen3", seed=43)
+        var_b_ext = make_arch_extending_variant(
+            create_mock_model(tmp_path / "vb", arch="qwen3", seed=44),
+            tmp_path / "vb_ext",
+            "model.layers.0.mlp.gate_proj.weight",
+        )
+        output = tmp_path / "subspace.json"
+
+        run_analysis(
+            base_path=str(base_dir),
+            variant_a_path=str(var_a),
+            variant_b_path=str(var_b_ext),
+            label_a="a",
+            label_b="b",
+            output_path=str(output),
+        )
+
+        data = json.loads(output.read_text())
+        assert "error" not in data
+        assert data["shape_skipped"] == 1
+
+    def test_insufficient_overlap_path_emits_shape_skipped(self, tmp_path):
+        import json
+
+        from src.weight.subspace_alignment import run_analysis
+        from tests.conftest import create_mock_model
+
+        base_dir = create_mock_model(tmp_path / "base", arch="qwen3", seed=42)
+        output = tmp_path / "subspace.json"
+
+        # variant identical to base -> zero both-changed -> error report
+        run_analysis(
+            base_path=str(base_dir),
+            variant_a_path=str(base_dir),
+            variant_b_path=str(base_dir),
+            label_a="a",
+            label_b="b",
+            output_path=str(output),
+        )
+
+        data = json.loads(output.read_text())
+        assert data["error"] == "insufficient overlap"
+        assert data["shape_skipped"] == 0

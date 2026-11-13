@@ -79,3 +79,66 @@ class TestLayerAnalysisGemma4:
         data = json.loads(output.read_text())
         assert data["results_version"] == 1
         assert "layer_progression" in data
+
+
+class TestLayerAnalysisShapeGuards:
+    """Lesson #79: primary guard now counts; slot-B guard added (audit B3)."""
+
+    EXTENDED_KEY = "model.layers.0.mlp.gate_proj.weight"
+
+    def test_variant_b_shape_mismatch_skipped_not_crashed(self, tmp_path):
+        import json
+
+        from src.weight.layer_analysis import run_analysis
+        from tests.conftest import create_mock_model
+        from tests.test_weight._arch_extending import make_arch_extending_variant
+
+        base_dir = create_mock_model(tmp_path / "base", arch="qwen3", seed=42)
+        var_dir = create_mock_model(tmp_path / "variant", arch="qwen3", seed=99)
+        var_b_ext = make_arch_extending_variant(
+            create_mock_model(tmp_path / "vb", arch="qwen3", seed=44),
+            tmp_path / "vb_ext",
+            self.EXTENDED_KEY,
+        )
+        output = tmp_path / "layer_output.json"
+
+        run_analysis(
+            base_path=str(base_dir),
+            variant_path=str(var_dir),
+            variant_b_path=str(var_b_ext),
+            label="a",
+            label_b="b",
+            output_path=str(output),
+        )
+
+        data = json.loads(output.read_text())
+        assert data["shape_skipped"] == 1
+        assert data["variant_b"] == "b"
+        assert "layer_progression_b" in data  # slot B still aggregated for the rest
+
+    def test_primary_variant_shape_mismatch_counted(self, tmp_path):
+        import json
+
+        from src.weight.layer_analysis import run_analysis
+        from tests.conftest import create_mock_model
+        from tests.test_weight._arch_extending import make_arch_extending_variant
+
+        base_dir = create_mock_model(tmp_path / "base", arch="qwen3", seed=42)
+        var_ext = make_arch_extending_variant(
+            create_mock_model(tmp_path / "variant", arch="qwen3", seed=99),
+            tmp_path / "variant_ext",
+            self.EXTENDED_KEY,
+        )
+        output = tmp_path / "layer_output.json"
+
+        run_analysis(
+            base_path=str(base_dir),
+            variant_path=str(var_ext),
+            variant_b_path=None,
+            label="v",
+            label_b=None,
+            output_path=str(output),
+        )
+
+        data = json.loads(output.read_text())
+        assert data["shape_skipped"] == 1

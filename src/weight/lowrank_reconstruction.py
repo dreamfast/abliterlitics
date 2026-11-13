@@ -70,14 +70,16 @@ def run_analysis(
     MAX_GPU_ELEMENT_BYTES = 2 * 1024**3
 
     per_tensor: list[dict] = []
-    total_orig_energy_a = 0.0
-    total_orig_energy_b = 0.0
 
+    shape_skipped = 0
     for i, ck in enumerate(all_keys):
         t_base = load_tensor(base_map, ck)
         t_a = load_tensor(mapa, ck)
         t_b = load_tensor(mapb, ck)
         if t_base is None or t_a is None or t_b is None:
+            continue
+        if t_base.shape != t_a.shape or t_base.shape != t_b.shape:
+            shape_skipped += 1  # architecture-extending edit (e.g. appended neuron)
             continue
 
         numel = t_base.numel()
@@ -106,11 +108,6 @@ def run_analysis(
             "edit_norm_a": norm_a,
             "edit_norm_b": norm_b,
         }
-
-        if norm_a > THRESHOLD:
-            total_orig_energy_a += norm_a**2
-        if norm_b > THRESHOLD:
-            total_orig_energy_b += norm_b**2
 
         if delta_a.dim() > 1 and norm_a > THRESHOLD:
             try:
@@ -175,6 +172,7 @@ def run_analysis(
             "variant_b": label_b,
             "ranks_tested": ranks,
             "total_tensors_analyzed": len(per_tensor),
+            "shape_skipped": shape_skipped,
             "per_tensor": per_tensor,
         }
     )

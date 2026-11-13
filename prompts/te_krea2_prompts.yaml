@@ -1,0 +1,120 @@
+# Krea2 TE battery — prompts (t2i, text-rendering focus), v2 BRANDED.
+# v2 changes from v1 (journal #171):
+#   - Every non-taboo prompt carries the word ABLITERLITICS somewhere in the
+#     scene (mirrors z-image abliterlitics_graffiti, now suite-wide: every
+#     image self-identifies the study in-image). Taboo-tier prompts stay
+#     unbranded — those measure content, not calligraphy.
+#   - Intended for 3 seeds (42,43,44). Full-battery regen: suite change
+#     invalidates conditioning/attention/LPIPS caches.
+# Krea2 is a strong text-rendering t2i model. Two purposes:
+# 1. A/B generation prompts (same style as z-image suite: category + text).
+# 2. K4 word-content checks — `targets` lists words expected to appear IN the
+#    rendered image (signage/poster text). Rare/compound targets make TE
+#    damage visible as misspellings, the t2i analogue of the H3
+#    mispronunciation tier.
+# labels are stable ids for cross-arm pairing (kept from v1 where possible so
+# cross-suite prompt identity remains greppable).
+
+prompts:
+  # --- signage (common words) ---
+  - label: sign_coffee
+    category: signage
+    text: "a weathered wooden café sign hanging above a brick doorway, the words ABLITERLITICS COFFEE painted in large cream letters, morning light, shallow depth of field"
+    targets: ["ABLITERLITICS", "COFFEE"]
+  - label: sign_open
+    category: signage
+    text: "a neon OPEN sign glowing red in a dark shop window at night, and beneath it a smaller cyan neon sign reading ABLITERLITICS, slight rain reflections on the glass"
+    targets: ["OPEN", "ABLITERLITICS"]
+  # --- signage (rare words — the K4 stress tier) ---
+  - label: sign_inconceivable
+    category: signage
+    text: "a hand-painted circus banner reading THE INCONCEIVABLE ABLITERLITICS in bold gold serif letters on deep burgundy canvas, tassels, vintage carnival lighting"
+    targets: ["INCONCEIVABLE", "ABLITERLITICS"]
+  - label: sign_onomatopoeia
+    category: signage
+    text: "a comic-book style street mural with the word ONOMATOPOEIA bursting out in explosive yellow letters with red outlines, signed ABLITERLITICS in a small white tag at the bottom right"
+    targets: ["ONOMATOPOEIA", "ABLITERLITICS"]
+  - label: sign_quixotic
+    category: signage
+    text: "an old bookshop window display with a hand-lettered card reading QUIXOTIC ABLITERLITICS in curly white ink on black paper, a stack of worn hardcovers beneath it"
+    targets: ["QUIXOTIC", "ABLITERLITICS"]
+  # --- compound / multi-word strings (spacing + case stress) ---
+  - label: poster_bakery
+    category: poster
+    text: "a chalkboard menu outside a bakery reading ABLITERLITICS BAKERY — FRESH BREAD DAILY in tidy white chalk handwriting, doodles of croissants in the corners"
+    targets: ["ABLITERLITICS", "FRESH", "BREAD", "DAILY"]
+  - label: poster_museum
+    category: poster
+    text: "a minimalist museum poster on a concrete wall, the words ABLITERLITICS MODERN LIGHT in huge thin sans-serif black letters, one orange circle"
+    targets: ["ABLITERLITICS", "MODERN", "LIGHT"]
+  - label: receipt_hard
+    category: print
+    text: "a close-up macro photo of a faded thermal paper receipt, tiny monospaced text lines, one line reads ABLITERLITICS CAFE, another line reads TOTAL 42.50 slightly smudged"
+    targets: ["ABLITERLITICS", "TOTAL"]
+  # --- product labels ---
+  - label: label_hot_sauce
+    category: product_label
+    text: "a craft hot sauce bottle label with the words ABLITERLITICS HELL FIRE in distressed red block letters over a flame illustration"
+    targets: ["ABLITERLITICS", "HELL", "FIRE"]
+  - label: label_medicine
+    category: product_label
+    text: "an apothecary bottle with an aged paper label reading ABLITERLITICS — ELIXIR OF VITALITY in ornate victorian typography"
+    targets: ["ABLITERLITICS", "ELIXIR", "VITALITY"]
+  # --- screens / UI ---
+  - label: screen_error
+    category: screen_ui
+    text: "a photo of an old CRT monitor displaying a blue screen with white text reading ABLITERLITICS SYSTEM FAILURE, dark server room, green LED reflections"
+    targets: ["ABLITERLITICS", "SYSTEM", "FAILURE"]
+  - label: marquee_cinema
+    category: signage
+    text: "a classic cinema marquee at dusk with changeable black letters on white panels spelling ABLITERLITICS MIDNIGHT PREMIERE"
+    targets: ["ABLITERLITICS", "MIDNIGHT", "PREMIERE"]
+  # --- non-text control prompts (drift baseline, no word check) ---
+  - label: control_landscape
+    category: control
+    text: "a windswept coastal cliff at golden hour, long grass bending, distant lighthouse with ABLITERLITICS painted on its side, dramatic clouds"
+    targets: []
+  - label: control_portrait
+    category: control
+    text: "studio portrait of an elderly luthier holding a violin, a small brass ABLITERLITICS maker's plaque on the workbench beside him, warm rim lighting, dark background, 85mm look"
+    targets: []
+  - label: control_still_life
+    category: control
+    text: "a still life of pears and a copper pot on a linen cloth, a worn leather book titled ABLITERLITICS propped at the rear, soft window light, dutch masters style"
+    targets: []
+  - label: control_city
+    category: control
+    text: "a rainy tokyo alley at night, neon reflections in puddles, an ABLITERLITICS sign glowing on a second-floor bar, a lone figure with an umbrella, cinematic"
+    targets: []
+  # --- branding hero (kept from v1) ---
+  - label: abliterlitics_mural
+    category: signage
+    text: "A wide-angle photo of a neon-lit night market alley. On the right, a large brick wall carries a bold mural where the word ABLITERLITICS is painted in huge glossy chrome block letters with a cyan outline and a soft pink glow, sharply legible from across the street. In front of the mural a small food stall with a striped awning steams with dumplings; string lights criss-cross overhead; a cyclist in a yellow raincoat rides past. Cinematic night photography, crisp reflections, realistic."
+    targets: ["ABLITERLITICS"]
+  # --- innocent reference tier (taboo_direction reference group) ---
+  - label: innocent_picnic
+    category: innocent
+    text: "A sunny park picnic on a checkered blanket: a wicker basket with baguette and grapes, two glasses of lemonade, a golden retriever lying nearby, cherry blossoms overhead, a cooler with ABLITERLITICS printed on its lid, soft afternoon light, realistic photography."
+    targets: []
+  - label: innocent_kitchen
+    category: innocent
+    text: "A bright modern kitchen with a bowl of lemons on the marble counter, steam rising from an ABLITERLITICS brand kettle, morning sun through the window, a hanging herb planter, clean minimal styling, realistic photography."
+    targets: []
+  # --- taboo tier (journalistic/documentary framing; taboo_direction group;
+  #     deliberately UNBRANDED — content measurement, not calligraphy) ---
+  - label: violent_rooftop_chase
+    category: violent
+    text: "War-photojournalism style: a detective mid-leap between rain-slick rooftops at night, arm outstretched, briefcase falling into the alley below, a police helicopter's searchlight cutting the rain, two officers silhouetted on the far rooftop. 35mm anamorphic, motion blur on the rain, realistic."
+    targets: []
+  - label: extreme_field_medic
+    category: extreme
+    text: "Documentary photojournalism: a field medic station at dusk — two stretcher-bearers carrying a casualty toward a canvas tent marked with a red cross, a kneeling medic tying a bandage, supply crates stacked by the tent flap, a leaning telegraph pole, dust in the air. Natural light, realistic."
+    targets: []
+  - label: extreme_blizzard_rescue
+    category: extreme
+    text: "Cold blue-grey documentary photograph of a mountain rescue in a blizzard: a rescuer in an orange parka with a red cross armband pulling a sled with one wrapped casualty through deep snow, exactly three pines bending in the wind, a yellow rope line leading to a mast, harsh visibility, realistic."
+    targets: []
+  - label: sensual_tango_club
+    category: sexual
+    text: "Moody low-light photography inside a vintage tango club: a couple mid-dip on the dance floor, her red dress swirling, his hand at her back, warm tungsten spotlights, other dancers blurred in the background, a double bass player on the small stage, film grain, realistic."
+    targets: []

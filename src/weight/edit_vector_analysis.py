@@ -10,7 +10,6 @@ Works with any architecture (Qwen3.5, Qwen3, GLM) via model_config auto-detectio
 from __future__ import annotations
 
 import argparse
-import gc
 import json
 import logging
 import math
@@ -19,22 +18,22 @@ from pathlib import Path
 import torch
 
 from src.config import ComparisonConfig, make_metadata
-from src.model_config import build_shard_map, detect_architecture, load_tensor
+from src.model_config import build_shard_map, detect_architecture
+from src.weight._common import (
+    StreamStats,
+    add_batch_args,
+    cosine_sim,
+    iter_common_tensors,
+    resolve_results_dir,
+    safe_mean,
+    safe_median,
+    safe_std,
+    variant_output_path,
+)
 
 log = logging.getLogger(__name__)
 
 TRIVIAL_THRESHOLD = 1e-10
-
-
-def cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
-    a_f = a.float().flatten()
-    b_f = b.float().flatten()
-    dot = (a_f * b_f).sum()
-    na = a_f.norm()
-    nb = b_f.norm()
-    if na < 1e-12 or nb < 1e-12:
-        return 0.0
-    return max(-1.0, min(1.0, (dot / (na * nb)).item()))
 
 
 def pearson_corr(a: torch.Tensor, b: torch.Tensor) -> float:
@@ -73,25 +72,6 @@ def null_cosine_expected(dim: int) -> dict:
     return {"expected_mean": 0.0, "expected_std": std, "dimensionality": dim, "three_sigma": 3.0 * std}
 
 
-def safe_mean(lst: list[float]) -> float | None:
-    return sum(lst) / len(lst) if lst else None
-
-
-def safe_median(lst: list[float]) -> float | None:
-    if not lst:
-        return None
-    s = sorted(lst)
-    mid = len(s) // 2
-    return (s[mid - 1] + s[mid]) / 2 if len(s) % 2 == 0 else s[mid]
-
-
-def safe_std(lst: list[float]) -> float | None:
-    if len(lst) < 2:
-        return None
-    m = sum(lst) / len(lst)
-    return math.sqrt(sum((x - m) ** 2 for x in lst) / len(lst))
-
-
 def summary(values: list[float]) -> dict:
     if not values:
         return {"count": 0, "mean": None, "median": None, "std": None, "min": None, "max": None}
@@ -110,20 +90,18 @@ def analyze_single_variant(
     variant_map: dict,
     label: str,
     cfg: object,
-) -> list[dict]:
+) -> tuple[list[dict], int]:
     all_keys = sorted(set(base_map) & set(variant_map))
     log.info("  %s: %d common keys", label, len(all_keys))
 
+    stats = StreamStats()
     per_key: list[dict] = []
-    for i, ck in enumerate(all_keys):
-        t_base = load_tensor(base_map, ck)
-        t_var = load_tensor(variant_map, ck)
-        if t_base is None or t_var is None:
-            continue
-        t_base = t_base.float()
-        t_var = t_var.float()
+    for _i, ck, tensors in iter_common_tensors([base_map, variant_map], keys=all_keys, stats=stats):
+        t_base = tensors[0].float()
+        t_var = tensors[1].float()
         v = t_var - t_base
         norm_v = v.norm().item()
+        base_norm = t_base.norm().item()
         per_key.append(
             {
                 "key": ck,
@@ -131,16 +109,13 @@ def analyze_single_variant(
                 "layer": cfg.get_layer_index(ck),
                 "category": cfg.tensor_category(ck),
                 "edit_norm": norm_v,
-                "base_norm": t_base.norm().item(),
-                "relative_edit": norm_v / t_base.norm().item() if t_base.norm().item() > 0 else 0,
+                "base_norm": base_norm,
+                "relative_edit": norm_v / base_norm if base_norm > 0 else 0,
                 "numel": t_base.numel(),
                 "changed": norm_v > TRIVIAL_THRESHOLD,
             }
         )
-        del t_base, t_var, v
-        if (i + 1) % 200 == 0:
-            gc.collect()
-    return per_key
+    return per_key, stats.shape_skipped
 
 
 def analyze_two_variants(
@@ -150,20 +125,21 @@ def analyze_two_variants(
     label_a: str,
     label_b: str,
     cfg: object,
-) -> list[dict]:
+) -> tuple[list[dict], int]:
     all_keys = sorted(set(base_map) & set(mapa) & set(mapb))
     log.info("  Comparing %s vs %s: %d common keys", label_a, label_b, len(all_keys))
 
+    stats = StreamStats()
     per_key: list[dict] = []
-    for i, ck in enumerate(all_keys):
-        t_base = load_tensor(base_map, ck)
-        t_a = load_tensor(mapa, ck)
-        t_b = load_tensor(mapb, ck)
-        if t_base is None or t_a is None or t_b is None:
-            continue
-        t_base = t_base.float()
-        t_a = t_a.float()
-        t_b = t_b.float()
+    for _i, ck, tensors in iter_common_tensors(
+        [base_map, mapa, mapb],
+        keys=all_keys,
+        stats=stats,
+        progress=lambda i, total: log.info("    processed %d/%d", i + 1, total),
+    ):
+        t_base = tensors[0].float()
+        t_a = tensors[1].float()
+        t_b = tensors[2].float()
 
         v_a = t_a - t_base
         v_b = t_b - t_base
@@ -199,10 +175,7 @@ def analyze_two_variants(
 
         per_key.append(entry)
         del t_base, t_a, t_b, v_a, v_b, v_delta
-        if (i + 1) % 200 == 0:
-            gc.collect()
-            log.info("    processed %d/%d", i + 1, len(all_keys))
-    return per_key
+    return per_key, stats.shape_skipped
 
 
 def run_analysis(
@@ -233,7 +206,7 @@ def run_analysis(
         mapb = build_shard_map(variant_b_path, cfg)
         log.info("  Base: %d, A(%s): %d, B(%s): %d", len(base_map), label_a, len(mapa), label_b, len(mapb))
 
-        per_key = analyze_two_variants(base_map, mapa, mapb, label_a, label_b, cfg)
+        per_key, shape_skipped = analyze_two_variants(base_map, mapa, mapb, label_a, label_b, cfg)
 
         overlap = [r for r in per_key if r["a_changed"] and r["b_changed"]]
         trivial = [r for r in overlap if r.get("is_trivial_copy")]
@@ -255,6 +228,7 @@ def run_analysis(
                 "variant_a": label_a,
                 "variant_b": label_b,
                 "total_keys": len(per_key),
+                "shape_skipped": shape_skipped,
                 "overlap_count": len(overlap),
                 "trivial_copy_count": len(trivial),
                 "nontrivial_overlap_count": len(nontrivial),
@@ -277,7 +251,7 @@ def run_analysis(
             log.info("Non-trivial cosine: mean=%.4f, null 3sigma=%.4f", s["mean"], nb["three_sigma"])
     else:
         log.info("  Base: %d, A(%s): %d", len(base_map), label_a, len(mapa))
-        per_key = analyze_single_variant(base_map, mapa, label_a, cfg)
+        per_key, shape_skipped = analyze_single_variant(base_map, mapa, label_a, cfg)
 
         changed = [r for r in per_key if r["changed"]]
         report.update(
@@ -285,6 +259,7 @@ def run_analysis(
                 "variant": label_a,
                 "total_keys": len(per_key),
                 "changed_count": len(changed),
+                "shape_skipped": shape_skipped,
                 "edit_norms": summary([r["edit_norm"] for r in changed]),
                 "relative_edits": summary([r["relative_edit"] for r in changed]),
                 "per_key_details": per_key,
@@ -300,25 +275,22 @@ def run_analysis(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--comparison", help="Path to comparison.json dir (batch mode)")
-    parser.add_argument("--base", help="Base model dir (overrides --comparison)")
+    add_batch_args(parser)
     parser.add_argument("--variant-a", help="First variant (e.g. heretic)")
     parser.add_argument(
         "--variant-b", default=None, help="Second variant (e.g. hauhau). Omit for single-variant analysis."
     )
     parser.add_argument("--label-a", default="variant_a")
     parser.add_argument("--label-b", default="variant_b")
-    parser.add_argument("--output", help="Output JSON path")
-    parser.add_argument("--results-dir", help="Base results directory")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     if args.comparison:
         config = ComparisonConfig.from_dir(Path(args.comparison))
-        results_dir = Path(args.results_dir) if args.results_dir else config.weight_results_dir(Path("results"))
+        results_dir = resolve_results_dir(args, config)
         for variant in config.variants:
-            out_path = results_dir / variant.name / f"edit_vector_{variant.name}.json"
+            out_path = variant_output_path(results_dir, variant.name, "edit_vector")
             run_analysis(
                 base_path=str(config.base_path),
                 variant_a_path=str(variant.path),

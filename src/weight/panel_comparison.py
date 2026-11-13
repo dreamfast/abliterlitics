@@ -24,6 +24,7 @@ from src.model_config import (
     detect_architecture,
     load_tensor,
 )
+from src.weight._common import add_batch_args, resolve_results_dir
 
 log = logging.getLogger(__name__)
 
@@ -205,23 +206,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Pairwise panel comparison of model variants",
     )
-    parser.add_argument("--comparison", help="Path to comparison.json dir (batch mode)")
-    parser.add_argument("--base", help="Base model dir (overrides --comparison)")
+    add_batch_args(parser, output_help="Output directory")
     parser.add_argument(
         "--variant",
         action="append",
         metavar="NAME=PATH",
         help="Variant as name=path (repeatable, e.g. --variant heretic=/models/heretic)",
     )
-    parser.add_argument("--output", help="Output directory")
-    parser.add_argument("--results-dir", help="Base results directory")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     if args.comparison:
         config = ComparisonConfig.from_dir(Path(args.comparison))
-        results_dir = Path(args.results_dir) if args.results_dir else config.weight_results_dir(Path("results"))
+        results_dir = resolve_results_dir(args, config)
         results_dir.mkdir(parents=True, exist_ok=True)
 
         if len(config.variants) < 2:

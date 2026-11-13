@@ -5,8 +5,10 @@
 # container. This avoids the tokenizer download hang (AGENTS.md #6).
 #
 # Two-phase execution per model:
-#   Phase 1: Loglikelihood + truthfulqa with max_gen_toks=2048
+#   Phase 1: Loglikelihood + generative tasks with --apply_chat_template (max_gen_toks=2048)
 #   Phase 2: GSM8K with max_gen_toks=7168 (reasoning models need thinking room)
+#   Phase 3: Raw-completion tasks (HumanEval, LAMBADA) WITHOUT --apply_chat_template
+#            (AGENTS.md #17 — chat template kills these: pass@1=0, perplexity ~1e11)
 #
 # For large MoE models (GLM, >50GB): supports TP=2 across dual GPUs.
 # For Qwen3.5 family: single-GPU BNB4 (Qwen3.5 can't do BNB4+TP).
@@ -55,24 +57,44 @@ Quantization:
   BNB4 is disabled by default (it damages scores and makes cross-model
   comparison unfair). Only override with --quantization bitsandbytes if
   reviewing persistent OOM errors.
+  For models whose BF16 weights exceed a single GPU (e.g. 27B-class, >50GB
+  on disk), --quantization fp8 enables dynamic online FP8 (quantized at
+  load, no calibration) which halves the on-GPU footprint. All arms MUST
+  use the same quantization path for fair deltas (AGENTS.md lesson #53).
+  Defaults can come from comparison.json settings via _load_comparison.py
+  (lm_eval_quantization / lm_eval_kv_cache_dtype / lm_eval_language_model_only
+  / lm_eval_gpus); CLI flags override.
 
 Options:
-   --gpus GPUS           GPU selection (default: auto)
+   --gpus GPUS           GPU selection (default: auto, or settings.lm_eval_gpus)
    --tasks TASKS         Comma-separated task list (default: from comparison.json)
-   --quantization QUANT  Override quantization (bitsandbytes/none). Default: bf16 native.
+   --quantization QUANT  Override quantization (bitsandbytes/fp8/none). Default: bf16 native.
+   --limit N             Cap samples per task (diagnostic/smoke-test mode, AGENTS.md #10).
+                         Default: none (full task sets). With --limit, lm-eval still
+                         writes a canonical lm_eval_<model>.json result file.
+   --models LIST         Comma-separated model filter (default: all). Examples:
+                           --models base              → only the base model
+                           --models base,huihui       → base + one variant
+                         Useful for base-model pre-flight diagnostics.
    --skip-existing       Skip models with existing results (default)
    --force               Overwrite existing results
    --dry-run             Show what would run without executing
-   -h, --help            Show this help
+   -h, --help            Show this message
 EOF
     exit 0
 }
 
-GPUS_ARG=""
+# Defaults from comparison.json settings (exported by _load_comparison.py);
+# CLI flags below override. LM_EVAL_GPUS pins GPU selection per comparison —
+# REQUIRED for models >50GB on disk that serve quantized on one GPU (the
+# >50GB auto-heuristic would otherwise pick dual TP2 and touch GPU 1).
+GPUS_ARG="${LM_EVAL_GPUS:-}"
 TASKS=""
-QUANTIZATION=""
+QUANTIZATION="${LM_EVAL_QUANTIZATION:-}"
 DRY_RUN=0
 SKIP_EXISTING=1
+LM_EVAL_LIMIT=""     # diagnostic cap on samples per task (AGENTS.md #10)
+MODELS_FILTER=""     # comma-separated model name filter; "base" = BASE_NAME only
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -81,6 +103,8 @@ while [[ $# -gt 0 ]]; do
         --backend)       shift 2 ;;  # consumed for CLI compat, lm-eval always uses vLLM
         --tasks)         TASKS="$2"; shift 2 ;;
         --quantization)  QUANTIZATION="$2"; shift 2 ;;
+        --limit)         LM_EVAL_LIMIT="$2"; shift 2 ;;
+        --models)        MODELS_FILTER="$2"; shift 2 ;;
         --skip-existing) SKIP_EXISTING=1; shift ;;
         --force)         SKIP_EXISTING=0; shift ;;
         --dry-run)       DRY_RUN=1; shift ;;
@@ -92,6 +116,14 @@ done
 COMP_DIR="${1:?Error: comparison_dir required. Use --help for usage.}"
 
 load_comparison "$COMP_DIR"
+# Re-apply settings-sourced defaults AFTER load_comparison: the top-level
+# captures of GPUS_ARG/QUANTIZATION above run BEFORE load_comparison exports
+# LM_EVAL_GPUS/LM_EVAL_QUANTIZATION, so they were permanently empty and every
+# model fell back to the raw-size heuristic (51GB on disk -> dual TP2 on
+# GPUs 0+1, max_len clobbered to 4096) instead of the comparison's FP8
+# single-GPU recipe (lesson #64). CLI flags still win via the :- chain.
+GPUS_ARG="${GPUS_ARG:-${LM_EVAL_GPUS:-}}"
+QUANTIZATION="${QUANTIZATION:-${LM_EVAL_QUANTIZATION:-}}"
 COMPARISON_DIR="$(cd "${COMPARISON_DIR}" && pwd)"  # resolve to absolute for Docker mounts
 TASKS="${TASKS:-$LM_EVAL_TASKS}"
 RESULTS_DIR="${COMPARISON_DIR}/results/lm_eval"
@@ -101,7 +133,8 @@ mkdir -p "$RESULTS_DIR" "$LOG_DIR"
 # Shared cache directories
 HF_CACHE="${ABL_ROOT}/.cache/hf"
 VLLM_CACHE="${ABL_ROOT}/.cache/vllm"
-mkdir -p "$HF_CACHE" "$VLLM_CACHE"
+NLTK_CACHE="${ABL_ROOT}/.cache/nltk_data"
+mkdir -p "$HF_CACHE" "$VLLM_CACHE" "$NLTK_CACHE"
 
 # Detect HF token on host (needed for gated datasets like GPQA).
 # Pre-download via runners/predownload_datasets.sh is required before this
@@ -134,6 +167,12 @@ log "Datasets cache: $(ls "${DATASETS_CACHE}" | wc -l) datasets at ${DATASETS_CA
 MAX_MODEL_LEN="${LM_EVAL_MAX_MODEL_LEN:-8192}"
 MAX_GEN_TOKS="${LM_EVAL_MAX_GEN_TOKS:-2048}"
 TOKENIZER_DIR="${TOKENIZER_DIR:-${BASE_DIR}}"
+TOKENIZER_DIR="$(realpath -m "${TOKENIZER_DIR}")"  # lesson #55a: absolute for docker -v
+# Number of concurrent HTTP requests to vLLM (local-completions backend).
+# Higher = better GPU batch utilization for loglikelihood tasks. Default 4 is
+# conservative; 16-32 recommended for models <30GB on a 32GB+ GPU. Does NOT
+# affect results (scores are identical regardless of concurrency).
+NUM_CONCURRENT="${LM_EVAL_NUM_CONCURRENT:-4}"
 
 # GSM8K generation budget.
 # Gemma4 IS a thinking model — it generates long reasoning chains before
@@ -185,15 +224,42 @@ resolve_gpus() {
 run_lm_eval() {
     local model_name="$1"
     local model_path="$2"
+    # Resolve to absolute BEFORE docker -v (lesson #55a applies to this runner
+    # too): _load_comparison.py string-concats comp_dir + "../../models/...",
+    # so a relative invocation yields relative bind sources -> docker rejects
+    # them ("includes invalid characters for a local volume name").
+    model_path="$(realpath -m "${model_path}")"
     local out_file="${RESULTS_DIR}/lm_eval_${model_name}.json"
 
     # Check per-variant skip flag
     local var_slug
-    var_slug="$(echo "$model_name" | tr '-' '_')"
+    # tr '.-' '__': also map dots — base names like "Qwen3.8-27B" produce
+    # invalid bash identifiers for ${!indirect} expansion (lesson #64)
+    var_slug="$(echo "$model_name" | tr '.-' '__')"
+    
+    # LoRA adapter detection (AGENTS.md lesson #35). When a LoRA adapter path is
+    # set for this variant, vLLM uses --enable-lora mode instead of loading a
+    # merged model. The variant's `path` points to the BASE model; the adapter
+    # is mounted separately and applied dynamically at FP32 precision.
+    local lora_adapter_env="VARIANT_LORA_ADAPTER_${var_slug}"
+    local lora_adapter_path="${!lora_adapter_env:-}"
+    local vllm_model_id="/model"
+    local lora_mount=()
+    local lora_vllm_flags=()
+    if [[ -n "$lora_adapter_path" ]]; then
+        log "  LoRA mode: adapter=${lora_adapter_path}"
+        vllm_model_id="${model_name}"
+        lora_mount=(-v "${lora_adapter_path}:/lora_adapter:ro")
+        lora_vllm_flags=(--enable-lora --max-loras 1 --max-lora-rank 8)
+        lora_vllm_flags+=(--lora-modules "${model_name}=/lora_adapter")
+    fi
+    
     local skip_flag="VARIANT_SKIP_LM_${var_slug}"
     if [[ "${!skip_flag:-0}" == "1" ]]; then
         log "[skip] ${model_name}: skip_lm_eval=true"
-        if [[ $DRY_RUN -eq 0 ]]; then
+        # Lesson #83 guard: a no-work skip path must never demote a 'completed'
+        # stage — shared read-only check in common.sh (pattern from run_kl.sh).
+        if [[ $DRY_RUN -eq 0 ]] && [[ "$(stage_completed "$COMPARISON_NAME" "$model_name" "lm_eval")" != "yes" ]]; then
             db_stage_skip "$COMPARISON_NAME" "$model_name" "lm_eval"
         fi
         return 0
@@ -201,7 +267,8 @@ run_lm_eval() {
 
     if result_exists "$out_file" && [[ -z "${GSM8K_RERUN:-}" ]]; then
         log "Skipping (exists): ${model_name}"
-        if [[ $DRY_RUN -eq 0 ]]; then
+        # Lesson #83 guard (see above): preserve a 'completed' status on re-runs.
+        if [[ $DRY_RUN -eq 0 ]] && [[ "$(stage_completed "$COMPARISON_NAME" "$model_name" "lm_eval")" != "yes" ]]; then
             db_stage_skip "$COMPARISON_NAME" "$model_name" "lm_eval"
         fi
         return 0
@@ -230,17 +297,33 @@ run_lm_eval() {
     # Quantization strategy: ALWAYS native bf16 for fair, consistent comparison.
     # BNB4 quantization damages scores and makes cross-model comparison unfair.
     # Only enable BNB4 with explicit --quantization bitsandbytes if OOM occurs.
+    # fp8 = dynamic online FP8 for models whose BF16 weights exceed a single
+    # GPU (AGENTS.md lesson #53): quantized at load from the BF16 checkpoint,
+    # identical path for base + variants, only Linears quantize (mamba internals
+    # stay BF16). MUST be paired with --gpus 0 pinning for >50GB-on-disk models
+    # (see GPUS_ARG note above).
     local use_quant=""
     if [[ -n "${QUANTIZATION}" ]]; then
         case "${QUANTIZATION}" in
             bitsandbytes|bnb)     use_quant="bitsandbytes" ;;
+            fp8)                  use_quant="fp8" ;;
             none|off|auto|"")     use_quant="" ;;
         esac
     fi
 
+    # Dynamic FP8 halves the on-GPU footprint vs on-disk BF16 size. Resource
+    # decisions (GPU count, util floor, max_model_len) must use the EFFECTIVE
+    # size — the >50GB-on-disk heuristic would otherwise force dual TP2
+    # (touching GPU 1) and clobber max_model_len/gpu_util for a model that
+    # actually serves in ~28GiB on one card (AGENTS.md lesson #53).
+    local effective_size_gb="${model_size_gb}"
+    if [[ "${use_quant}" == "fp8" ]]; then
+        effective_size_gb=$(( model_size_gb / 2 ))
+    fi
+
     # Resolve GPU config for this model
     local gpu_config nvidia_vis cuda_vis tp_size gpu_label
-    gpu_config=$(resolve_gpus "${model_size_gb}")
+    gpu_config=$(resolve_gpus "${effective_size_gb}")
     read -r nvidia_vis cuda_vis tp_size gpu_label <<< "${gpu_config}"
 
     # Adjust batch size and gpu_util based on model size.
@@ -250,12 +333,12 @@ run_lm_eval() {
     local batch_size="auto"
     local max_model_len="${MAX_MODEL_LEN}"
 
-    if [[ ${model_size_gb} -gt 50 ]]; then
+    if [[ ${effective_size_gb} -gt 50 ]]; then
         # Large MoE models (e.g. GLM-4.7-Flash 59GB): 0.75 safety floor always wins.
         gpu_util="0.75"
         batch_size="4"
         max_model_len="4096"
-    elif [[ ${model_size_gb} -gt 25 ]]; then
+    elif [[ ${effective_size_gb} -gt 25 ]]; then
         batch_size="16"
     fi
 
@@ -303,13 +386,19 @@ run_lm_eval() {
 
     local quant_label="${use_quant:-native bf16}"
     log "Evaluating ${model_name} (${model_size_gb}GB, ${quant_label}, TP=${tp_size}, gpu_util=${gpu_util}, max_len=${max_model_len}, batch=${batch_size}, GPUs=${gpu_label})"
+    if [[ -n "${LM_EVAL_LIMIT:-}" ]]; then
+        log "  DIAGNOSTIC MODE: --limit ${LM_EVAL_LIMIT} samples per task (AGENTS.md #10)"
+    fi
 
     if [[ $DRY_RUN -eq 1 ]]; then
         log "  [dry-run] vLLM server + local-completions in same container"
         log "  [dry-run] NVIDIA_VISIBLE_DEVICES=${nvidia_vis} CUDA_VISIBLE_DEVICES=${cuda_vis}"
         log "  [dry-run] chat_template: has_chat_template=${has_chat_template} → phase1 flag='${phase1_chat_template_flag:-<none>}'"
-        log "  [dry-run] Phase 1 tasks: $(echo "$TASKS" | tr ',' '\n' | grep -v gsm8k | tr '\n' ',')"
-        log "  [dry-run] Phase 2 tasks: gsm8k (gen_toks=${phase2_gen_toks})"
+        log "  [dry-run] Phase 1 tasks: $(echo "$TASKS" | tr ',' '\n' | grep -vE '^(gsm8k|humaneval|lambada_openai)$' | tr '\n' ',' | sed 's/,$//')"
+        log "  [dry-run] Phase 2 tasks: gsm8k (gen_toks=${phase2_gen_toks}, thinking=ON)"
+        local _p3
+        _p3=$(echo "$TASKS" | tr ',' '\n' | grep -E '^(humaneval|lambada_openai)$' | tr '\n' ',' | sed 's/,$//')
+        [[ -n "$_p3" ]] && log "  [dry-run] Phase 3 tasks: ${_p3} (raw completion, NO chat_template)"
         return 0
     fi
 
@@ -351,15 +440,57 @@ run_lm_eval() {
         --trust-remote-code
         --max-model-len "${max_model_len}"
         --gpu-memory-utilization "${gpu_util}"
-        --enforce-eager
         --port 8080
         --host 127.0.0.1
     )
+    # --enforce-eager disables CUDA graph optimization (20-40% throughput cost).
+    # Default: enabled (safe for all architectures). Override with
+    # LM_EVAL_ENFORCE_EAGER=0 for known-good architectures (Gemma4, Qwen3, etc.)
+    # where CUDA graphs are supported by vLLM. Does NOT affect results —
+    # CUDA graphs only change execution path, not computation.
+    if [[ "${LM_EVAL_ENFORCE_EAGER:-1}" != "0" ]]; then
+        vllm_server_flags+=(--enforce-eager)
+    fi
     if [[ -n "${use_quant}" ]]; then
-        vllm_server_flags+=(--quantization "${use_quant}" --load-format "${use_quant}")
+        if [[ "${use_quant}" == "fp8" ]]; then
+            # Dynamic online FP8: default load-format (auto) — do NOT pass
+            # --load-format fp8 (that expects a pre-quantized checkpoint).
+            # Fp8PerTensorOnlineLinearMethod quantizes Linears at load;
+            # DeepGemm auto-disables on Blackwell for qwen3_5_text (harmless).
+            vllm_server_flags+=(--quantization fp8)
+            # Memory levers for tight budgets (lesson #53 recipe): fp8 KV cache
+            # + skipping the vision tower for text-only benchmarks.
+            if [[ -n "${LM_EVAL_KV_CACHE_DTYPE:-}" ]]; then
+                vllm_server_flags+=(--kv-cache-dtype "${LM_EVAL_KV_CACHE_DTYPE}")
+            fi
+            if [[ "${LM_EVAL_LANGUAGE_MODEL_ONLY:-0}" == "1" ]]; then
+                vllm_server_flags+=(--language-model-only)
+            fi
+        else
+            vllm_server_flags+=(--quantization "${use_quant}" --load-format "${use_quant}")
+        fi
     fi
     if [[ ${tp_size} -gt 1 ]]; then
         vllm_server_flags+=(--tensor-parallel-size "${tp_size}")
+    fi
+    # MTP speculative decoding (inference acceleration ONLY — at temperature=0
+    # spec decode is exactly output-preserving, so arms with/without MTP heads
+    # remain comparable). Auto-gated on mtp.* tensor presence: variants whose
+    # tooling dropped the MTP head (vanilla-heretic re-saves) skip the flag.
+    local spec_tokens="${LM_EVAL_SPEC_TOKENS:-0}"
+    if [[ "${spec_tokens}" =~ ^[0-9]+$ ]] && [[ "${spec_tokens}" -gt 0 ]]; then
+        if python3 -c "
+import json, sys
+try:
+    idx = json.load(open('${model_path}/model.safetensors.index.json'))
+    sys.exit(0 if any(k.startswith('mtp.') for k in idx['weight_map']) else 1)
+except Exception:
+    sys.exit(1)" 2>/dev/null; then
+            vllm_server_flags+=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${spec_tokens}}")
+            log "  MTP speculative decoding: ${spec_tokens} draft tokens"
+        else
+            log "  MTP requested but no mtp.* tensors in index for ${model_name} — serving without spec decode (output-identical at temp=0)"
+        fi
     fi
     # Reasoning parser (for Qwen3.5 and similar)
     if [[ -n "${REASONING_PARSER:-}" ]]; then
@@ -372,27 +503,59 @@ run_lm_eval() {
     if [[ -f "${COMPARISON_DIR}/thinking_chat_template.jinja" ]]; then
         vllm_server_flags+=(--chat-template /comparison/thinking_chat_template.jinja)
     fi
+    # LoRA flags (if adapter is set for this variant — AGENTS.md lesson #35)
+    if [[ ${#lora_vllm_flags[@]} -gt 0 ]]; then
+        vllm_server_flags+=("${lora_vllm_flags[@]}")
+    fi
+    # Extra vLLM flags passthrough (env, host-side). Needed when the FP8 recipe
+    # meets a very large vocab: lm-eval LL MC requests prompt_logprobs, whose
+    # fp32 log_softmax transient scales with max_num_batched_tokens x vocab —
+    # 2048 chunk x 248320 vocab = 1.95 GiB on a card with <0.5 GiB of non-pool
+    # headroom at util 0.95 -> engine-death OOM on the FIRST MMLU-Pro request
+    # (AGENTS.md lesson #67). Working config: LM_EVAL_EXTRA_VLLM_FLAGS should
+    # carry "--gpu-memory-utilization 0.94 --max-num-batched-tokens 512".
+    # Unquoted expansion is intentional (word-split the flag string).
+    # shellcheck disable=SC2206
+    if [[ -n "${LM_EVAL_EXTRA_VLLM_FLAGS:-}" ]]; then
+        vllm_server_flags+=(${LM_EVAL_EXTRA_VLLM_FLAGS})
+    fi
 
-    # Split tasks: Phase 1 (everything except gsm8k) and Phase 2 (gsm8k only)
-    local phase1_tasks phase2_tasks
-    if echo "$TASKS" | grep -q "gsm8k"; then
-        phase1_tasks=$(echo "$TASKS" | tr ',' '\n' | grep -v '^gsm8k$' | tr '\n' ',' | sed 's/,$//')
+    # Split tasks into three phases:
+    #   Phase 1: LL MC + generative tasks WITH --apply_chat_template (instruct models need it, AGENTS.md #9)
+    #   Phase 2: GSM8K via local-chat-completions with thinking enabled (AGENTS.md #1)
+    #   Phase 3: Raw-completion tasks WITHOUT --apply_chat_template (AGENTS.md #17 — HumanEval/LAMBADA killed by chat template)
+    local phase1_tasks phase2_tasks phase3_tasks
+    phase3_tasks=""
+    phase2_tasks=""
+    phase1_tasks="$TASKS"
+
+    # Extract raw-completion tasks into Phase 3
+    for t in humaneval lambada_openai; do
+        if echo "$TASKS" | tr ',' '\n' | grep -qx "$t"; then
+            phase3_tasks="${phase3_tasks:+${phase3_tasks},}${t}"
+            phase1_tasks=$(echo "$phase1_tasks" | tr ',' '\n' | grep -v "^${t}$" | tr '\n' ',' | sed 's/,$//')
+        fi
+    done
+
+    # Extract GSM8K into Phase 2
+    if echo "$phase1_tasks" | tr ',' '\n' | grep -qx "gsm8k"; then
+        phase1_tasks=$(echo "$phase1_tasks" | tr ',' '\n' | grep -v "^gsm8k$" | tr '\n' ',' | sed 's/,$//')
         phase2_tasks="gsm8k"
-    else
-        phase1_tasks="$TASKS"
-        phase2_tasks=""
     fi
 
     # Build the local-completions model_args
-    local lc_model_args="base_url=http://127.0.0.1:8080/v1/completions,model=/model"
+    # vllm_model_id is "/model" for normal variants, or the variant name for LoRA variants
+    # timeout=600: lm-eval default is 300s, too short for thinking models generating up to
+    # max_gen_toks at ~25 tok/s/request (8096/25=324s > 300s). See AGENTS.md lesson #36.
+    local lc_model_args="base_url=http://127.0.0.1:8080/v1/completions,model=${vllm_model_id}"
     lc_model_args+=",tokenizer=/tokenizer,tokenizer_backend=huggingface"
-    lc_model_args+=",num_concurrent=4,max_length=${max_model_len}"
+    lc_model_args+=",num_concurrent=${NUM_CONCURRENT},max_length=${max_model_len},timeout=600"
 
     # Build the local-chat-completions model_args (Phase 2 GSM8K with thinking).
     # Defined on HOST side because the bash -c string interpolates ${chat_model_args}.
-    local chat_model_args="base_url=http://127.0.0.1:8080/v1/chat/completions,model=/model"
+    local chat_model_args="base_url=http://127.0.0.1:8080/v1/chat/completions,model=${vllm_model_id}"
     chat_model_args+=",tokenizer=/tokenizer,tokenizer_backend=huggingface"
-    chat_model_args+=",num_concurrent=4,max_length=${max_model_len}"
+    chat_model_args+=",num_concurrent=${NUM_CONCURRENT},max_length=${max_model_len},timeout=600"
 
     # Serialize vLLM flags into a single string for safe passing into bash -c.
     # Using @Q inside bash -c '...' breaks because the single quotes from @Q
@@ -402,6 +565,16 @@ run_lm_eval() {
     for flag in "${vllm_server_flags[@]}"; do
         vllm_flags_str+=" $(printf '%q' "$flag")"
     done
+
+    # Build --limit flag string for lm-eval (same env-var passthrough pattern as
+    # vllm_flags_str). Empty when no limit is set (default, full task sets).
+    # Used for the pre-flight diagnostic (AGENTS.md lesson #10): a quick
+    # HellaSwag --limit 200 run on the base model validates that the chat
+    # template is being applied before kicking off the full pipeline.
+    local lm_limit_flags_str=""
+    if [[ -n "${LM_EVAL_LIMIT:-}" ]]; then
+        lm_limit_flags_str=" --limit $(printf '%q' "${LM_EVAL_LIMIT}")"
+    fi
 
     # Run both vLLM server + lm-eval inside SAME Docker container
     # --entrypoint bash: override vllm-openai's default ENTRYPOINT
@@ -425,16 +598,18 @@ run_lm_eval() {
         --entrypoint bash \
         -e "NVIDIA_VISIBLE_DEVICES=${nvidia_vis}" \
         -e "CUDA_VISIBLE_DEVICES=${cuda_vis}" \
-        -e "PYTORCH_ALLOC_CONF=expandable_segments:True" \
         "${nccl_env[@]+${nccl_env[@]}}" \
         -e "VLLM_FLAGS=${vllm_flags_str}" \
+        -e "LM_EVAL_LIMIT_FLAGS=${lm_limit_flags_str}" \
         -v "${model_path}:/model:ro" \
+        "${lora_mount[@]+${lora_mount[@]}}" \
         -v "${TOKENIZER_DIR}:/tokenizer:ro" \
         "${no_think_mount[@]+${no_think_mount[@]}}" \
         -v "${RESULTS_DIR}:/results" \
         -v "${LOG_DIR}:/logs" \
         -v "${HF_CACHE}:/root/.cache/huggingface" \
         -v "${VLLM_CACHE}:/root/.cache/vllm" \
+        -v "${NLTK_CACHE}:/root/nltk_data:ro" \
         -v "${COMPARISON_DIR}:/comparison:ro" \
         -v "${model_cache_dir}:/lm_eval_cache" \
         "${HF_TOKEN_MOUNT[@]+${HF_TOKEN_MOUNT[@]}}" \
@@ -444,6 +619,7 @@ run_lm_eval() {
         -e HF_HUB_OFFLINE=1 \
         -e FLASHINFER_DISABLE_VERSION_CHECK=1 \
         -e HF_ALLOW_CODE_EVAL=1 \
+        -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
         -e LM_HARNESS_CACHE_PATH=/lm_eval_cache \
         "${LMEVAL_IMAGE}" -c '
             set -eo pipefail
@@ -476,8 +652,16 @@ run_lm_eval() {
             fi
 
             # Start vLLM server in background
+            # Re-parse the %q-escaped flags from the host: unquoted $VAR
+            # expansion word-splits but does NOT consume printf %q backslashes,
+            # so JSON-valued flags arrived at vLLM with literal backslashes
+            # (e.g. \{\"a\":\ \"b\"\}) and crashed pydantic JSON parsing.
+            # eval + array expansion is the correct consumer of %q output
+            # (lesson #66). VLLM_FLAGS is fully %q-escaped host-side, so the
+            # eval re-parse is exact.
+            eval "VLLM_FLAGS_ARR=(${VLLM_FLAGS})"
             # shellcheck disable=SC2086
-            python3 -m vllm.entrypoints.openai.api_server $VLLM_FLAGS \
+            python3 -m vllm.entrypoints.openai.api_server "${VLLM_FLAGS_ARR[@]}" \
                 > /logs/'"${model_name}"'_vllm_server.log 2>&1 &
             SERVER_PID=$!
 
@@ -520,21 +704,15 @@ run_lm_eval() {
             #                                without re-calling the model. AGENTS.md #18.
             if [[ -n "'"${phase1_tasks}"'" && "'"${skip_phase1}"'" != "1" ]]; then
                 echo "Phase 1: '"${phase1_tasks}"' (chat_template='"${has_chat_template}"')"
-                # Build unsafe-code flag if humaneval is in the task list
-                UNSAFE_CODE_FLAG=""
-                if echo "'"${phase1_tasks}"'" | grep -q "humaneval"; then
-                    UNSAFE_CODE_FLAG="--confirm_run_unsafe_code"
-                    echo "[container] HumanEval detected: enabling --confirm_run_unsafe_code"
-                fi
                 python3 -m lm_eval --model local-completions \
                     --model_args "'"${lc_model_args}"'" \
                     --tasks "'"${phase1_tasks}"'" \
                     --batch_size '"${batch_size}"' \
                     --gen_kwargs max_gen_toks='"${MAX_GEN_TOKS}"' \
                     "'"${phase1_chat_template_flag}"'" \
+                    ${LM_EVAL_LIMIT_FLAGS} \
                     --cache_requests true \
                     --use_cache /lm_eval_cache/responses.sqlite \
-                    ${UNSAFE_CODE_FLAG} \
                     --output_path /results/ \
                     --log_samples 2>&1 | tee /logs/'"${model_name}"'_phase1.log
             fi
@@ -542,18 +720,65 @@ run_lm_eval() {
             # Phase 2: GSM8K via chat completions with thinking enabled.
             # vLLM server has --chat-template pointing to thinking_chat_template.jinja
             # which injects <|think|>. lm-eval sends messages, vLLM applies the template.
+            #
+            # CRITICAL: until=[] overrides the gsm8k task default stop sequences
+            # [Question:, </s>, <|im_end|>]. The Question: stop sequence is
+            # destructive for thinking models: the model writes Question: during
+            # its reasoning trace, vLLM truncates the generation there, and the
+            # reasoning parser sees incomplete thinking with no answer, producing
+            # content=null. This caused a 73% null-response rate on Gemma 4 12B
+            # Unified GSM8K. Setting until=[] effectively disables all stop
+            # sequences; the model stops naturally at EOS after completing its
+            # answer. AGENTS.md lesson #30, discovered gemma4-12b 2026-08-02.
+            #
+            # num_fewshot=0: thinking models MUST be 0-shot on GSM8K. The gsm8k
+            # task default is 5-shot, but fewshot examples teach the model to
+            # produce Answer: <<calc>>... #### ans format. With thinking enabled,
+            # the model solves the problem in its reasoning trace, then tries to
+            # reformat to match the fewshot examples, entering a thinking loop
+            # that consumes all 8096 tokens without converging. This caused a
+            # 92% null-content rate. 0-shot lets the model think freely and
+            # produce a natural answer. Verified: 0-shot base model produces
+            # correct content in ~377 tokens (vs 8096-token loops at 5-shot).
+            # AGENTS.md lesson #30.
             if [[ -n "'"${phase2_tasks}"'" ]]; then
-                echo "Phase 2: '"${phase2_tasks}"' (gen_toks='"${phase2_gen_toks}"', thinking=ON, chat-completions)"
+                echo "Phase 2: '"${phase2_tasks}"' (gen_toks='"${phase2_gen_toks}"', thinking=ON, chat-completions, 0-shot, until_overridden)"
                 python3 -m lm_eval --model local-chat-completions \
                     --model_args "'"${chat_model_args}"'" \
                     --tasks "'"${phase2_tasks}"'" \
-                    --gen_kwargs max_gen_toks='"${phase2_gen_toks}"' \
+                    --num_fewshot 0 \
+                    --gen_kwargs max_gen_toks='"${phase2_gen_toks}"',until=[] \
                     --apply_chat_template \
                     --fewshot_as_multiturn false \
+                    ${LM_EVAL_LIMIT_FLAGS} \
                     --cache_requests true \
                     --use_cache /lm_eval_cache/responses.sqlite \
                     --output_path /results/ \
                     --log_samples 2>&1 | tee /logs/'"${model_name}"'_phase2.log
+            fi
+
+            # Phase 3: Raw-completion tasks WITHOUT --apply_chat_template (AGENTS.md #17).
+            # HumanEval wants raw Python function continuation; LAMBADA wants narrative
+            # continuation. With chat template, instruct models respond conversationally
+            # → pass@1=0, perplexity ~1e11. Running raw gives real signal.
+            if [[ -n "'"${phase3_tasks}"'" ]]; then
+                echo "Phase 3: '"${phase3_tasks}"' (raw completion, NO chat_template)"
+                UNSAFE_CODE_FLAG=""
+                if echo "'"${phase3_tasks}"'" | grep -q "humaneval"; then
+                    UNSAFE_CODE_FLAG="--confirm_run_unsafe_code"
+                    echo "[container] HumanEval detected: enabling --confirm_run_unsafe_code"
+                fi
+                python3 -m lm_eval --model local-completions \
+                    --model_args "'"${lc_model_args}"'" \
+                    --tasks "'"${phase3_tasks}"'" \
+                    --batch_size '"${batch_size}"' \
+                    --gen_kwargs max_gen_toks='"${MAX_GEN_TOKS}"' \
+                    ${LM_EVAL_LIMIT_FLAGS} \
+                    --cache_requests true \
+                    --use_cache /lm_eval_cache/responses.sqlite \
+                    ${UNSAFE_CODE_FLAG} \
+                    --output_path /results/ \
+                    --log_samples 2>&1 | tee /logs/'"${model_name}"'_phase3.log
             fi
 
             # Tear down vLLM server
@@ -646,12 +871,31 @@ if source is not None:
     fi
 }
 
+# --models filter: scope which models run (default: all). "base" matches BASE_NAME.
+# Used by the pre-flight diagnostic (AGENTS.md #10) to evaluate only the base
+# model with a sample cap before committing to the full multi-day pipeline.
+should_run_model() {
+    local name="$1"
+    [[ -z "${MODELS_FILTER:-}" ]] && return 0          # no filter → run all
+    [[ "$name" == "${BASE_NAME}" ]] && echo ",${MODELS_FILTER}," | grep -qF ",base," && return 0
+    echo ",${MODELS_FILTER}," | grep -qF ",${name}," && return 0
+    return 1
+}
+
 # Run base model
-run_lm_eval "${BASE_NAME}" "${BASE_DIR}" || true
+if should_run_model "${BASE_NAME}"; then
+    run_lm_eval "${BASE_NAME}" "${BASE_DIR}" || true
+else
+    log "[filter] skipping base model ${BASE_NAME} (--models '${MODELS_FILTER}')"
+fi
 
 # Run each variant
 for variant in $VARIANT_NAMES; do
-    variant_path_var="VARIANT_PATH_$(echo "$variant" | tr '-' '_')"
+    if ! should_run_model "$variant"; then
+        log "[filter] skipping variant ${variant} (--models '${MODELS_FILTER}')"
+        continue
+    fi
+    variant_path_var="VARIANT_PATH_$(echo "$variant" | tr '.-' '__')"
     run_lm_eval "${variant}" "${!variant_path_var}" || true
 done
 

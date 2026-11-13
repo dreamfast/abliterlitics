@@ -28,12 +28,12 @@ GPU configuration, topology detection, and multi-GPU strategies for Abliterlitic
 ### Recommended
 
 - 1x NVIDIA GPU with ≥32 GB VRAM (for up to 14B models)
-- 2x GPUs with combined ≥48 GB VRAM (for up to 27B models with TP=2 or BNB4)
+- 2x GPUs with combined ≥48 GB VRAM (for up to 27B models with TP=2, or single-GPU with FP8)
 
 ### Large Model (27B+, MoE)
 
 - 2x GPUs with combined ≥56 GB VRAM
-- Or single GPU with BitsAndBytes 4-bit quantization
+- Or single GPU with dynamic FP8 quantization
 - Or GGUF + llama.cpp fallback (works with CPU+GPU hybrid)
 
 ### Software
@@ -54,16 +54,16 @@ docker info | grep -i runtime
 
 Abliterlitics auto-detects GPU topology via `nvidia-smi`:
 
-```
-$ python3 -c "from src.gpu import detect_gpus; [print(g) for g in detect_gpus()]"
-GPUInfo(index=0, name='NVIDIA GeForce RTX 5090', vram_mb=32768, ...)
-GPUInfo(index=1, name='NVIDIA GeForce RTX 4090', vram_mb=24576, ...)
+```bash
+nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader,nounits
+# 0, NVIDIA GeForce RTX 5090, 32607
+# 1, NVIDIA GeForce RTX 4090, 24564
 ```
 
 ### Detection Logic
 
 1. Run `nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader,nounits`
-2. Parse results into `GPUInfo` dataclass
+2. Parse GPU count, names, and VRAM in the shell runners
 3. Map host GPU indices to Docker indices (see below)
 
 ### What Gets Detected
@@ -99,10 +99,12 @@ CUDA_VISIBLE_DEVICES=0,1  # Host index 0 first → Docker cuda:0
 CUDA_VISIBLE_DEVICES=1,0  # Host index 1 first → Docker cuda:0
 ```
 
-The `select_strategy()` function in `gpu.py` automatically:
-1. Sorts GPUs by VRAM descending
-2. Sets `CUDA_VISIBLE_DEVICES` so the largest GPU becomes `cuda:0`
-3. Passes `NVIDIA_VISIBLE_DEVICES` for the Docker GPU filter
+GPU selection happens in the runners (no separate Python GPU module):
+
+- `runners/run_lm_eval.sh` accepts `--gpus single|dual|0|1|0,1` (or the
+  `settings.lm_eval_gpus` comparison.json key) and picks the largest-VRAM GPU by
+  default, pinning it via `NVIDIA_VISIBLE_DEVICES`.
+- Weight/KL/HarmBench runners accept the global `--gpu N` flag (`./abliterlitics.sh --gpu 0 ...`).
 
 ### Manual Override
 
@@ -116,33 +118,18 @@ The `select_strategy()` function in `gpu.py` automatically:
 
 ## 4. Execution Strategies
 
-The `select_strategy()` function decides how to run based on model size and available VRAM:
+### Decision Matrix (lm-eval runner)
 
-### Decision Matrix
+| Condition | Strategy |
+|---|---|
+| Model fits one GPU (default) | Single GPU, BF16, `gpu_memory_utilization: 0.9` |
+| `--gpus dual` (or `settings.lm_eval_gpus: "dual"`) | TP=2 across both GPUs with NCCL flags |
+| Model > 50 GB on disk and no FP8 setting | Dual TP2 is auto-selected — pass `--gpus 0` to pin single-GPU explicitly |
+| `settings.lm_eval_quantization: "fp8"` | Dynamic online FP8 (~half the weight footprint; effective on-disk size is halved for the GPU heuristic, so large models stay single-GPU) |
+| Model exceeds available VRAM / unsupported arch | GGUF fallback (llama.cpp) |
 
-| Model Size | Available VRAM | Strategy |
-|---|---|---|
-| < 8 GB | ≥ 16 GB single GPU | Single GPU, BF16 |
-| 8-16 GB | ≥ 16 GB single GPU | Single GPU, BF16 |
-| 16-30 GB | ≥ 32 GB single GPU | Single GPU, BF16 |
-| 16-30 GB | 16-31 GB single GPU | Single GPU, BNB4 quantization |
-| 16-52 GB | ≥ 48 GB combined | TP=2 across both GPUs |
-| > 52 GB | < 48 GB combined | GGUF fallback (llama.cpp) |
-
-### Strategy Output
-
-```python
-{
-    "single_gpu": True,
-    "gpu": GPUInfo(index=0, name='RTX 5090', vram_mb=32768),
-    "use_gguf": False,
-    "docker_gpu_args": ["--runtime=nvidia", "-e", "NVIDIA_VISIBLE_DEVICES=0", ...],
-    "gpu_memory_utilization": 0.9,
-    "tensor_parallel": 1,
-    "nccl_flags": {},
-    "needs_conversion": False,
-}
-```
+**GPU-1 policy:** in the standard two-GPU dev setup, GPU 1 is reserved for other work.
+Pin `--gpus 0` (or the comparison setting) unless the user explicitly authorizes GPU 1.
 
 ---
 
@@ -179,28 +166,32 @@ Expect ~30% throughput penalty compared to single-GPU due to:
 
 ---
 
-## 6. Single-GPU Fallback
+## 6. Quantization and GPU Memory Utilization
 
-### BitsAndBytes 4-bit Quantization
+### Dynamic FP8 (recommended for large models)
 
-For models that don't quite fit in a single GPU:
+For models that don't fit a single GPU, enable dynamic online FP8 via the comparison
+settings:
 
-```python
-from transformers import BitsAndBytesConfig
-config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_compute_dtype=torch.bfloat16,
-)
+```json
+{
+  "settings": {
+    "lm_eval_quantization": "fp8",
+    "lm_eval_gpus": "0"
+  }
+}
 ```
 
-**Impact:**
-- Reduces VRAM usage by ~4x
-- Minimal accuracy impact on benchmarks (<1% on MMLU)
-- Required for 27B models on 32 GB GPUs
+- ~2x weight reduction vs BF16 with the default online quantization path (applies
+  uniformly to base and variants, so deltas stay comparable)
+- Keeps mamba/norm internals unquantized; only linear layers quantize
+- On tight VRAM, cap `--max-num-batched-tokens` via `settings.lm_eval_extra_vllm_flags`
+  (prompt_logprobs transients scale with batched tokens × vocab)
 
-**When auto-selected:**
-- Model size > single GPU VRAM * 0.85
-- Model size ≤ single GPU VRAM * 4 (BNB4 can compress ~4x)
+### BitsAndBytes 4-bit (legacy)
+
+BNB4 is legacy and no longer auto-selected — it measurably damages benchmark scores.
+Prefer FP8 (above) or GGUF.
 
 ### GPU Memory Utilization
 
@@ -216,7 +207,7 @@ The `gpu_memory_utilization` parameter (default 0.9) controls how much VRAM vLLM
 
 ### When GGUF is Needed
 
-- Model exceeds combined GPU VRAM even with BNB4
+- Model exceeds combined GPU VRAM even with FP8
 - Model has compatibility issues with vLLM (e.g., specific architecture support)
 - Running on limited hardware
 

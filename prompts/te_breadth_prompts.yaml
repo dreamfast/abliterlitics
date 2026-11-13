@@ -1,0 +1,161 @@
+# Breadth battery — is the abliteration shift uniform across prompt categories?
+# Phase 5 (P10). 4 categories x 4 prompts, styled like the stress suite
+# (structured camera-style descriptions, countable elements, quoted text).
+# Generated with: base, heretic, base_int8 (floor control), base_int4
+# (visible-damage control) x seeds 42,43 -> LPIPS-vs-base + CLIP per category.
+prompts:
+  - text: >-
+      Vast alpine landscape photograph at dawn, shot from a high ridge. A mirror-still
+      glacial lake fills the middle ground, reflecting three sharp snow-capped peaks.
+      A narrow hiking trail snakes along the left shoreline. Low clouds rest in the
+      valley on the right, and the first sunlight paints the highest summit in warm
+      orange against a cold blue sky. Patches of alpine flowers in the foreground:
+      five purple gentians near a grey boulder. Wide-angle 24mm lens, deep depth of
+      field, crisp detail, realistic landscape photography.
+    category: landscape
+    label: alpine_dawn_lake
+  - text: >-
+      Desert dune seas at golden hour, aerial view from a small plane. Long parallel
+      dune ridges cast sharp shadows, their crests highlighted in warm gold. A single
+      set of camel footprints crosses the largest dune from bottom left toward the
+      center. A tiny oasis with two palm trees sits in the trough between the second
+      and third dune. A lone 4x4 vehicle track curves along the right edge.
+      Telephoto compression, rich texture detail on the sand ripples, realistic
+      aerial photography.
+    category: landscape
+    label: desert_dunes_aerial
+  - text: >-
+      Moody coastline in storm light. Giant waves crash against black basalt cliffs
+      on the left, spray rising high. A white lighthouse with a red lantern room
+      stands on the headland at right, its beam just visible. Wet rock shelves in
+      the foreground reflect the dark sky. Six seabirds hold formation against the
+      wind in the upper left. Dramatic clouds, shafts of light breaking through,
+      long-exposure water motion, realistic seascape photography.
+    category: landscape
+    label: storm_coast_lighthouse
+  - text: >-
+      Autumn forest interior in fog. Tall beech trees fade into soft mist in layered
+      planes of yellow and amber. A carpet of fallen leaves covers a narrow dirt path
+      that curves from bottom right into the depth of the frame. One ancient oak with
+      a thick mossy trunk anchors the left foreground. Pale sun disc barely visible
+      through the canopy. 50mm lens, natural muted palette, quiet atmosphere,
+      realistic nature photography.
+    category: landscape
+    label: foggy_autumn_forest
+
+  - text: >-
+      Studio portrait photograph of a 60-year-old fisherman with a weathered face,
+      deep smile lines, and a full grey beard. He wears a yellow raincoat over a
+      dark knit sweater. Soft large-source key light from camera left, subtle rim
+      light separating him from a deep grey background. Sharp focus on the eyes,
+      every pore and salt-crusted eyebrow visible. Slight head tilt, direct calm
+      gaze into the lens. 85mm portrait lens, shallow depth of field, realistic
+      photography.
+    category: portrait
+    label: fisherman_portrait
+  - text: >-
+      Environmental portrait of a young female ceramicist in her sunlit workshop.
+      She sits at a pottery wheel shaping a wet clay bowl, hands speckled with pale
+      slip, apron dusted with clay powder. Wooden shelves behind her hold rows of
+      glazed ceramics in teal and cream. Warm afternoon light streams through a
+      large window on the right, dust motes visible in the beam. Candid mid-motion
+      expression of quiet concentration. 35mm lens, natural light, realistic
+      documentary photography.
+    category: portrait
+    label: ceramicist_workshop
+  - text: >-
+      Formal oil-painting-style portrait of a middle-aged opera singer in a dark
+      green velvet gown with a pearl necklace. Chiaroscuro lighting from a single
+      high window on the left, deep shadow background in umber and black. She holds
+      a folded fan in her right hand and looks slightly off-frame to the left.
+      Visible painterly brush texture, rich glazing, museum portrait composition,
+      classical portraiture.
+    category: portrait
+    label: opera_singer_classical
+  - text: >-
+      Street portrait at night under neon signs in a rainy city. A 30-year-old man
+      in a clear plastic rain jacket over a hoodie looks over his shoulder toward
+      the camera, caught mid-stride. Neon signage in Japanese katakana glows pink
+      and blue behind him, reflections streaking across the wet asphalt. Shallow
+      depth of field, 50mm lens, high ISO grain, cinematic street photography,
+      realistic.
+    category: portrait
+    label: neon_street_portrait
+
+  - text: >-
+      Chalkboard cafe menu illustration, hand-lettered design. The header reads
+      "MORNING BREW" in large ornate chalk letters with flourishes at the top.
+      Below it, three menu lines in smaller neat chalk script: "Espresso — 3",
+      "Latte — 4", "Mocha — 5", each followed by a small hand-drawn cup icon.
+      A chalk-drawn steaming cup sits in the bottom right corner. Dark slate
+      background, white and pastel-yellow chalk, clear legible lettering,
+      centered composition.
+    category: text_render
+    label: chalkboard_menu
+  - text: >-
+      Vintage travel poster of a mountain railway. Bold condensed sans-serif title
+      "SKYLINE RAILWAY" arcs across the top in cream letters. Center illustration:
+      a red steam train crossing a stone viaduct toward a stylized triangular peak.
+      Bottom banner in small capitals reads "DAILY DEPARTURES — PLATFORM 7". Warm
+      cream, rust red, and deep teal palette, screen-print texture, 1930s travel
+      poster style, crisp readable typography.
+    category: text_render
+    label: railway_poster
+  - text: >-
+      Macro photograph of a vintage typewriter page mid-line. The typed sentence
+      reads "the measurement is the cure for the argument" in black ink on cream
+      paper, the carriage return lever frozen mid-motion, the next typebar raised.
+      Shallow depth of field, the words in razor-sharp focus, soft window light
+      from the left, dust on the ribbon spool visible, realistic photography.
+    category: text_render
+    label: typewriter_sentence
+  - text: >-
+      Product packaging design for a hot sauce bottle, front label flat view.
+      The brand name "DRAGON FIRE" in bold distressed white capitals on a black
+      label, with a small red chili pepper icon between the two words. Beneath it
+      a thin gold banner reading "SMALL BATCH — EXTRA HOT". Bottom line in small
+      print: "aged habanero and smoked garlic". Matte black bottle, minimal
+      layout, crisp vector typography, studio product render.
+    category: text_render
+    label: hot_sauce_label
+
+  - text: >-
+      Busy farmers market stall in the morning. A vendor in a striped apron hands
+      a paper bag across the counter to an elderly customer in a headscarf. On the
+      counter: a pyramid of exactly seven oranges on the left, a crate of purple
+      eggplants in the center, and a scale with red tomatoes on the right. Two
+      hanging bunches of bananas sway above the stall, and a chalkboard price sign
+      leans against the eggplant crate. Behind the stall, three more shoppers
+      browse. Warm sunlight, 35mm lens, candid documentary photography, realistic.
+    category: multi_subject
+    label: farmers_market_stall
+  - text: >-
+      Family game night around a wooden kitchen table. A grandmother, a father,
+      and two children play a board game: the board shows a winding path with
+      colored squares, four player tokens (red, blue, green, yellow) visible.
+      The father rolls white dice while the youngest child reaches for a red
+      token. Two mugs of cocoa and a bowl of popcorn sit at the table corners.
+      Warm overhead pendant light, cozy evening atmosphere, 35mm lens, candid
+      realistic photography.
+    category: multi_subject
+    label: game_night_family
+  - text: >-
+      Workshop scene of three craftspeople restoring a vintage motorcycle. The
+      bike's red fuel tank is off, resting on a wooden bench. One mechanic in
+      blue overalls leans into the engine, a second holds a chrome fender up to
+      the light, and a third sits cross-legged cleaning a wheel spoke by spoke.
+      Tools hang in rows on the pegboard wall behind them. An orange shop cat
+      sits on a stool in the corner. Industrial window light, wide 24mm lens,
+      realistic documentary photography.
+    category: multi_subject
+    label: motorcycle_workshop
+  - text: >-
+      Train station platform scene in winter. A red commuter train stands at the
+      platform on the left with its doors open. A conductor in a navy uniform and
+      peaked cap checks a pocket watch. A student with a huge backpack and a
+      scarf runs along the platform, breath visible in the cold. An elderly man
+      feeds crumbs to exactly four pigeons near a bench on the right. Snow falls
+      softly, lit by the platform's warm lamps. 35mm lens, cinematic winter
+      photography, realistic.
+    category: multi_subject
+    label: winter_train_platform

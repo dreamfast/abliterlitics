@@ -16,7 +16,6 @@ Without --comparison, compares exactly two variants specified via CLI.
 from __future__ import annotations
 
 import argparse
-import gc
 import json
 import logging
 from pathlib import Path
@@ -24,22 +23,12 @@ from pathlib import Path
 import torch
 
 from src.config import ComparisonConfig, make_metadata
-from src.model_config import build_shard_map, detect_architecture, load_tensor
+from src.model_config import build_shard_map, detect_architecture
+from src.weight._common import StreamStats, cosine_sim, iter_common_tensors, safe_mean, safe_median
 
 log = logging.getLogger(__name__)
 
 THRESHOLD = 1e-10
-
-
-def cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
-    a_f = a.float().flatten()
-    b_f = b.float().flatten()
-    dot = (a_f * b_f).sum()
-    na = a_f.norm()
-    nb = b_f.norm()
-    if na < 1e-12 or nb < 1e-12:
-        return 0.0
-    return max(-1.0, min(1.0, (dot / (na * nb)).item()))
 
 
 def project_out(vec: torch.Tensor, direction: torch.Tensor) -> torch.Tensor:
@@ -50,18 +39,6 @@ def project_out(vec: torch.Tensor, direction: torch.Tensor) -> torch.Tensor:
         return vec.float()
     proj = (v * d).sum() / denom
     return (v - proj * d).reshape(vec.shape)
-
-
-def safe_mean(lst: list[float]) -> float | None:
-    return sum(lst) / len(lst) if lst else None
-
-
-def safe_median(lst: list[float]) -> float | None:
-    if not lst:
-        return None
-    s = sorted(lst)
-    mid = len(s) // 2
-    return (s[mid - 1] + s[mid]) / 2 if len(s) % 2 == 0 else s[mid]
 
 
 def run_analysis(
@@ -88,17 +65,17 @@ def run_analysis(
 
     cosines: list[float] = []
     per_key: list[dict] = []
+    stats = StreamStats()
 
-    for i, ck in enumerate(all_keys):
-        t_base = load_tensor(base_map, ck)
-        t_a = load_tensor(mapa, ck)
-        t_b = load_tensor(mapb, ck)
-        if t_base is None or t_a is None or t_b is None:
-            continue
-
-        t_base = t_base.float()
-        t_a = t_a.float()
-        t_b = t_b.float()
+    for _i, ck, tensors in iter_common_tensors(
+        [base_map, mapa, mapb],
+        keys=all_keys,
+        stats=stats,
+        progress=lambda i, total: log.info("  processed %d/%d", i + 1, total),
+    ):
+        t_base = tensors[0].float()
+        t_a = tensors[1].float()
+        t_b = tensors[2].float()
         delta_a = t_a - t_base
         delta_b = t_b - t_base
 
@@ -131,9 +108,6 @@ def run_analysis(
 
         per_key.append(entry)
         del t_base, t_a, t_b, delta_a, delta_b
-        if (i + 1) % 200 == 0:
-            gc.collect()
-            log.info("  processed %d/%d", i + 1, len(all_keys))
 
     by_type: dict[str, list[dict]] = {}
     for r in per_key:
@@ -158,6 +132,7 @@ def run_analysis(
             "architecture": {"family": cfg.family, "layers": cfg.layer_count},
             "variants": [label_a, label_b],
             "total_keys": len(all_keys),
+            "shape_skipped": stats.shape_skipped,
             "pairwise_cosines": {
                 f"{label_a}_vs_{label_b}": {
                     "mean": safe_mean(cosines),

@@ -2,7 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Abliterlitics Comparison Configuration",
   "type": "object",
-  "required": ["name", "base", "variants"],
+  "required": [
+    "name",
+    "base",
+    "variants"
+  ],
   "additionalProperties": false,
   "properties": {
     "name": {
@@ -20,12 +24,18 @@
       "patternProperties": {
         "^[a-z0-9][a-z0-9_-]*$": {
           "type": "object",
-          "required": ["path"],
+          "required": [
+            "path"
+          ],
           "additionalProperties": false,
           "properties": {
             "path": {
               "type": "string",
               "description": "Directory name of the variant model."
+            },
+            "lora_adapter_path": {
+              "type": "string",
+              "description": "Optional PEFT LoRA adapter directory (relative to comparison.json). When set, the model dir is served as the BASE and the adapter is applied dynamically at serving time (--enable-lora) instead of loading a merged model. See AGENTS.md lessons #50/#55a."
             },
             "display_name": {
               "type": "string",
@@ -46,6 +56,23 @@
             "skip_weight": {
               "type": "boolean",
               "default": false
+            },
+            "skip_te": {
+              "type": "boolean",
+              "default": false,
+              "description": "Skip text-encoder analysis for this variant."
+            },
+            "te_file": {
+              "type": "string",
+              "description": "Path to this variant's text encoder safetensors (ComfyUI format). Required for text-encoder analysis."
+            },
+            "te_reference": {
+              "type": "string",
+              "description": "Variant NAME to compare against instead of the global base (e.g. heretic_int8 -> base_int8 isolates abliteration damage at matched quant). The named variant must also have a te_file."
+            },
+            "notes": {
+              "type": "string",
+              "description": "Free-form notes about the variant (method, recipe, provenance). Ignored by pipeline; for documentation/forensics context."
             }
           }
         }
@@ -57,40 +84,119 @@
       "additionalProperties": false,
       "properties": {
         "gguf_dir": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Directory for GGUF files. null = auto-convert when needed."
         },
         "tokenizer_dir": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Tokenizer directory for lm-eval. null = use base model."
         },
         "inference_backend": {
           "type": "string",
-          "enum": ["vllm", "llamacpp", "ik_llamacpp", "auto"],
+          "enum": [
+            "vllm",
+            "llamacpp",
+            "ik_llamacpp",
+            "auto"
+          ],
           "default": "auto",
           "description": "Inference backend for benchmarks. 'auto' selects based on model size and GPU VRAM."
         },
         "lm_eval_tasks": {
           "type": "string",
-          "default": "mmlu,gsm8k,hellaswag,arc_challenge,winogrande,truthfulqa,piqa,lambada_openai"
+          "default": "leaderboard_mmlu_pro,leaderboard_gpqa_diamond,leaderboard_bbh,leaderboard_musr,leaderboard_ifeval,gsm8k,truthfulqa",
+          "description": "Comma-separated lm-eval task list. Default is the Open LLM Leaderboard v2 core; the extended 13-task suite adds hellaswag, winogrande, arc_challenge, piqa, lambada_openai, humaneval (see AGENTS.md Benchmark Tasks)."
         },
         "lm_eval_max_gen_toks": {
           "type": "integer",
-          "default": 2048,
-          "description": "Maximum generation tokens for generate_until tasks (GSM8K, TruthfulQA)."
+          "default": 4096,
+          "description": "Maximum generation tokens for generate_until tasks (Phase 1). GSM8K Phase 2 is auto-capped to max_model_len - 1024."
         },
         "lm_eval_max_model_len": {
           "type": "integer",
-          "default": 8192,
-          "description": "Maximum model context length for vLLM."
+          "default": 16384,
+          "description": "Maximum model context length for vLLM (BBH 3-shot needs context)."
         },
         "harmbench_max_tokens": {
           "type": "integer",
           "default": 8096,
           "description": "Maximum generation tokens for HarmBench. Reasoning models need ~5K thinking + ~3K response."
         },
+        "harmbench_gpu_util": {
+          "type": "number",
+          "default": null,
+          "description": "GPU memory utilization for HarmBench vLLM serving. Dedicated knob: HarmBench has no prompt_logprobs, so it can run a higher util than lm-eval's fp32-transient floor (lessons #67/#70). Empty = fall back to lm_eval_gpu_util."
+        },
+        "gsm8k_gen_toks": {
+          "type": "integer",
+          "default": 7168,
+          "description": "Max generation tokens for GSM8K (Phase 2). Reasoning models need ~5K thinking + ~2K answer room. Auto-capped to max_model_len - 1024 by runner."
+        },
+        "lm_eval_gpu_util": {
+          "type": [
+            "number",
+            "string"
+          ],
+          "default": "",
+          "description": "vLLM gpu_memory_utilization override (0-1). Empty string = use runner default."
+        },
+        "lm_eval_quantization": {
+          "type": "string",
+          "enum": [
+            "",
+            "fp8",
+            "bitsandbytes"
+          ],
+          "default": "",
+          "description": "vLLM quantization for lm-eval + HarmBench serving. Empty = bf16 native. 'fp8' = dynamic online FP8 from the BF16 checkpoint (AGENTS.md lesson #53) for models whose BF16 weights exceed a single GPU \u2014 identical quantization path for base + variants."
+        },
+        "lm_eval_kv_cache_dtype": {
+          "type": "string",
+          "default": "",
+          "description": "vLLM --kv-cache-dtype (e.g. 'fp8'). Memory lever for tight FP8 budgets; empty = default (auto/bf16 KV)."
+        },
+        "lm_eval_language_model_only": {
+          "type": [
+            "integer",
+            "boolean"
+          ],
+          "default": 0,
+          "description": "Pass --language-model-only to vLLM (skips the vision tower for multimodal models on text-only benchmarks). Decisive memory lever for FP8-on-32GB recipes (lesson #53)."
+        },
+        "lm_eval_gpus": {
+          "type": "string",
+          "default": "",
+          "description": "Pin GPU selection for the lm-eval runner (same values as --gpus: single/dual/0/1/0,1). REQUIRED for models >50GB on disk served quantized on one GPU \u2014 prevents the auto-dual TP2 heuristic from touching GPU 1."
+        },
+        "lm_eval_extra_vllm_flags": {
+          "type": "string",
+          "default": "",
+          "description": "Extra raw flags appended to the vLLM server command (last-wins). Required for FP8 + huge-vocab (>=~200K) models where prompt_logprobs fp32 transients OOM the engine (lesson #67), e.g. '--gpu-memory-utilization 0.94 --max-num-batched-tokens 512'. MUST be set here rather than as ad-hoc launch env: the watchdog relaunches with a bare environment and would silently drop it."
+        },
+        "lm_eval_speculative_tokens": {
+          "type": "integer",
+          "default": 0,
+          "description": "MTP speculative decoding tokens (e.g. 3) for vLLM serving. Pure inference acceleration: at temperature=0 outputs are EXACTLY identical with/without it. Runners auto-skip for models lacking mtp.* tensors (dropped-MTP variants). 0 = off."
+        },
+        "lmeval_image": {
+          "type": "string",
+          "description": "Docker image override for lm-eval stage. Per-comparison override (AGENTS.md lesson #11). Example: 'abliterlitics-lmeval-gemma4unified:1.0.0' for Gemma4UnifiedForConditionalGeneration."
+        },
+        "forensics_image": {
+          "type": "string",
+          "description": "Docker image override for weights/kl forensics stages. Defaults to abliterlitics-forensics:1.0.0."
+        },
         "reasoning_parser": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "default": null,
           "description": "Override reasoning parser for vLLM. null = auto-detect from model config.json. Set to 'none' to disable."
         },
@@ -101,6 +207,92 @@
         "kl_dataset": {
           "type": "string",
           "default": "mlabonne/harmless_alpaca"
+        },
+        "tebench": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Text-encoder conditioning fidelity analysis settings. ComfyUI-format safetensors.",
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": [
+                "zimage",
+                "ltx2",
+                "h3",
+                "ltx25",
+                "krea2"
+              ],
+              "description": "Which text-encoder backend to use."
+            },
+            "base_te_file": {
+              "type": "string",
+              "description": "Path to the BASE text encoder safetensors (ComfyUI format)."
+            },
+            "dit_file": {
+              "type": "string",
+              "description": "Path to the diffusion model safetensors (projection source)."
+            },
+            "quant_floor_file": {
+              "type": "string",
+              "description": "Path to a REAL quantized base safetensors (e.g. base_int8) used as the noise floor instead of fake-quantizing. Makes damage-in-quant-units literal. File must exist; falls back to fake-quant when absent."
+            },
+            "comfyui_path": {
+              "type": "string",
+              "description": "Path to the ComfyUI repo (contains comfy/). Mount target inside Docker: /comfyui. No default \u2014 set per environment (e.g. via env override in the te runners)."
+            },
+            "max_length": {
+              "type": "integer",
+              "default": 1024
+            },
+            "device": {
+              "type": "string",
+              "default": "cpu"
+            },
+            "n_boot": {
+              "type": "integer",
+              "default": 1000
+            },
+            "prompt_suite": {
+              "type": "string",
+              "default": "default"
+            },
+            "img_clip_model": {
+              "type": "string",
+              "default": "ViT-L-14",
+              "description": "open_clip model for image-space metrics (CLIP-score + image-embedding distance)."
+            },
+            "img_clip_pretrained": {
+              "type": "string",
+              "default": "openai",
+              "description": "open_clip pretrained tag for img_clip_model."
+            },
+            "img_reference": {
+              "type": "string",
+              "description": "Reference variant for image-space TE-swap pairs \u2014 a near-lossless base quant (e.g. base_int8). Defaults to base_int8."
+            },
+            "img_floor_pair": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "Two near-lossless base quants defining the quant-floor band in image space. Defaults to [base_int8, base_fp8]."
+            },
+            "te_image": {
+              "type": "string",
+              "description": "Docker image override for text-encoder stage. Defaults to abliterlitics-te:1.2.0 (runners/common.sh TE_IMAGE)."
+            },
+            "whisper_model": {
+              "type": "string",
+              "description": "Whisper ASR model (HF id) for the H3 audio battery."
+            },
+            "frame_sample_n": {
+              "type": "integer",
+              "minimum": 2,
+              "description": "Frames sampled per clip for H3 video frame-LPIPS/CLIP metrics."
+            }
+          }
         }
       }
     }

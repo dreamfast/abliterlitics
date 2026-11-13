@@ -6,6 +6,9 @@ build-backend = "setuptools.build_meta"
 name = "abliterlitics"
 version = "1.0.0"
 description = "Comparative forensic analysis of LLM abliteration techniques"
+readme = "README.md"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "dreamfast" }]
 requires-python = ">=3.10"
 dependencies = [
     "tqdm>=4.65.0",
@@ -13,11 +16,17 @@ dependencies = [
     "matplotlib>=3.7.0",
     "seaborn>=0.12.0",
     "matplotlib-venn>=1.1.0",
+    "torch>=2.1.0",
     "transformers>=4.45.0",
     "accelerate>=0.26.0",
     "datasets>=2.18.0",
-    "bitsandbytes>=0.43.0",
     "jsonschema>=4.20.0",
+    "numpy>=1.24.0",
+    "pyyaml>=6.0",
+    "requests>=2.31.0",
+    "av>=11.0",
+    "gguf>=0.6",
+    "flask>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +39,10 @@ dev = [
 
 [tool.ruff]
 line-length = 120
+# Honor `exclude` (top-level and [tool.ruff.format]) even for explicitly
+# passed paths — needed so `ruff format --check <vendored file>` skips it
+# while lint per-file-ignores still apply.
+force-exclude = true
 target-version = "py310"
 # Vendored third-party code and per-comparison workspace scripts are excluded
 # from linting. The vendored convert_hf_to_gguf.py is copied verbatim from the
@@ -48,7 +61,7 @@ extend-exclude = [
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
 
 # Math/linear-algebra conventions: U, S, Vh are standard SVD variable names.
-# Report generation: long f-strings in provenance reports are acceptable.
+# Report generation: long f-strings in generated reports are acceptable.
 # E741: single-letter loop variables (l) are acceptable in matplotlib contexts.
 # E501: long lines in docstrings/comments in benchmark scripts accepted.
 [tool.ruff.lint.per-file-ignores]
@@ -57,7 +70,8 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
 "src/weight/subspace_alignment.py" = ["N806"]              # A, B, Q_a, Q_b, M from linear algebra
 "src/weight/stacking_analysis.py" = ["N806"]                # D_a, D_b, D_r, D_e are edit vectors
 "src/report/generate_graphs.py" = ["E741", "E501"]         # l in matplotlib labels, long format strings
-"src/report/provenance_report.py" = ["E501", "N802"]       # Long f-strings in reports, L() helper
+"src/text_encoder/generate_report.py" = ["E501"]            # Long HTML template f-strings in TE report
+"src/text_encoder/backends/gguf_dequant.py" = ["N802", "N806", "E501"]  # Vendored verbatim from ComfyUI-GGUF (city96) — do not rename/reformat
 "src/kl/kl_divergence.py" = ["N812", "E501", "N806"]       # torch.nn.functional as F, AutoModelClass, long log messages (FROZEN module)
 "src/benchmark/benchmark_eval.py" = ["N806", "E501", "B905"]  # BitsAndBytesConfig, docstring lines, zip
 "src/benchmark/harmbench_classify.py" = ["E501"]            # Long docstring and regex patterns
@@ -122,3 +136,8 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.format]
+# Vendored verbatim from ComfyUI-GGUF (city96) — byte-fidelity with upstream
+# beats formatter preferences; lint still runs via per-file-ignores above.
+exclude = ["src/text_encoder/backends/gguf_dequant.py"]

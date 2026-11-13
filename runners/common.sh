@@ -18,6 +18,7 @@ FORENSICS_IMAGE="${FORENSICS_IMAGE:-abliterlitics-forensics:1.0.0}"
 LMEVAL_IMAGE="${LMEVAL_IMAGE:-abliterlitics-lmeval:1.0.0}"
 LLAMACPP_IMAGE="${LLAMACPP_IMAGE:-abliterlitics-llamacpp:1.0.0}"
 IK_LLAMACPP_IMAGE="${IK_LLAMACPP_IMAGE:-abliterlitics-ik-llamacpp:1.0.0}"
+TE_IMAGE="${TE_IMAGE:-abliterlitics-te:1.2.0}"
 
 # Source directory (for mounting into Docker)
 ABL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -46,6 +47,52 @@ docker_run() {
         "${docker_args[@]}" \
         "$image" \
         "${command[@]}"
+}
+
+# Docker run helper for CPU-only containers (no --runtime=nvidia).
+# Used by text-encoder analysis which runs on CPU by default.
+# Usage: docker_run_cpu IMAGE [additional docker args] -- [command]
+docker_run_cpu() {
+    local image="$1"; shift
+    local docker_args=()
+    local command=()
+    local found_separator=0
+    for arg in "$@"; do
+        if [[ "$arg" == "--" && $found_separator -eq 0 ]]; then
+            found_separator=1; continue
+        fi
+        if [[ $found_separator -eq 1 ]]; then
+            command+=("$arg")
+        else
+            docker_args+=("$arg")
+        fi
+    done
+    docker run --rm \
+        "${docker_args[@]}" \
+        "$image" \
+        "${command[@]}"
+}
+
+# Map a host path to its in-container path for the TE battery mounts.
+# Shared implementation (was byte-identical in 6 run_te_*/run_text_encoder
+# runners — audit 2026-10-14 duplication set #1). Relies on these globals
+# being set by the CALLER before first use:
+#   COMPARISON_DIR     → /comparison
+#   MODELS_HOST_ROOT   → /models
+#   COMFYUI_HOST_PATH  → /comfyui
+# Paths under none of these roots pass through unchanged (e.g. the comfyui
+# models dir, which is mounted 1:1 at its own absolute path — AGENTS.md #40).
+host_to_container() {
+    local host_path="$1"
+    if [[ "$host_path" == "$COMPARISON_DIR"/* ]]; then
+        echo "/comparison/${host_path#$COMPARISON_DIR/}"
+    elif [[ "$host_path" == "$MODELS_HOST_ROOT"/* ]]; then
+        echo "/models/${host_path#$MODELS_HOST_ROOT/}"
+    elif [[ "$host_path" == "$COMFYUI_HOST_PATH"/* ]]; then
+        echo "/comfyui/${host_path#$COMFYUI_HOST_PATH/}"
+    else
+        echo "$host_path"
+    fi
 }
 
 # Load comparison.json using a Python helper script.
@@ -99,6 +146,27 @@ db_init() {
 db_stage_start() {
     local comp="$1" model="$2" stage="$3"
     python3 -m src.db stage-start --comparison "$comp" --model "$model" --stage "$stage" 2>/dev/null || true
+}
+
+# Lesson #83 guard: read-only check whether a model stage is 'completed'.
+# No-work skip paths must never demote a completed stage — wrap status writes
+# as:  [[ "$(stage_completed C M S)" != "yes" ]] && db_stage_skip/start ...
+# Best-effort: on ANY error returns "no" (write proceeds exactly as before the
+# guard existed). DB is read via file:...?mode=ro; requires the runner's cwd
+# to be the repo root (same assumption as the db_stage_* helpers above).
+stage_completed() {
+    python3 - "$1" "$2" "$3" <<'PYEOF'
+import sqlite3, sys
+try:
+    conn = sqlite3.connect("file:abliterlitics.db?mode=ro", uri=True)
+    row = conn.execute(
+        "SELECT 1 FROM model_stages WHERE comparison=? AND model_name=? AND stage=? AND status='completed'",
+        (sys.argv[1], sys.argv[2], sys.argv[3]),
+    ).fetchone()
+    print("yes" if row else "no")
+except Exception:
+    print("no")
+PYEOF
 }
 
 db_stage_complete() {

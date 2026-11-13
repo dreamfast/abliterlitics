@@ -48,8 +48,8 @@ class ComparisonConfig:
     tokenizer_dir: Path | None
     lm_eval_tasks: str
     inference_backend: str = "auto"
-    lm_eval_max_gen_toks: int = 2048
-    lm_eval_max_model_len: int = 8192
+    lm_eval_max_gen_toks: int = 4096
+    lm_eval_max_model_len: int = 16384
     harmbench_max_tokens: int = 8096
     kl_num_prompts: int = 100
     kl_dataset: str = "mlabonne/harmless_alpaca"
@@ -137,13 +137,19 @@ class ComparisonConfig:
             variants=variants,
             gguf_dir=gguf_dir,
             tokenizer_dir=tokenizer_dir,
+            # Defaults mirror runners/_load_comparison.py (the runner is the
+            # source of truth — tests/test_config.py enforces the lockstep).
+            # Tasks: Open LLM Leaderboard v2 suite per AGENTS.md lesson #9
+            # (the legacy v1 loglikelihood tasks are deprecated). Budgets:
+            # AGENTS.md "Key defaults" table.
             lm_eval_tasks=settings.get(
                 "lm_eval_tasks",
-                "mmlu,gsm8k,hellaswag,arc_challenge,winogrande,truthfulqa,piqa,lambada_openai",
+                "leaderboard_mmlu_pro,leaderboard_gpqa_diamond,leaderboard_bbh,"
+                "leaderboard_musr,leaderboard_ifeval,gsm8k,truthfulqa",
             ),
             inference_backend=settings.get("inference_backend", "auto"),
-            lm_eval_max_gen_toks=settings.get("lm_eval_max_gen_toks", 2048),
-            lm_eval_max_model_len=settings.get("lm_eval_max_model_len", 8192),
+            lm_eval_max_gen_toks=settings.get("lm_eval_max_gen_toks", 4096),
+            lm_eval_max_model_len=settings.get("lm_eval_max_model_len", 16384),
             harmbench_max_tokens=settings.get("harmbench_max_tokens", 8096),
             kl_num_prompts=settings.get("kl_num_prompts", 100),
             kl_dataset=settings.get("kl_dataset", "mlabonne/harmless_alpaca"),
@@ -165,22 +171,6 @@ class ComparisonConfig:
 
     def weight_results_dir(self, base_results_dir: Path) -> Path:
         return self.results_dir(base_results_dir) / "weight"
-
-    def kl_results_dir(self, base_results_dir: Path) -> Path:
-        return self.results_dir(base_results_dir) / "kl"
-
-    def lm_eval_results_dir(self, base_results_dir: Path) -> Path:
-        return self.results_dir(base_results_dir) / "lm_eval"
-
-    def harmbench_results_dir(self, base_results_dir: Path) -> Path:
-        return self.results_dir(base_results_dir) / "harmbench"
-
-    def get_variant(self, name: str) -> VariantConfig:
-        """Get a variant config by name."""
-        for v in self.variants:
-            if v.name == name:
-                return v
-        raise KeyError(f"Variant not found: {name!r}")
 
 
 def _resolve_model_path(path_str: str, comparison_dir: Path) -> Path:
@@ -214,16 +204,16 @@ def _detect_architecture(model_path: Path) -> str:
     Priority: safetensors key scan > model_type from config.json
     """
     # First try: scan safetensors keys (most reliable)
-    try:
-        from safetensors import safe_open
+    from safetensors import SafetensorError, safe_open
 
+    try:
         has_language_model = False
         has_experts = False
         has_mamba = False
         has_gemma4 = False
 
         for f in sorted(model_path.glob("*.safetensors")):
-            with safe_open(str(f), framework="pt", device="cpu") as sf:  # type: ignore[no-untyped-call]
+            with safe_open(str(f), framework="pt", device="cpu") as sf:
                 keys = sf.keys()
             for k in keys:
                 if "language_model" in k:
@@ -245,8 +235,16 @@ def _detect_architecture(model_path: Path) -> str:
             return "glm"
         if has_mamba:
             return "qwen3.5"
-    except Exception:
-        pass  # Fall through to config.json detection
+    except (OSError, SafetensorError, ValueError) as exc:
+        # Corrupted shard or unreadable file: fall back to config.json
+        # detection, but log the real error so a genuine I/O problem is not
+        # indistinguishable from "no safetensors present".
+        log.debug(
+            "safetensors key scan failed for %s (%s: %s); using config.json model_type",
+            model_path,
+            type(exc).__name__,
+            exc,
+        )
 
     # Second try: config.json model_type
     config_file = model_path / "config.json"

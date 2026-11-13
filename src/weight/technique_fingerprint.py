@@ -10,7 +10,6 @@ techniques on unknown models.
 from __future__ import annotations
 
 import argparse
-import gc
 import json
 import logging
 import math
@@ -18,7 +17,14 @@ from collections import Counter
 from pathlib import Path
 
 from src.config import ComparisonConfig, make_metadata
-from src.model_config import build_shard_map, detect_architecture, load_tensor
+from src.model_config import build_shard_map, detect_architecture
+from src.weight._common import (
+    StreamStats,
+    add_batch_args,
+    iter_common_tensors,
+    resolve_results_dir,
+    variant_output_path,
+)
 
 log = logging.getLogger(__name__)
 
@@ -66,9 +72,10 @@ def run_analysis(
     relative_edits: list[float] = []
     per_key: list[dict] = []
 
-    for i, ck in enumerate(all_keys):
-        t_base = load_tensor(base_map, ck).float()
-        t_var = load_tensor(var_map, ck).float()
+    stats = StreamStats()
+    for _i, ck, tensors in iter_common_tensors([base_map, var_map], keys=all_keys, stats=stats):
+        t_base = tensors[0].float()
+        t_var = tensors[1].float()
         delta = t_var - t_base
         norm = delta.norm().item()
         base_norm = t_base.norm().item()
@@ -100,9 +107,6 @@ def run_analysis(
             relative_edits.append(rel)
 
         per_key.append(entry)
-        del t_base, t_var, delta
-        if (i + 1) % 200 == 0:
-            gc.collect()
 
     total_changed = len(edit_norms)
     total_params = sum(e["numel"] for e in per_key if e["changed"])
@@ -144,6 +148,7 @@ def run_analysis(
                 "changed_pct": total_changed / len(all_keys) * 100 if all_keys else 0,
                 "total_params_changed": total_params,
                 "param_edit_density": total_params / total_all_params * 100 if total_all_params else 0,
+                "shape_skipped": stats.shape_skipped,
             },
             "magnitude": {
                 "edit_norm_mean": _safe_mean(edit_norms),
@@ -213,21 +218,18 @@ def run_analysis(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--comparison", help="Path to comparison.json dir (batch mode)")
-    parser.add_argument("--base", help="Base model dir")
+    add_batch_args(parser)
     parser.add_argument("--variant", help="Variant model dir")
     parser.add_argument("--label", help="Variant label")
-    parser.add_argument("--output", help="Output JSON path")
-    parser.add_argument("--results-dir", help="Base results directory")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     if args.comparison:
         config = ComparisonConfig.from_dir(Path(args.comparison))
-        results_dir = Path(args.results_dir) if args.results_dir else config.weight_results_dir(Path("results"))
+        results_dir = resolve_results_dir(args, config)
         for variant in config.variants:
-            out_path = results_dir / variant.name / f"fingerprint_{variant.name}.json"
+            out_path = variant_output_path(results_dir, variant.name, "fingerprint")
             run_analysis(
                 base_path=str(config.base_path),
                 variant_path=str(variant.path),

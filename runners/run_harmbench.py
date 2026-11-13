@@ -25,6 +25,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -35,9 +36,14 @@ log = logging.getLogger(__name__)
 
 ABL_ROOT = Path(__file__).resolve().parent.parent
 
-FORENSICS_IMAGE = "abliterlitics-forensics:1.0.0"
-LMEVAL_IMAGE = "abliterlitics-lmeval:1.0.0"
-LLAMACPP_IMAGE = "abliterlitics-llamacpp:1.0.0"
+# Lesson #64: variant names/dirs are normalized to valid bash identifiers for
+# env-var lookups. MUST stay identical to the normalization in
+# _load_comparison.py (exporter) — this is the consumer side of that contract.
+_SLUG_RE = re.compile(r"[^A-Za-z0-9_]")
+
+FORENSICS_IMAGE = os.environ.get("FORENSICS_IMAGE", "abliterlitics-forensics:1.0.0")
+LMEVAL_IMAGE = os.environ.get("LMEVAL_IMAGE", "abliterlitics-lmeval:1.0.0")
+LLAMACPP_IMAGE = os.environ.get("LLAMACPP_IMAGE", "abliterlitics-llamacpp:1.0.0")
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +58,7 @@ def _db_stage(
     stage: str = "harmbench",
     *,
     result_path: str = "",
+    error_message: str = "",
     dry_run: bool = False,
 ) -> None:
     """Mark a pipeline stage in the SQLite DB. Never raises — DB is best-effort."""
@@ -71,6 +78,8 @@ def _db_stage(
     ]
     if result_path:
         cmd += ["--result-path", result_path]
+    if error_message:
+        cmd += ["--error", error_message[:200]]
     with contextlib.suppress(Exception):
         subprocess.run(cmd, capture_output=True, timeout=30, check=False, cwd=str(ABL_ROOT))
 
@@ -87,6 +96,70 @@ def _db_import_results(comp_dir: str, dry_run: bool = False) -> None:
             check=False,
             cwd=str(ABL_ROOT),
         )
+
+
+def _stage_completed(comparison: str, model: str, stage: str = "harmbench") -> bool:
+    """Best-effort read of a stage's DB status. False on any error (write paths stay authoritative)."""
+    try:
+        import sqlite3
+
+        db_path = Path(ABL_ROOT) / "abliterlitics.db"
+        with contextlib.suppress(Exception):
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+            try:
+                row = conn.execute(
+                    "SELECT status FROM model_stages WHERE comparison=? AND model_name=? AND stage=?",
+                    (comparison, model, stage),
+                ).fetchone()
+            finally:
+                conn.close()
+            return bool(row) and row[0] == "completed"
+    except Exception:
+        pass
+    return False
+
+
+def _mark_stage_complete_if_scored(
+    comparison: str,
+    model: str,
+    score_file: Path,
+    *,
+    dry_run: bool = False,
+) -> bool:
+    """Mark the harmbench stage complete ONLY when the arm actually produced scores.
+
+    Marking complete unconditionally let a FAILED vLLM startup satisfy the
+    watchdog's stage-based queue_done() and exit DONE with 0 response rows
+    for the arm (AGENTS.md lesson #82, 2026-09-10 apostate_diode incident).
+    Returns True iff the stage was marked complete.
+    """
+    if score_file.exists():
+        _db_stage("complete", comparison, model, result_path=str(score_file), dry_run=dry_run)
+        return True
+    log.error("HarmBench incomplete for %s (no scores file) — marking stage FAILED", model)
+    _db_stage(
+        "fail",
+        comparison,
+        model,
+        error_message="generation failed or scores file missing",
+        dry_run=dry_run,
+    )
+    return False
+
+
+def _mark_skip_preserving_completed(comparison: str, model: str, *, dry_run: bool = False) -> None:
+    """Record a no-work pass as 'skip' unless the stage is already 'completed'.
+
+    NEVER demote a 'completed' stage: a watchdog relaunch after natural queue
+    completion re-walks every finished arm, and writing 'skip' over 'completed'
+    makes the watchdog's stage-based queue_done() false forever — relaunch loop
+    until the restart budget is exhausted (AGENTS.md lesson #83, 2026-09-10
+    apostate_diode).
+    """
+    if _stage_completed(comparison, model):
+        log.info("[skip] %s: stage already completed — preserving status", model)
+        return
+    _db_stage("skip", comparison, model, dry_run=dry_run)
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +181,7 @@ def detect_best_gpu() -> int:
             return 0
         best = max(lines, key=lambda ln: int(ln.split(",")[1].strip()))
         return int(best.split(",")[0].strip())
-    except (FileNotFoundError, Exception):
+    except Exception:
         log.warning("nvidia-smi not available, defaulting to GPU 0")
         return 0
 
@@ -117,7 +190,7 @@ def allocate_port() -> int:
     """Find a free TCP port on localhost."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
-        return s.getsockname()[1]
+        return int(s.getsockname()[1])
 
 
 def container_bridge_ip(container_name: str, timeout: int = 60) -> str:
@@ -155,29 +228,6 @@ def container_bridge_ip(container_name: str, timeout: int = 60) -> str:
         container_name,
     )
     return "localhost"
-
-
-def model_size_gb(model_path: str) -> float:
-    """Get model size in GiB — counting SAFETENSORS FILES ONLY.
-
-    The directory may contain GGUF, cache, or other non-model files that
-    would inflate the size. We only care about the actual model weights.
-    Returns 0.0 if no safetensors found or path doesn't exist.
-    """
-    try:
-        size_cmd = (
-            f"find '{model_path}' -maxdepth 1 -name '*.safetensors' -exec du -ck {{}} + 2>/dev/null | tail -1 | cut -f1"
-        )
-        result = subprocess.run(
-            ["bash", "-c", size_cmd],
-            capture_output=True,
-            text=True,
-        )
-        kb = int(result.stdout.strip()) if result.stdout.strip() else 0
-        return kb / 1024 / 1024
-    except (subprocess.CalledProcessError, IndexError, ValueError) as exc:
-        log.warning("Could not determine size of %s: %s", model_path, exc)
-        return 0.0
 
 
 def docker_stop(name: str) -> None:
@@ -238,6 +288,23 @@ def wait_for_llamacpp(base_url: str, timeout: int = 120) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_docker_paths(model_path: str, lora_adapter_path: str = "") -> tuple[str, str]:
+    """Resolve docker bind-mount source paths to ABSOLUTE host paths (lesson #55a).
+
+    BASE_DIR / VARIANT_PATH_* / VARIANT_LORA_ADAPTER_* are string-concat paths
+    from _load_comparison.py and stay RELATIVE whenever the comparison dir is
+    passed relative (e.g. ``./abliterlitics.sh harmbench comparisons/<name>/``).
+    Relative bind sources make docker treat them as volume names → exit 125
+    ("invalid characters for a local volume name"). The LoRA adapter mount is
+    resolved alongside the model dir — the same bug class missed at this site
+    when lesson #55a was applied (runners-python audit, 2026-11).
+    """
+    model_path = str(Path(model_path).resolve())
+    if lora_adapter_path:
+        lora_adapter_path = str(Path(lora_adapter_path).resolve())
+    return model_path, lora_adapter_path
+
+
 def run_generate_vllm(
     model_path: str,
     model_name: str,
@@ -250,8 +317,12 @@ def run_generate_vllm(
     dry_run: bool,
     skip_existing: bool,
     concurrent: int = 4,
+    lora_adapter_path: str = "",
 ) -> Path | None:
     """Phase 1 via vLLM: start server, generate responses, tear down."""
+    # Docker bind-mounts need ABSOLUTE host paths (model dir AND LoRA adapter,
+    # lesson #55a) — see _resolve_docker_paths.
+    model_path, lora_adapter_path = _resolve_docker_paths(model_path, lora_adapter_path)
     out_file = results_dir / f"harmbench_{model_name}_responses.json"
     if skip_existing and out_file.exists():
         log.info("[skip] %s: responses exist", model_name)
@@ -264,9 +335,19 @@ def run_generate_vllm(
 
     # Quantization: ALWAYS native bf16 for fair, consistent comparison conditions.
     # BNB4 quantization damages scores and makes cross-model comparison unfair.
-    # Only enable BNB4 via an explicit override if reviewing persistent OOM errors.
-    use_bnb = False
-    quant_label = "bf16 native"
+    # fp8 = dynamic online FP8 for models whose BF16 weights exceed a single GPU
+    # (AGENTS.md lesson #53) — MUST match the lm-eval arm's quantization so
+    # benchmark and HarmBench numbers share the identical serving path.
+    # Driven by comparison.json settings via _load_comparison.py env exports:
+    #   LM_EVAL_QUANTIZATION (bitsandbytes|fp8|empty=bf16 native)
+    #   LM_EVAL_KV_CACHE_DTYPE (e.g. fp8), LM_EVAL_LANGUAGE_MODEL_ONLY (1)
+    quantization = os.environ.get("LM_EVAL_QUANTIZATION", "").strip().lower()
+    if quantization in ("bnb", "bitsandbytes"):
+        quant_label = "bnb4"
+    elif quantization == "fp8":
+        quant_label = "fp8 dynamic"
+    else:
+        quant_label = "bf16 native"
 
     # Allocate a free port (used as the vLLM listen port inside the container)
     port = allocate_port()
@@ -290,7 +371,12 @@ def run_generate_vllm(
         "--max-model-len",
         str(max_model_len),
         "--gpu-memory-utilization",
-        "0.90",
+        # Dedicated HarmBench knob first: lm_eval_gpu_util (0.94 here, an
+        # lm-eval prompt_logprobs floor, lesson #67/#70) must not silently
+        # bleed into HarmBench — at 0.94 the KV pool (0.66 GiB) is too small
+        # for max_model_len 16384 (needs 0.67). Production arms ran at 0.95
+        # (KV 0.97 GiB / 23,405 fp8 tokens, lesson #53/#59).
+        os.environ.get("HARMBENCH_GPU_UTIL", "").strip() or os.environ.get("LM_EVAL_GPU_UTIL", "").strip() or "0.90",
         "--enforce-eager",
         "--port",
         str(port),
@@ -311,14 +397,73 @@ def run_generate_vllm(
         log.info("  Using thinking chat template: %s", thinking_template)
     else:
         log.info("  No thinking_chat_template.jinja in comparison dir — using model's bundled chat template")
-    if use_bnb:
+    if quantization in ("bnb", "bitsandbytes"):
         server_cmd.extend(["--quantization", "bitsandbytes", "--load-format", "bitsandbytes"])
+    elif quantization == "fp8":
+        # Dynamic online FP8 from the BF16 checkpoint — default load-format
+        # (auto), NOT --load-format fp8 (that expects a pre-quantized repo).
+        server_cmd.extend(["--quantization", "fp8"])
+        kv_dtype = os.environ.get("LM_EVAL_KV_CACHE_DTYPE", "").strip()
+        if kv_dtype:
+            server_cmd.extend(["--kv-cache-dtype", kv_dtype])
+        if os.environ.get("LM_EVAL_LANGUAGE_MODEL_ONLY", "0").strip() == "1":
+            server_cmd.append("--language-model-only")
+
+    # MTP speculative decoding (inference acceleration ONLY — HarmBench
+    # generates at temperature=0, where spec decode is EXACTLY output-
+    # preserving: verification accepts only argmax tokens). Auto-gated on
+    # mtp.* tensor presence in the model index so variants whose tooling
+    # dropped the MTP head (vanilla-heretic re-saves) serve without it,
+    # staying output-comparable.
+    spec_tokens = int(os.environ.get("LM_EVAL_SPEC_TOKENS", "0") or 0)
+    if spec_tokens > 0:
+        try:
+            with open(Path(model_path) / "model.safetensors.index.json") as f:
+                idx = json.load(f)
+            has_mtp = any(k.startswith("mtp.") for k in idx["weight_map"])
+        except Exception:
+            has_mtp = False
+        if has_mtp:
+            server_cmd.extend(
+                [
+                    "--speculative-config",
+                    json.dumps({"method": "mtp", "num_speculative_tokens": spec_tokens}),
+                ]
+            )
+            log.info("  MTP speculative decoding: %d draft tokens", spec_tokens)
+        else:
+            log.info(
+                "  MTP requested but no mtp.* tensors in index for %s — "
+                "serving without spec decode (output-identical at temp=0)",
+                model_name,
+            )
     # Don't pass reasoning parser to vLLM — it misclassifies refusal text as "reasoning"
     # and leaves content empty. Instead, parse <think/> tags ourselves in the generate script.
     # if reasoning_parser:
     #     server_cmd.extend(["--reasoning-parser", reasoning_parser])
     # if reasoning_config_json:
     #     server_cmd.extend(["--reasoning-config", reasoning_config_json])
+
+    # LoRA adapter support (AGENTS.md lesson #35). When a LoRA adapter path is
+    # provided, vLLM loads the base model and applies the adapter dynamically
+    # at FP32 precision. The model_name is registered as the LoRA module name;
+    # HarmBench's --model-name already uses model_name, so requests route to
+    # the adapter automatically.
+    lora_mount: list[str] = []
+    if lora_adapter_path:
+        log.info("  LoRA mode: adapter=%s", lora_adapter_path)
+        server_cmd.extend(
+            [
+                "--enable-lora",
+                "--max-loras",
+                "1",
+                "--max-lora-rank",
+                "8",
+                "--lora-modules",
+                f"{model_name}=/lora_adapter",
+            ]
+        )
+        lora_mount = ["-v", f"{lora_adapter_path}:/lora_adapter:ro"]  # resolved above (lesson #55a)
 
     log.info(
         "  Starting vLLM: %s, %s, max_len=%d",
@@ -341,9 +486,21 @@ def run_generate_vllm(
         f"NVIDIA_VISIBLE_DEVICES={gpu}",
         "-e",
         "CUDA_VISIBLE_DEVICES=0",
+        # flashinfer/flashinfer-cubin version mismatch breaks vLLM 0.26.0 model
+        # inspection on Gemma4Unified (AGENTS.md lesson #12). Set unconditionally.
+        "-e",
+        "FLASHINFER_DISABLE_VERSION_CHECK=1",
+        # HarmBench runs offline (no dataset downloads needed — prompts are local).
+        "-e",
+        "HF_HUB_OFFLINE=1",
+        "-e",
+        "HF_DATASETS_OFFLINE=1",
         "-v",
         f"{model_path}:/model:ro",
     ]
+    # LoRA adapter mount (if applicable)
+    if lora_mount:
+        docker_cmd.extend(lora_mount)
     # Mount comparison dir for thinking chat template
     if thinking_template.exists():
         docker_cmd.extend(["-v", f"{thinking_template.parent}:/comparison:ro"])
@@ -370,10 +527,18 @@ def run_generate_vllm(
         src_mount = f"{ABL_ROOT}/src:/app/src:ro"
         results_mount = f"{results_dir}:/results"
 
+        # Lesson #81: the generate CLIENT container must be trackable — an
+        # un-named --rm container survives external runner death, keeps POSTing
+        # to the now-dead server port, and clobbers the successor's partial file
+        # (whole-file writes, last-writer-wins). Deterministic name → the
+        # finally block below can stop it too.
+        client_name = f"hb-gen-{model_name}-{os.getpid()}"
         generate_cmd = [
             "docker",
             "run",
             "--rm",
+            "--name",
+            client_name,
             # No --network host: join the default bridge so the generate
             # container can reach vLLM by its bridge IP (and still has NAT for
             # downloading the HarmBench behaviors CSV).
@@ -406,6 +571,10 @@ def run_generate_vllm(
     finally:
         log.info("  Tearing down vLLM container for %s", model_name)
         docker_stop(container_name)
+        # Stop the generate client too (lesson #81) — normally it has already
+        # exited and --rm removed it, so this no-ops; on abnormal exits it
+        # prevents the racing-stale-client scenario.
+        docker_stop(client_name)
 
     return out_file if out_file.exists() else None
 
@@ -431,8 +600,8 @@ def run_generate_llamacpp(
         log.info("  [dry-run] Would start llama-server + generate responses")
         return None
 
-    # Resolve GGUF file
-    gguf_path = Path(gguf_dir) if gguf_dir else ABL_ROOT / "models_gguf"
+    # Absolute path for docker bind-mounts (see run_generate_vllm).
+    gguf_path = (Path(gguf_dir) if gguf_dir else ABL_ROOT / "models_gguf").resolve()
     if not gguf_path.is_dir():
         log.error("GGUF directory not found: %s", gguf_path)
         return None
@@ -505,10 +674,14 @@ def run_generate_llamacpp(
         src_mount = f"{ABL_ROOT}/src:/app/src:ro"
         results_mount = f"{results_dir}:/results"
 
+        # Lesson #81: deterministic client name (see run_generate_vllm).
+        client_name = f"hb-gen-{model_name}-{os.getpid()}"
         generate_cmd = [
             "docker",
             "run",
             "--rm",
+            "--name",
+            client_name,
             # No --network host: join the default bridge to reach
             # llama-server by its bridge IP (NAT also available for the
             # HarmBench behaviors download).
@@ -533,6 +706,8 @@ def run_generate_llamacpp(
     finally:
         log.info("  Tearing down llama-server container for %s", model_name)
         docker_stop(container_name)
+        # Lesson #81: stop the client too (no-op when it already exited + --rm).
+        docker_stop(client_name)
 
     return out_file if out_file.exists() else None
 
@@ -668,7 +843,13 @@ def main() -> None:
     )
     parser.add_argument("--max-tokens", type=int, default=None, help="Max generation tokens")
     parser.add_argument("--concurrent", type=int, default=4, help="Concurrent requests (default: 4)")
-    parser.add_argument("--skip-existing", action="store_true", default=True)
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        default=True,
+        help="Accepted for abliterlitics.sh global-flag parity (global_flags() passes it on"
+        " --skip-existing). Skipping existing results is already the default; use --force to re-run.",
+    )
     parser.add_argument("--force", action="store_true", default=False)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -697,6 +878,8 @@ def main() -> None:
     reasoning_parser = os.environ.get("REASONING_PARSER", "")
     reasoning_config_json = os.environ.get("REASONING_CONFIG_JSON", "")
     gguf_dir = os.environ.get("GGUF_DIR", "")
+    # --skip-existing is accepted for global-flag parity but skipping is already
+    # the default (default=True), so this reduces to 'skip unless --force'.
     skip = not args.force and args.skip_existing
 
     # Build model list from environment or fall back to reading comparison.json
@@ -711,7 +894,7 @@ def main() -> None:
         base_name = os.environ.get("BASE_NAME", "") or os.path.basename(os.path.normpath(base_dir))
         models.append((base_name, base_dir, False))
         for name in variant_names.split():
-            var_slug = name.replace("-", "_")
+            var_slug = _SLUG_RE.sub("_", name)  # lesson #64: match exporter normalization
             path = os.environ.get(f"VARIANT_PATH_{var_slug}", "")
             skip_hb = os.environ.get(f"VARIANT_SKIP_HB_{var_slug}", "0") == "1"
             if path:
@@ -731,10 +914,11 @@ def main() -> None:
             skip_hb = variant.get("skip_harmbench", False)
             models.append((name, str(comp_dir / variant["path"]), skip_hb))
 
-        # Apply inference_backend from comparison.json if not overridden by CLI
-        if backend is None:
-            comp_backend = comp.get("settings", {}).get("inference_backend", "auto")
-            backend = "llamacpp" if comp_backend in ("llamacpp", "ik_llamacpp") else "vllm"
+        # NOTE: comparison.json's settings.inference_backend is honored via the
+        # INFERENCE_BACKEND env export when invoked through abliterlitics.sh; in
+        # standalone mode the env-default above wins. The dead `if backend is
+        # None` branch that claimed to read it here was removed — `backend` is
+        # always resolved before this point.
 
     # Auto-detect reasoning if env vars not set (standalone invocation)
     if not reasoning_parser and base_dir:
@@ -757,11 +941,15 @@ def main() -> None:
             _db_stage("skip", comparison_name, model_name, dry_run=args.dry_run)
             continue
 
-        # If all phases already exist and skip is on, mark skipped in DB
+        # If all phases already exist and skip is on, mark skipped in DB.
+        # NEVER demote a 'completed' stage: a watchdog relaunch after natural
+        # queue completion re-walks every finished arm, and writing 'skip' over
+        # 'completed' makes the watchdog's stage-based queue_done() false forever
+        # (relaunch loop until restart budget exhausted, 2026-09-10 apostate_diode).
         responses_file = results_dir / f"harmbench_{model_name}_responses.json"
         if skip and args.phase == "all" and responses_file.exists():
             log.info("[skip] %s: responses exist", model_name)
-            _db_stage("skip", comparison_name, model_name, dry_run=args.dry_run)
+            _mark_skip_preserving_completed(comparison_name, model_name, dry_run=args.dry_run)
             continue
 
         _db_stage("start", comparison_name, model_name, dry_run=args.dry_run)
@@ -769,6 +957,10 @@ def main() -> None:
 
         if args.phase in ("generate", "all"):
             if backend == "vllm":
+                # Detect LoRA adapter for this variant (AGENTS.md lesson #35)
+                var_slug = _SLUG_RE.sub("_", model_name)  # lesson #64
+                lora_adapter = os.environ.get(f"VARIANT_LORA_ADAPTER_{var_slug}", "")
+
                 run_generate_vllm(
                     model_path,
                     model_name,
@@ -781,6 +973,7 @@ def main() -> None:
                     args.dry_run,
                     skip,
                     args.concurrent,
+                    lora_adapter_path=lora_adapter,
                 )
             else:
                 run_generate_llamacpp(
@@ -803,13 +996,9 @@ def main() -> None:
             classified_file = results_dir / f"harmbench_{model_name}_classified.json"
             run_score(classified_file, model_name, results_dir, args.dry_run, skip)
 
-        _db_stage(
-            "complete",
-            comparison_name,
-            model_name,
-            result_path=str(score_file) if score_file.exists() else "",
-            dry_run=args.dry_run,
-        )
+        # Complete/fail marking is score-file-gated (lesson #82) — see
+        # _mark_stage_complete_if_scored.
+        _mark_stage_complete_if_scored(comparison_name, model_name, score_file, dry_run=args.dry_run)
 
     # Import all results (incl. HarmBench responses/classifications/scores) into the DB
     _db_import_results(str(comp_dir), dry_run=args.dry_run)

@@ -60,3 +60,37 @@ class TestExpertAnalysis:
         assert output.exists()
         data = json.loads(output.read_text())
         assert data["results_version"] == 1
+
+
+class TestExpertAnalysisShapeGuard:
+    """Lesson #79: expert/router/shared loops now skip shape-mismatched deltas."""
+
+    def test_arch_extending_variant_skipped_not_crashed(self, tmp_path):
+        import json
+
+        from src.weight.expert_analysis import run_analysis
+        from tests.conftest import create_mock_model
+        from tests.test_weight._arch_extending import make_arch_extending_variant
+
+        base_dir = create_mock_model(tmp_path / "base", arch="glm", seed=42)
+        var_ext = make_arch_extending_variant(
+            create_mock_model(tmp_path / "variant", arch="glm", seed=99),
+            tmp_path / "variant_ext",
+            "model.layers.0.mlp.experts.0.gate_proj.weight",
+        )
+        output = tmp_path / "expert_output.json"
+
+        run_analysis(
+            base_path=str(base_dir),
+            variant_a_path=str(var_ext),
+            variant_b_path=None,
+            variant_c_path=None,
+            label_a="v",
+            label_b="b",
+            label_c="c",
+            output_path=str(output),
+        )
+
+        data = json.loads(output.read_text())
+        assert data["shape_skipped"] == 1
+        assert data["results_version"] == 1

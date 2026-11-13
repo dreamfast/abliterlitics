@@ -5,10 +5,13 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import os
 import sqlite3
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from src.db.schema import SCHEMA
@@ -17,14 +20,15 @@ log = logging.getLogger(__name__)
 
 DB_PATH = "abliterlitics.db"
 
-# Pinned HarmBench behaviors CSV (same as harmbench_generate.py)
+# Pinned HarmBench behaviors CSV (same as harmbench_generate.py / benchmark_eval.py)
 HARMBENCH_BEHAVIORS_CSV = (
     "https://raw.githubusercontent.com/centerforaisafety/HarmBench/"
-    "main/data/behavior_datasets/harmbench_behaviors_text_all.csv"
+    "9d0e87a7e6776614c546f2e3d4392635e6e0cf8a/"
+    "data/behavior_datasets/harmbench_behaviors_text_all.csv"
 )
 
 # Canonical stage names for model_stages
-STAGES = ("weights", "kl", "lm_eval", "harmbench", "graphs", "report")
+STAGES = ("weights", "kl", "lm_eval", "harmbench", "text_encoder", "graphs", "report")
 
 
 # ---------------------------------------------------------------------------
@@ -47,47 +51,6 @@ class ModelStage:
     error_message: str | None = None
     duration_secs: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class KLResult:
-    """Row from kl_results table."""
-
-    comparison: str
-    variant: str
-    kl_batchmean: float | None = None
-    kl_median: float | None = None
-    kl_std: float | None = None
-    kl_min: float | None = None
-    kl_max: float | None = None
-    num_prompts: int = 0
-    rating: str | None = None
-    result_path: str | None = None
-
-
-@dataclass
-class LMEvalMetric:
-    """Row from lm_eval_results table."""
-
-    comparison: str
-    model_name: str
-    task: str
-    metric_name: str
-    metric_value: float
-    metric_stderr: float | None = None
-    result_path: str | None = None
-
-
-@dataclass
-class WeightResult:
-    """Row from weight_results table."""
-
-    comparison: str
-    variant: str | None = None
-    variant_b: str | None = None
-    script_name: str = ""
-    result_path: str = ""
-    summary: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -115,14 +78,51 @@ def now_iso() -> str:
 # ---------------------------------------------------------------------------
 
 
-def load_behaviors() -> list[dict[str, str]]:
-    """Download HarmBench behaviors CSV and return as list of dicts."""
-    log.info("Downloading HarmBench behaviors...")
-    resp = urllib.request.urlopen(HARMBENCH_BEHAVIORS_CSV, timeout=30)
-    content = resp.read().decode("utf-8")
-    reader = csv.DictReader(io.StringIO(content))
-    behaviors = list(reader)
-    log.info("Loaded %d behaviors", len(behaviors))
+def _behaviors_cache_path() -> Path:
+    """Local cache path for the HarmBench behaviors CSV.
+
+    Repo-root anchored (``<repo>/.cache/``, gitignored) so ``db init`` works
+    from any CWD; ``ABL_BEHAVIORS_CACHE`` overrides (tests / sandboxed hosts).
+    """
+    env = os.environ.get("ABL_BEHAVIORS_CACHE")
+    if env:
+        return Path(env)
+    repo_root = Path(__file__).resolve().parents[2]
+    return repo_root / ".cache" / "harmbench_behaviors.csv"
+
+
+def load_behaviors(force_download: bool = False) -> list[dict[str, str]]:
+    """Load HarmBench behaviors CSV — local cache first, network fallback.
+
+    Cached at ``<repo_root>/.cache/harmbench_behaviors.csv`` (override with
+    ``ABL_BEHAVIORS_CACHE``) so ``db init``/``import_comparison`` work offline
+    once the CSV has been fetched once. A network failure with no cache raises
+    RuntimeError with a remediation hint instead of a bare URLError traceback.
+    """
+    cache = _behaviors_cache_path()
+    if not force_download and cache.is_file():
+        content = cache.read_text(encoding="utf-8")
+        behaviors = list(csv.DictReader(io.StringIO(content)))
+        log.info("Loaded %d behaviors from cache %s", len(behaviors), cache)
+        return behaviors
+
+    try:
+        log.info("Downloading HarmBench behaviors...")
+        resp = urllib.request.urlopen(HARMBENCH_BEHAVIORS_CSV, timeout=30)
+        content = resp.read().decode("utf-8")
+    except (urllib.error.URLError, OSError) as exc:
+        msg = (
+            f"Cannot load HarmBench behaviors: network fetch failed ({exc}) and no "
+            f"local cache exists at {cache}. Run once with network access (or "
+            f"pre-populate the cache file from the HarmBench repo) before running "
+            f"'db init'."
+        )
+        raise RuntimeError(msg) from exc
+
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(content, encoding="utf-8")
+    behaviors = list(csv.DictReader(io.StringIO(content)))
+    log.info("Loaded %d behaviors (cached at %s)", len(behaviors), cache)
     return behaviors
 
 

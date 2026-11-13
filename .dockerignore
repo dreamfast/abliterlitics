@@ -2,5 +2,6 @@
 *
 !requirements.txt
 !src/
+!prompts/
 !comparison.schema.json
 !docker/Dockerfile.*

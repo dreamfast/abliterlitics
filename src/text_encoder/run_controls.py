@@ -1,0 +1,413 @@
+"""Control battery runner — counterfactual conditioning through the DiT harness.
+
+Phase 4 (T3.2). Pushes synthesized conditioning (perturb.py) through the same
+paired-trajectory harness as run_dit_divergence, producing the anchor ladder
+and dose-response controls:
+
+  noise_<dose>     Gaussian at matched MSE (>=5 doses, 0.25x..2x max-variant)
+  rank1_<dose>     fixed random direction (structured-but-meaningless control)
+  taboo_<dose>     taboo-direction injection (norm-matched — NOTE: "1x" here
+                   matches the heretic delta's mean per-token NORM, not the
+                   noise family's MSE; cross-family "1x" labels are NOT the
+                   same perturbation magnitude (deepseek-R7))
+  heretic_a<alpha> alpha-scaled REAL heretic delta (0.5/1/2/10)
+  order_shuffle    Spingarn syntax-destruction
+  embed_shuffle    Spingarn meaning-destruction (derangement)
+  null             zero-information anchor
+
+Output: tebench_controls.json (single file, all conditions + summaries) in
+the tebench_ namespace (Phase-4 plan rule — importer glob safety).
+
+Usage (mirrors run_dit_divergence):
+    python3 -m src.text_encoder.run_controls \
+        --base /models/qwen_3_4b.safetensors \
+        --heretic /models/qwen3-4b-heretic.safetensors \
+        --dit /models/z_image_turbo_bf16.safetensors \
+        --cache-dir /te_cache --results-dir /results --device cuda
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from collections.abc import Callable
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import torch
+
+from src.text_encoder import TE_RESULTS_VERSION
+from src.text_encoder._cli import add_backend, add_cache_dir, add_device, add_results_dir
+
+log = logging.getLogger(__name__)
+
+DEFAULT_DOSE_STEPS = (0.25, 0.5, 1.0, 1.5, 2.0)
+DEFAULT_ALPHAS = (0.5, 1.0, 2.0, 10.0)
+
+
+def dose_mse_matches(prior: list[float], new: list[float], tol: float = 5e-2) -> bool:
+    """True when per-prompt max_dose_mse entries agree within ``tol`` RELATIVE.
+
+    Pure relative tolerance (audit bug #3): the old ``5e-2 * max(1.0, abs(a))``
+    floor made the check 0.05 ABSOLUTE for every sub-1.0 dose, letting a wrong
+    dose variant (e.g. 0.02 vs 0.052 MSE, 2.6x apart — exactly the
+    wrong-variant case lesson #40 says must be caught) pass the --merge guard.
+    The 1e-9 epsilon only guards the a==0 exact-match corner.
+    """
+    return all(abs(float(a) - float(b)) <= tol * abs(float(a)) + 1e-9 for a, b in zip(prior, new, strict=True))
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Control battery: counterfactual conditioning divergence")
+    p.add_argument("--base", required=True, help="BASE TE safetensors (cache key)")
+    p.add_argument("--heretic", required=True, help="Heretic TE safetensors (delta source, cache key)")
+    p.add_argument(
+        "--dose-variants",
+        default="",
+        help="Comma-separated variant TE FILES whose cached consumed_hidden defines the max dose "
+        "(default: base + heretic only)",
+    )
+    p.add_argument("--dit", required=True)
+    add_cache_dir(p, default="/te_cache")
+    add_results_dir(p, default="/results")
+    add_device(p, default="cuda")
+    p.add_argument(
+        "--cache-device",
+        default="cpu",
+        help="Device key the forensics cache was written with (analysis runners cache on cpu)",
+    )
+    p.add_argument("--n-steps", type=int, default=None, help="None = backend default (20 zimage / 6 krea2)")
+    p.add_argument("--n-prompts", type=int, default=6)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--latent-hw", type=int, default=None, help="None = backend default (128 zimage / 64 krea2)")
+    p.add_argument("--dose-steps", default=",".join(str(x) for x in DEFAULT_DOSE_STEPS))
+    p.add_argument("--alphas", default=",".join(str(x) for x in DEFAULT_ALPHAS))
+    p.add_argument(
+        "--conditions",
+        default="noise,rank1,taboo,heretic_alpha,order_shuffle,embed_shuffle,null",
+        help="Comma-separated condition families to run",
+    )
+    p.add_argument(
+        "--merge",
+        action="store_true",
+        help="Merge into an existing tebench_controls.json instead of replacing it "
+        "(required when adding bracket conditions post-hoc; refuses on metadata mismatch)",
+    )
+    add_backend(p, default="zimage", choices=("zimage", "krea2"), help_text="DiT + conditioning family")
+    p.add_argument("--suite", default="/prompts/te_suite.yaml")
+    return p.parse_args()
+
+
+def _summarize(result: dict[str, Any]) -> dict[str, Any]:
+    finals = [pp["final_latent_div"] for pp in result["per_prompt"]]
+    ctrl = result["noise_control_final"]
+    return {
+        "mean_final_latent_div": sum(finals) / len(finals),
+        "noise_control_final": ctrl,
+        "div_control_ratio": (sum(finals) / len(finals)) / max(ctrl, 1e-12),
+        "per_prompt_finals": finals,
+    }
+
+
+def main() -> int:
+    args = parse_args()
+    from src.text_encoder.backends import comfyui_loader
+    from src.text_encoder.directional import taboo_direction
+    from src.text_encoder.perturb import (
+        delta_scale,
+        direction_injection,
+        embedding_assignment_shuffle,
+        gaussian_delta,
+        null_conditioning,
+        per_prompt_delta_norm,
+        rank1_random_delta,
+        token_order_shuffle,
+    )
+    from src.text_encoder.run_dit_divergence import _load_consumed_from_cache
+    from src.text_encoder.suite import load_suite
+
+    comfyui_loader.import_comfy("/comfyui", cpu=(args.device == "cpu"))
+
+    if args.backend == "krea2":
+        from src.text_encoder.backends.krea2_dit import load_krea2_dit
+        from src.text_encoder.backends.krea2_dit import run_krea2_divergence as run_divergence
+
+        dit_loader = load_krea2_dit
+        cond_stream = "tap_stack"
+        taboo_layer_stream = "layer_35"  # last tap; z-image uses layer_34 (consumed)
+    else:
+        from src.text_encoder.backends.z_image_dit import load_zimage_dit, run_divergence
+
+        dit_loader = load_zimage_dit
+        cond_stream = "consumed_hidden"
+        taboo_layer_stream = "layer_34"
+    if args.n_steps is None:
+        args.n_steps = 6 if args.backend == "krea2" else 20
+    if args.latent_hw is None:
+        args.latent_hw = 64 if args.backend == "krea2" else 128
+
+    prompts, categories = load_suite(args.suite)
+    if args.n_prompts < len(prompts):
+        seen: set[str] = set()
+        idxs: list[int] = []
+        for i, c in enumerate(categories):
+            if c not in seen:
+                idxs.append(i)
+                seen.add(c)
+        prompts = [prompts[i] for i in idxs[: args.n_prompts]]
+        categories = [categories[i] for i in idxs[: args.n_prompts]]
+    log.info("Control battery on %d prompts (one per category)", len(prompts))
+
+    cache_dir = Path(args.cache_dir)
+    ctx_scope = f"{args.backend}:{Path(args.dit).name}"
+
+    def _load(te: str) -> list[torch.Tensor]:
+        return _load_consumed_from_cache(
+            cache_dir,
+            te,
+            args.cache_device,
+            ctx_scope,
+            prompts,
+            categories,
+            suite_path=args.suite,
+            stream=cond_stream,
+        )
+
+    base_ctxs = _load(args.base)
+    her_ctxs = _load(args.heretic)
+
+    # Dose reference: max per-prompt MSE across heretic + optional extra variants
+    dose_files = [args.heretic] + [f for f in args.dose_variants.split(",") if f.strip()]
+    max_dose = torch.zeros(len(prompts))
+    for f in dose_files:
+        try:
+            vctx = _load(f)
+        except FileNotFoundError:
+            log.warning("dose variant not cached, skipping: %s", Path(f).name)
+            continue
+        for i, (b, v) in enumerate(zip(base_ctxs, vctx, strict=True)):
+            mse = float(((b.float() - v.float()) ** 2).mean())
+            max_dose[i] = max(float(max_dose[i]), mse)
+    log.info(
+        "Max dose (MSE at DiT input): mean=%.4e per-prompt=%s",
+        float(max_dose.mean()),
+        [f"{m:.2e}" for m in max_dose.tolist()],
+    )
+
+    # Taboo direction from the cached layer-34 pooled stream (full 60-prompt suite)
+    from src.text_encoder.cache import WILDCARD_DTYPE, cache_key, load_artifact
+    from src.text_encoder.suite import suite_hash
+
+    full_prompts, full_cats = load_suite(args.suite)
+    p_hash = suite_hash(full_prompts, full_cats)
+    key = cache_key(args.base, p_hash, WILDCARD_DTYPE, args.cache_device, "raw_hidden", "orig", context=ctx_scope)
+    base_art = load_artifact(cache_dir, key)
+    if base_art is None:
+        raise FileNotFoundError("No cached base artifact for taboo direction")
+    if args.backend == "krea2":
+        # Taboo direction IN THE INJECTION SPACE: the conditioning stream is
+        # the 30720-dim tap stack, so pool the tap stacks per prompt (masked
+        # mean over seq) and compute the direction there. A layer-35 pooled
+        # direction (2560-d) would crash rank1/taboo injection (dim mismatch).
+        ts = base_art.streams["tap_stack"]
+        t_acts, t_mask = ts.activations, ts.mask  # [N, seq, 30720], [N, seq]
+        if t_mask is not None:
+            m = t_mask.unsqueeze(-1).float()
+            pooled = (t_acts.float() * m).sum(1) / m.sum(1).clamp(min=1.0)
+        else:
+            pooled = t_acts.float().mean(dim=1)
+        d_taboo = taboo_direction(pooled, list(base_art.categories))
+        log.info("Taboo direction computed from masked-mean tap stacks %s", tuple(pooled.shape))
+    else:
+        pooled = base_art.streams[taboo_layer_stream].activations  # [N, 1, H] pooled
+        if pooled.dim() == 3:
+            pooled = pooled[:, 0, :]
+        d_taboo = taboo_direction(pooled, list(base_art.categories))
+        log.info("Taboo direction computed from %s pooled acts", taboo_layer_stream)
+
+    log.info("Loading %s DiT: %s", args.backend, Path(args.dit).name)
+    dit = dit_loader(args.dit, device=args.device)
+
+    dose_steps = [float(x) for x in args.dose_steps.split(",")]
+    alphas = [float(x) for x in args.alphas.split(",")]
+    families = {f.strip() for f in args.conditions.split(",")}
+
+    def _mk_noise(scale: float) -> Callable[[list[torch.Tensor]], list[torch.Tensor]]:
+        def make(ctxs: list[torch.Tensor]) -> list[torch.Tensor]:
+            out = []
+            for i, b in enumerate(ctxs):
+                delta = gaussian_delta(b.unsqueeze(0), float(max_dose[i]) * scale, seed=1000 + i)
+                out.append((b.float() + delta).squeeze(0))
+            return out
+
+        return make
+
+    def _mk_rank1(scale: float) -> Callable[[list[torch.Tensor]], list[torch.Tensor]]:
+        def make(ctxs: list[torch.Tensor]) -> list[torch.Tensor]:
+            out = []
+            for i, b in enumerate(ctxs):
+                delta = rank1_random_delta(
+                    b.unsqueeze(0), float(max_dose[i]) * scale, orthogonal_to=d_taboo, seed=2000 + i
+                )
+                out.append((b.float() + delta).squeeze(0))
+            return out
+
+        return make
+
+    heretic_norms = [
+        float(per_prompt_delta_norm(h.float() - b.float())) for b, h in zip(base_ctxs, her_ctxs, strict=True)
+    ]
+    # heretic's own conditioning MSE — the report expresses the P9
+    # noise-equivalent dose in units of THIS (not of the max dose).
+    heretic_mse = [float(((b.float() - h.float()) ** 2).mean()) for b, h in zip(base_ctxs, her_ctxs, strict=True)]
+
+    def _mk_taboo(scale: float) -> Callable[[list[torch.Tensor]], list[torch.Tensor]]:
+        def make(ctxs: list[torch.Tensor]) -> list[torch.Tensor]:
+            out = []
+            for i, b in enumerate(ctxs):
+                delta = direction_injection(b.unsqueeze(0), d_taboo, heretic_norms[i] * scale)
+                out.append((b.float() + delta).squeeze(0))
+            return out
+
+        return make
+
+    def _mk_alpha(a: float) -> Callable[[list[torch.Tensor]], list[torch.Tensor]]:
+        def make(ctxs: list[torch.Tensor]) -> list[torch.Tensor]:
+            out = []
+            for b, h in zip(ctxs, her_ctxs, strict=True):
+                delta = delta_scale(b.unsqueeze(0), h.unsqueeze(0), a)
+                out.append((b.float() + delta).squeeze(0))
+            return out
+
+        return make
+
+    def _mk_shuffle(
+        fn: Callable[..., torch.Tensor], seed_offset: int
+    ) -> Callable[[list[torch.Tensor]], list[torch.Tensor]]:
+        def make(ctxs: list[torch.Tensor]) -> list[torch.Tensor]:
+            return [fn(c.unsqueeze(0), seed=seed_offset + i).squeeze(0) for i, c in enumerate(ctxs)]
+
+        return make
+
+    def _mk_null() -> Callable[[list[torch.Tensor]], list[torch.Tensor]]:
+        def make(ctxs: list[torch.Tensor]) -> list[torch.Tensor]:
+            return [null_conditioning(c) for c in ctxs]
+
+        return make
+
+    conditions: dict[str, Any] = {}
+    if "noise" in families:
+        for s in dose_steps:
+            conditions[f"noise_{s:g}x"] = _mk_noise(s)
+    if "rank1" in families:
+        for s in dose_steps:
+            conditions[f"rank1_{s:g}x"] = _mk_rank1(s)
+    if "taboo" in families:
+        for s in dose_steps:
+            conditions[f"taboo_{s:g}x"] = _mk_taboo(s)
+    if "heretic_alpha" in families:
+        for a in alphas:
+            conditions[f"heretic_a{a:g}"] = _mk_alpha(a)
+    if "order_shuffle" in families:
+        conditions["order_shuffle"] = _mk_shuffle(token_order_shuffle, 3000)
+    if "embed_shuffle" in families:
+        conditions["embed_shuffle"] = _mk_shuffle(embedding_assignment_shuffle, 4000)
+    if "null" in families:
+        conditions["null"] = _mk_null()
+
+    results: dict[str, Any] = {
+        "te_results_version": TE_RESULTS_VERSION,
+        "analysis": "control_battery",
+        "backend": args.backend,
+        "base": args.base,
+        "heretic": args.heretic,
+        "dit": args.dit,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "prompts": prompts,
+        "categories": categories,
+        "dose_steps": dose_steps,
+        "alphas": alphas,
+        "max_dose_mse": [float(m) for m in max_dose.tolist()],
+        "heretic_delta_norm": heretic_norms,
+        "heretic_mse": heretic_mse,
+        "conditions": {},
+    }
+
+    # --merge: union with an existing run's conditions (dose bracket top-up).
+    out_path = Path(args.results_dir) / "tebench_controls.json"
+    if args.merge:
+        if not out_path.exists():
+            log.warning("--merge passed but %s does not exist; writing fresh", out_path)
+        else:
+            prior = json.loads(out_path.read_text())
+            same_setup = (
+                prior.get("backend") == results["backend"]
+                and prior.get("base") == results["base"]
+                and prior.get("heretic") == results["heretic"]
+                and prior.get("dit") == results["dit"]
+                and len(prior.get("max_dose_mse", [])) == len(results["max_dose_mse"])
+                # 5% relative tolerance: identical dose SETUP but the cache may
+                # have been recaptured since (small numeric drift). A wrong
+                # dose-variant is still caught: q3 differs ~2.7x, heretic-only
+                # ~70x from the int4 reference.
+                and dose_mse_matches(prior["max_dose_mse"], results["max_dose_mse"])
+            )
+            if not same_setup:
+                raise SystemExit(
+                    "--merge refused: existing tebench_controls.json was produced with a "
+                    "different base/heretic/DIT or dose reference — delete it or drop --merge"
+                )
+            overlap = sorted(set(prior.get("conditions", {})) & set(conditions))
+            if overlap:
+                log.info("--merge skipping conditions already present: %s", ", ".join(overlap))
+                for name in overlap:
+                    conditions.pop(name)
+            if prior.get("heretic_mse"):
+                results["heretic_mse"] = prior["heretic_mse"]
+            results["conditions"] = {**prior.get("conditions", {})}
+            results["dose_steps"] = sorted({*(float(x) for x in prior.get("dose_steps", [])), *dose_steps})
+            results["alphas"] = sorted({*(float(x) for x in prior.get("alphas", [])), *alphas})
+            log.info(
+                "Merging into existing battery (%d prior conditions, %d new)",
+                len(prior.get("conditions", {})),
+                len(conditions),
+            )
+
+    for name, make in conditions.items():
+        log.info("=== Condition %s ===", name)
+        var_ctxs = make(base_ctxs)
+        result = run_divergence(
+            dit,
+            base_ctxs,
+            var_ctxs,
+            device=args.device,
+            n_steps=args.n_steps,
+            seed=args.seed,
+            latent_hw=args.latent_hw,
+        )
+        summary = _summarize(result)
+        results["conditions"][name] = {
+            "summary": summary,
+            "per_prompt": result["per_prompt"],
+            "n_steps": args.n_steps,
+            "seed": args.seed,
+        }
+        log.info(
+            "%s: final div %.5f (%.2f%% of noise control)",
+            name,
+            summary["mean_final_latent_div"],
+            summary["div_control_ratio"] * 100,
+        )
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(results, indent=2))
+
+    log.info("Wrote %s (%d conditions)", out_path, len(results["conditions"]))
+    return 0
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
+    sys.exit(main())

@@ -1,0 +1,52 @@
+# H3 video battery prompts (8 short scenes, no dialogue — video-channel metrics only).
+# Speech lines live in te_h3_audio_prompts.yaml (the audio battery).
+# Full H3 3-field format per h3.md; labels are stable identifiers for manifests.
+prompts:
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, 35mm anamorphic with film grain. A single wide shot: a black cat sits on a stone windowsill watching rain streak the glass, tail flicking once. The camera pushes in with small amplitude at slow speed toward the cat's face.
+      overall_soundscape: Steady rain on glass; a low thunder roll far away; the cat's soft breath.
+      non_diegetic_music: A single sustained cello note, very quiet.
+    category: animals
+    label: cat_rain
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, IMAX clarity. Aerial shot at golden hour: rolling green hills with a winding gravel road, a lone cyclist pedaling steadily. The camera tracks right at medium speed, following the rider.
+      overall_soundscape: Wind over open country; the cyclist's tires crunching on gravel; a distant bird call.
+      non_diegetic_music: N/A
+    category: landscape
+    label: cyclist_hills
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, handheld documentary. A busy night market in the rain: neon signs reflecting on wet pavement, a vendor tossing noodles in a wok with flames leaping. The camera pans left through the crowd.
+      overall_soundscape: Crowd chatter; sizzling wok; rain on awnings; a passing scooter.
+      non_diegetic_music: N/A
+    category: urban
+    label: night_market
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, bleach-bypass noir. A vintage fountain pen writing cursive on cream paper, ink pooling at the downstrokes, macro shot. The camera pedestal rises slowly to reveal a cluttered wooden desk.
+      overall_soundscape: The scratch of the nib on paper; a wall clock ticking; paper shifting.
+      non_diegetic_music: N/A
+    category: object
+    label: fountain_pen
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, 35mm anamorphic with film grain. A small wooden sailboat heels in a fresh breeze on open blue water, spray off the bow. The camera arcs around the boat at medium speed.
+      overall_soundscape: Wind hum; water slapping the hull; canvas snapping; spray hiss.
+      non_diegetic_music: N/A
+    category: sea
+    label: sailboat
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, IMAX clarity. A timelapse of storm clouds rolling over golden wheat fields, light shifting from warm to slate, individual stalks swaying as the front arrives.
+      overall_soundscape: Rising wind through wheat; a first fat raindrop; distant thunder building.
+      non_diegetic_music: N/A
+    category: nature
+    label: storm_wheat
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, 90s broadcast tape. A subway platform at night: a woman in a red coat waits alone, checking her watch; a train arrives with a rush of air, headlights blooming.
+      overall_soundscape: Tunnel rumble approaching; the arrival whoosh; a station chime; her footsteps.
+      non_diegetic_music: N/A
+    category: urban
+    label: subway_red
+  - text: |
+      integrated_multimodal_description: Live-action, cinematic, handheld documentary. A potter's hands centering wet clay on a spinning wheel, water streaming, the form rising between their fingers. Tight shot on the hands, camera static.
+      overall_soundscape: The whir of the wheel; water squelching; wet clay sounds; calm breathing.
+      non_diegetic_music: N/A
+    category: craft
+    label: potter_wheel

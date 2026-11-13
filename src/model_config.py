@@ -42,6 +42,14 @@ class ArchitectureConfig:
     _LANGUAGE_MODEL_FAMILIES = frozenset({"qwen35", "gemma4"})
 
     def is_lm_key(self, raw_key: str, canonical_key: str) -> bool:
+        # LM-only forensics BY DESIGN (AGENTS.md lesson #54): for qwen35/gemma4
+        # this excludes the multimodal towers ("visual"), the MTP draft head
+        # ("mtp"), and the untied top-level lm_head.weight — the latter
+        # implicitly, via the "language_model" in canonical_key requirement
+        # (a top-level lm_head.weight carries no such substring). Families
+        # outside _LANGUAGE_MODEL_FAMILIES (qwen3, glm) are pure text models,
+        # so every key qualifies. A shard-map total smaller than the
+        # safetensors key count is therefore expected, not a bug.
         if self.family in self._LANGUAGE_MODEL_FAMILIES:
             return "language_model" in canonical_key and "visual" not in raw_key and "mtp" not in raw_key
         return True
@@ -141,7 +149,7 @@ def _scan_keys(model_dir: str | Path) -> list[str]:
     """Scan all safetensors files in a directory and return all keys."""
     all_keys: list[str] = []
     for f in sorted(Path(model_dir).glob("*.safetensors")):
-        with safe_open(str(f), framework="pt", device="cpu") as sf:  # type: ignore[no-untyped-call]
+        with safe_open(str(f), framework="pt", device="cpu") as sf:
             all_keys.extend(sf.keys())
     return all_keys
 
@@ -221,7 +229,7 @@ def build_shard_map(model_dir: str | Path, cfg: ArchitectureConfig) -> dict[str,
     keymap: dict[str, tuple[str, str]] = {}
     p = Path(model_dir)
     for f in sorted(p.glob("*.safetensors")):
-        with safe_open(str(f), framework="pt", device="cpu") as sf:  # type: ignore[no-untyped-call]
+        with safe_open(str(f), framework="pt", device="cpu") as sf:
             for raw_key in sf.keys():
                 ck = cfg.canonicalize(raw_key)
                 if cfg.is_lm_key(raw_key, ck):
@@ -243,7 +251,7 @@ def load_tensor(shard_map: dict[str, tuple[str, str]], canonical_key: str) -> to
     if entry is None:
         return None
     raw_key, shard_path = entry
-    with safe_open(shard_path, framework="pt", device="cpu") as sf:  # type: ignore[no-untyped-call]
+    with safe_open(shard_path, framework="pt", device="cpu") as sf:
         tensor: torch.Tensor = sf.get_tensor(raw_key)
         return tensor
 
@@ -260,8 +268,20 @@ def compute_changed_keys(
     base_shard_map: dict[str, tuple[str, str]],
     other_shard_map: dict[str, tuple[str, str]],
     threshold: float = 0.0,
+    noise_floor: float = 0.0,
 ) -> list[dict[str, Any]]:
-    """Find tensors that differ between base and variant."""
+    """Find tensors that differ between base and variant.
+
+    Keys with equal shapes but mean_abs_diff <= noise_floor are NOT reported
+    as changed. Pass a positive noise_floor when comparing arms stored in a
+    different storage dtype than base (e.g. FP16-stored variant vs BF16
+    base): 16-bit round-trips flip subnormal corners deterministically,
+    producing a ~1e-11 mean_abs_diff noise floor that inflates binary
+    changed counts ~14x (AGENTS.md lesson #63). Sub-precision merge
+    dithering is the same artifact class (lesson #35). threshold applies on
+    top of noise_floor; shape mismatches are reported as mean_abs_diff = inf
+    (architecture-extending variants, lesson #79).
+    """
     base_keys = set(base_shard_map)
     other_keys = set(other_shard_map)
     common = sorted(base_keys & other_keys)
@@ -275,7 +295,7 @@ def compute_changed_keys(
             changed.append({"canonical": ck, "mean_abs_diff": float("inf")})
             continue
         diff = (ot.float() - bt.float()).abs().mean().item()
-        if diff > threshold:
+        if diff > max(threshold, noise_floor):
             changed.append({"canonical": ck, "mean_abs_diff": diff})
     changed.sort(key=lambda x: x["mean_abs_diff"], reverse=True)
     return changed

@@ -30,10 +30,43 @@ generated token position, using 100 harmless prompts from mlabonne/harmless_alpa
 Key methodology points (matching Heretic reference):
   - model.generate(max_new_tokens=1, output_scores=True) — NOT direct forward pass
   - scores are float32 from generate internals — NO .float() cast needed
-  - F.log_softmax(logits, dim=-1) — no clamping of -inf values
-  - Left-padding on tokenizer
-  - System prompt + response_prefix appended before tokenization
-  - No -inf clamping in compute phase
+  - F.log_softmax(logits, dim=-1); non-finite logprobs (-inf/+inf/NaN) are clamped
+    to LP_FLOOR=-100 before F.kl_div in the compute phase (see below)
+   - Left-padding on tokenizer
+   - System prompt + response_prefix appended before tokenization
+   - Non-finite logprobs clamped to LP_FLOOR in the compute phase (lesson #37:
+     F.kl_div(log_target=True) computes exp(-inf)*(target-input) = 0*-inf = NaN
+     on PyTorch >= 2.11, which NaN'd every variant on 262K-vocab models)
+
+Optional comparison-level chat template override (--chat-template-file):
+   When variants ship modified bundled templates (jailbreak system prompts,
+   deleted reasoning-effort prompts, thinking-off defaults), rendering each
+   model's OWN template would measure template deltas, not weight deltas.
+   Loading the comparison's stock template into the tokenizer before
+   apply_chat_template makes every arm render identical prompts, so KL
+   isolates the weight change. The KL math (dataset, system prompt,
+   1-token logits, batchmean) is unchanged.
+   NOTE (qwen38-27b, 2026-09-05): this override is SUPERSEDED for heretic-exact
+   protocol runs — the runner mounts the BASE tokenizer for every arm, so the
+   tokenizer's OWN template (heretic v1.2.0 main.py:371-399 semantics) already
+   renders identical prompts across arms. The measurement position is set by
+   the response prefix, not the template.
+
+Response prefix modes (--response-prefix):
+   - "auto": heretic main.py:371-399 — commonprefix(base responses).rstrip(" "),
+     with CoT-init startswith replacement (CHAIN_OF_THOUGHT_SKIPS). Correct when
+     the chat template leaves the think block CLOSED (raw response starts with
+     "<think>").
+   - "thinkclose" (qwen38-27b, user-directed 2026-09-05): DETERMINISTIC
+     adaptation for templates that PREFILL an open "<think>\n" (Qwen3.x,
+     AGENTS.md lesson #55c). There the raw response starts directly with
+     reasoning-scaffold content and "auto" measures a scaffold position
+     ("We" — journal kl-protocol-error, ~1000x below heretic card scale).
+     thinkclose appends "</think>\n\n" when the render prefills an open
+     <think> (empty CLOSED think block — heretic's "<think></think>" adapted
+     to the prefilled format), else heretic's literal "<think></think>".
+     First measured token = first CONTENT token. The exact appended string is
+     recorded in provenance (response_prefix_mode key) and response_prefix.txt.
 
 Strategy: load ONE model at a time, collect full logits, save to disk,
 unload, repeat. KL is computed offline from saved tensors.
@@ -94,7 +127,13 @@ SYSTEM_PROMPT = "You are a helpful assistant."
 METHODOLOGY_VERSION = "2.0"
 
 # GPU memory budgets (conservative — leave headroom for KV cache + activations)
-GPU0_BUDGET = "30GiB"  # RTX 5090 (32GB physical)
+# GPU0_BUDGET MUST leave ~5 GiB above the weight placement: with accelerate
+# big-model offload, modules placed on CPU are STREAMED through the GPU during
+# forward (set_module_tensor_to_device per module). The largest single stream
+# here is lm_head itself — 248,320 x 5120 x 2B = 2.37 GiB for Qwen3.8-27B —
+# plus activations and CUDA context. A 30GiB budget filled VRAM to 30.86 GiB
+# and OOM'd streaming lm_head (qwen38-27b, 2026-09-05). 26GiB leaves ~5 GiB.
+GPU0_BUDGET = "26GiB"  # RTX 5090 (32GB physical)
 GPU1_BUDGET = "22GiB"  # RTX 4090 (24GB physical)
 CPU_BUDGET = "80GiB"
 
@@ -250,32 +289,6 @@ def get_loading_config(model_path: str, model_size_gb: float) -> dict:
         "device_map": "auto",
         "max_memory": {0: GPU0_BUDGET, "cpu": CPU_BUDGET},
     }
-
-
-def validate_model_loaded(model) -> bool:
-    """Abort if any parameters are still on meta device (= not loaded)."""
-    meta_params = []
-    total = 0
-    for name, param in model.named_parameters():
-        total += 1
-        if param.device.type == "meta":
-            meta_params.append(name)
-
-    if meta_params:
-        for name in meta_params[:10]:
-            log.info(f"  FATAL meta param: {name}")
-        if len(meta_params) > 10:
-            log.info(f"  ... and {len(meta_params) - 10} more")
-        log.info(f"  FATAL: {len(meta_params)}/{total} parameters on meta device!")
-        return False
-
-    # Summarise device allocation
-    devices: dict[str, int] = {}
-    for _, param in model.named_parameters():
-        d = str(param.device)
-        devices[d] = devices.get(d, 0) + 1
-    log.info(f"  Device allocation: {devices}")
-    return True
 
 
 def get_input_device(model) -> torch.device:
@@ -481,8 +494,14 @@ def cmd_collect(args):
     quant_note = ""
 
     response_prefix: str | None = None
+    response_prefix_mode = ""
     if args.response_prefix == "auto":
         pass
+    elif args.response_prefix == "thinkclose":
+        # HERETIC-EXACT prefix mode for thinking models whose chat template
+        # PREFILLS an open <think> in the generation prompt (Qwen3.x —
+        # AGENTS.md lesson #55c). Resolved below, after the tokenizer loads.
+        response_prefix_mode = "thinkclose"
     elif args.response_prefix == "none" or args.response_prefix == "":
         response_prefix = None
     else:
@@ -497,6 +516,62 @@ def cmd_collect(args):
         tokenizer.pad_token = tokenizer.eos_token
 
     tokenizer.padding_side = "left"
+
+    # Optional comparison-level chat template override (see module docstring).
+    # Applied BEFORE any apply_chat_template call (prefix detection + collection),
+    # so both phases render through the same stock template.
+    chat_template_source = "(tokenizer default)"
+    if args.chat_template_file:
+        tpl_path = Path(args.chat_template_file)
+        if not tpl_path.is_file():
+            log.info(f"FATAL: --chat-template-file not found: {tpl_path}")
+            sys.exit(1)
+        tokenizer.chat_template = tpl_path.read_text()
+        chat_template_source = str(tpl_path)
+        log.info(
+            f"  Chat template OVERRIDE applied: {tpl_path} "
+            f"({len(tokenizer.chat_template)} bytes) — bundled template ignored"
+        )
+    else:
+        log.info("  Chat template: tokenizer default (bundled)")
+
+    # Resolve the thinkclose prefix mode (user-directed 2026-09-05, qwen38-27b).
+    #
+    # HERETIC-EXACT adaptation of "Suppress CoT output" (heretic v1.2.0
+    # main.py:384-386): response_prefix = commonprefix(responses).rstrip(" "),
+    # replaced by "<think></think>" when it starts with "<think>". That literal
+    # algorithm assumes the template leaves the think block CLOSED so the raw
+    # response begins with "<think>". Qwen3.x templates PREFILL an open
+    # "<think>\n" in the generation prompt, so raw responses begin directly
+    # with reasoning-scaffold content — heretic's literal algorithm would
+    # measure a scaffold position ("We" — the kl-protocol-error, ~1000x scale
+    # break vs heretic card numbers). Deterministic adaptation of the INTENT
+    # (empty CLOSED think block at the CONTENT position), no auto-detection
+    # (lessons #25/#61 confound discipline):
+    #   - render ends with an open <think> prefill -> append "</think>\n\n"
+    #   - render does NOT prefill                  -> append "<think></think>"
+    # The exact appended string is recorded in provenance and in
+    # response_prefix.txt for the variant collects.
+    if response_prefix_mode == "thinkclose":
+        probe_messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": load_prompts(1)[0]},
+        ]
+        probe_render = tokenizer.apply_chat_template(probe_messages, add_generation_prompt=True, tokenize=False)
+        if probe_render.endswith("<think>") or probe_render.endswith("<think>\n"):
+            response_prefix = "</think>\n\n"
+            log.info(
+                "  thinkclose: render ends with OPEN <think> prefill -> "
+                'appending "</think>\\n\\n" (empty closed think block; '
+                'heretic "<think></think>" adapted to the prefilled format)'
+            )
+        else:
+            response_prefix = "<think></think>"
+            log.info(
+                "  thinkclose: render does NOT prefill <think> -> appending "
+                '"<think></think>" (heretic v1.2.0 main.py:385-386 literal)'
+            )
+        log.info(f"  Render tail (last 120 chars): ...{probe_render[-120:]!r}")
 
     AutoModelClass = _get_model_auto_class(args.model)
     try:
@@ -518,9 +593,39 @@ def cmd_collect(args):
             raise
     model.eval()
 
+    # Apply PEFT LoRA adapter if provided (AGENTS.md lesson #35).
+    # The adapter is applied dynamically — NOT merged into base weights — so
+    # sub-precision edits are preserved at FP32 during the forward pass.
+    if args.lora_adapter:
+        from peft import PeftModel
+
+        log.info(f"Applying LoRA adapter: {args.lora_adapter}")
+        model = PeftModel.from_pretrained(model, args.lora_adapter)
+        model.eval()
+        adapter_params = sum(1 for n, _ in model.named_parameters() if "lora_" in n)
+        log.info(f"  LoRA adapter applied: {adapter_params} adapter parameters active")
+
     meta_params = sum(1 for _, p in model.named_parameters() if p.device.type == "meta")
     total_params = sum(1 for _ in model.named_parameters())
-    if meta_params > 0:
+    hf_map = getattr(model, "hf_device_map", None)
+    has_accel_offload = isinstance(hf_map, dict) and any(d in ("cpu", "disk") for d in set(hf_map.values()))
+    if meta_params > 0 and has_accel_offload:
+        # transformers 5.x / accelerate: weights placed on cpu/disk by the device
+        # map legitimately REMAIN ON THE META DEVICE and are streamed via dispatch
+        # hooks during forward. This is the standard >VRAM load path (this file's
+        # documented ">46GB -> CPU RAM offload" strategy), NOT a broken load.
+        # The old unconditional abort was a false positive for it: it predates
+        # transformers-5.x offload semantics and fired before any generation.
+        # Numerics are unchanged (bf16 layers computed on their assigned device;
+        # placement identical for every arm of the comparison = symmetric).
+        n_offload = sum(1 for d in hf_map.values() if d in ("cpu", "disk"))
+        log.info(
+            f"  NOTE: {meta_params}/{total_params} params on meta device = accelerate "
+            f"offload hooks (hf_device_map: {n_offload} cpu/disk entries). Weights "
+            f"stream on demand during forward — standard >VRAM path, not a broken "
+            f"load. Proceeding."
+        )
+    elif meta_params > 0:
         for name, param in model.named_parameters():
             if param.device.type == "meta":
                 log.info(f"  FATAL meta param: {name}")
@@ -626,6 +731,17 @@ def cmd_collect(args):
             neginf_pct = (torch.isinf(log_probs) & (log_probs < 0)).float().mean().item() * 100
             log.info(f"  Prompt 0 sanity: finite={finite_pct:.1f}%, -inf={neginf_pct:.1f}%")
             log.info(f"  Logits dtype: {logits.dtype}, shape: {logits.shape}")
+            # Measured-position sanity: log the top-5 candidate first tokens.
+            # At the heretic CONTENT position these should be response openers
+            # ("I", "Sure", ...); reasoning-scaffold boilerplate ("We need",
+            # "Let's") dominating means the prefix puts us inside the think
+            # block (kl-protocol-error detection gate).
+            top_vals, top_ids = log_probs[0].topk(5)
+            top_toks = [tokenizer.decode([int(t)], skip_special_tokens=False) for t in top_ids]
+            log.info(
+                "  Prompt 0 top-5 first tokens: "
+                + ", ".join(f"{tok!r}({float(v.exp()):.3f})" for tok, v in zip(top_toks, top_vals, strict=True))
+            )
             if finite_pct < 1.0:
                 log.info("ABORTING: first prompt logprobs are ~100% -inf. Model did not load correctly.")
                 sys.exit(1)
@@ -649,11 +765,19 @@ def cmd_collect(args):
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    # Record device placement for post-hoc verification of no CPU offload
+    # Record device placement for post-hoc verification of no CPU offload.
+    # With accelerate offload hooks, params stay on "meta" — summarise the
+    # dispatch map instead so the metadata reflects the real placement.
     device_allocation: dict[str, int] = {}
     for _, param in model.named_parameters():
         d = str(param.device)
         device_allocation[d] = device_allocation.get(d, 0) + 1
+    if isinstance(hf_map, dict) and any(d in ("cpu", "disk") for d in set(hf_map.values())):
+        offload_summary: dict[str, int] = {}
+        for d in hf_map.values():
+            key = str(d)
+            offload_summary[key] = offload_summary.get(key, 0) + 1
+        device_allocation["hf_offload_summary"] = offload_summary
 
     # Save enriched metadata matching Heretic's reproducibility requirements
     # TODO: migrate to safetensors format
@@ -665,14 +789,17 @@ def cmd_collect(args):
             "num_prompts": len(raw_prompts),
             "vocab_size": stacked.shape[-1],
             "system_prompt": SYSTEM_PROMPT,
+            "chat_template": chat_template_source,
             "response_prefix": response_prefix or "",
+            "response_prefix_mode": response_prefix_mode or ("auto" if args.response_prefix == "auto" else "explicit"),
             "split": DEFAULT_SPLIT,
             "column": DEFAULT_COLUMN,
             "methodology_version": METHODOLOGY_VERSION,
             "dtype": str(stacked.dtype),
             "quantization": quant_note,
             "device_allocation": device_allocation,
-            "had_cpu_offload": "cpu" in device_allocation,
+            "had_cpu_offload": "cpu" in device_allocation
+            or (isinstance(hf_map, dict) and any(d in ("cpu", "disk") for d in hf_map.values())),
         },
         out,
     )
@@ -723,12 +850,24 @@ def cmd_compute(args):
     if base_sys != var_sys:
         log.info(f"  WARNING: system_prompt mismatch: base={base_sys!r}, variant={var_sys!r}")
 
+    # Chat-template provenance: arms compared for KL MUST have been rendered
+    # through the same template. A mismatch means one collect ran without the
+    # comparison-level override — the KL would conflate template + weight deltas.
+    base_tpl = base.get("chat_template", "(pre-override run)")
+    var_tpl = variant.get("chat_template", "(pre-override run)")
+    if base_tpl != var_tpl:
+        log.info(
+            f"  WARNING: chat_template mismatch: base={base_tpl!r}, variant={var_tpl!r} — "
+            f"KL reflects template deltas too!"
+        )
+
     n = min(base_lp.shape[0], variant_lp.shape[0])
     base_lp = base_lp[:n]
     variant_lp = variant_lp[:n]
     log.info(f"  Comparing {n} prompts, vocab_size={base_lp.shape[-1]}")
 
-    # Report -inf statistics (informational only — NO clamping)
+    # Report -inf statistics BEFORE clamping (informational); clamped below per
+    # lesson #37 (F.kl_div log_target=True produces 0*-inf=NaN on PyTorch >= 2.11).
     base_inf_pct = (torch.isinf(base_lp) & (base_lp < 0)).float().mean().item() * 100
     var_inf_pct = (torch.isinf(variant_lp) & (variant_lp < 0)).float().mean().item() * 100
     log.info(f"  Base -inf: {base_inf_pct:.2f}%, Variant -inf: {var_inf_pct:.2f}%")
@@ -739,9 +878,29 @@ def cmd_compute(args):
             "broken during collection. Results will be unreliable!"
         )
 
-    # NO clamping — matching Heretic which does no clamping
-    # F.kl_div with log_target=True handles -inf correctly:
-    # exp(-inf) = 0, so those tokens contribute 0 to KL divergence
+    # Clamp -inf/+inf/NaN in logprobs BEFORE F.kl_div to avoid 0*-inf=NaN.
+    # In PyTorch (esp. >=2.11), F.kl_div(input, target, log_target=True) computes
+    # exp(target)*(target-input); when target=-inf, exp(-inf)=0 and 0*(-inf)=NaN.
+    # For a 262K vocab, ~200 tokens/prompt underflow to -inf log-prob, so EVERY
+    # variant produced NaN before this fix. Clamp to FLOOR=-100 (well below any
+    # observed finite log-prob of -57.5; exp(-100)~3.7e-44~0 in float32). This is
+    # mathematically equivalent for softmax (still ~0 probability) but keeps
+    # arithmetic finite. +inf (rare, from extreme weight mods) -> 0 (prob 1).
+    LP_FLOOR = -100.0
+    var_neginf = int((torch.isinf(variant_lp) & (variant_lp < 0)).sum())
+    var_posinf = int((torch.isinf(variant_lp) & (variant_lp > 0)).sum())
+    var_nan = int(torch.isnan(variant_lp).sum())
+    base_neginf = int((torch.isinf(base_lp) & (base_lp < 0)).sum())
+    base_posinf = int((torch.isinf(base_lp) & (base_lp > 0)).sum())
+    base_nan = int(torch.isnan(base_lp).sum())
+    if var_neginf or var_posinf or var_nan or base_neginf or base_posinf or base_nan:
+        log.info(
+            f"  Clamping non-finite logprobs to [{LP_FLOOR}, 0]: "
+            f"variant(-inf={var_neginf},+inf={var_posinf},nan={var_nan}), "
+            f"base(-inf={base_neginf},+inf={base_posinf},nan={base_nan})"
+        )
+    variant_lp = torch.nan_to_num(variant_lp, nan=LP_FLOOR, posinf=0.0, neginf=LP_FLOOR)
+    base_lp = torch.nan_to_num(base_lp, nan=LP_FLOOR, posinf=0.0, neginf=LP_FLOOR)
 
     # Compute KL divergence (matching Heretic evaluator.py lines 98-103)
     kl_div = F.kl_div(
@@ -804,6 +963,7 @@ def cmd_compute(args):
         "kl_divergence_per_prompt_min": min(per_prompt_kl),
         "kl_divergence_per_prompt_max": max(per_prompt_kl),
         "interpretation": interp,
+        "chat_template": base_tpl,
         "methodology": (
             f"F.kl_div(logprobs_variant, logprobs_base, reduction='batchmean', "
             f"log_target=True) on full vocab first-token log_softmax via "
@@ -845,7 +1005,6 @@ def main():
     p_collect.add_argument("--model", required=True, help="Path to model directory")
     p_collect.add_argument("--tokenizer", default=None, help="Path to tokenizer (defaults to --model)")
     p_collect.add_argument("--output", required=True, help="Path to save logits .pt file")
-    p_collect.add_argument("--comparison", help="Path to comparison.json dir (resolves --model)")
     p_collect.add_argument(
         "--num-prompts",
         type=int,
@@ -855,7 +1014,12 @@ def main():
     p_collect.add_argument(
         "--response-prefix",
         default="none",
-        help='Response prefix: "auto" (detect), "none" (no prefix), or literal string',
+        help=(
+            'Response prefix: "auto" (detect via generation), "thinkclose" '
+            "(deterministic heretic-adapted CoT suppression: '</think>\\n\\n' "
+            "when the render prefills an open <think>, '<think></think>' "
+            'otherwise), "none" (no prefix), or literal string'
+        ),
     )
     p_collect.add_argument(
         "--save-prefix",
@@ -863,11 +1027,31 @@ def main():
         help="Path to save detected response prefix (for passing to variant collects)",
     )
     p_collect.add_argument(
+        "--chat-template-file",
+        default=None,
+        help=(
+            "Path to a chat template .jinja file loaded into the tokenizer BEFORE "
+            "rendering (overrides the model's bundled template). Pass the "
+            "comparison's stock template so every arm renders identical prompts — "
+            "KL then measures weight deltas, not template deltas."
+        ),
+    )
+    p_collect.add_argument(
         "--device-map",
         default=None,
         help=(
             'Override auto-detection. Pass a JSON string like \'{"": "cuda:0"}\' '
             "to force all params onto a specific device. Bypasses size thresholds."
+        ),
+    )
+    p_collect.add_argument(
+        "--lora-adapter",
+        default=None,
+        help=(
+            "Path to a PEFT LoRA adapter directory. When set, the base model is "
+            "loaded normally and the adapter is applied dynamically at FP32 "
+            "precision (NOT merged into BF16 — preserves sub-precision edits, "
+            "AGENTS.md lesson #35)."
         ),
     )
     # --- compute subcommand ---

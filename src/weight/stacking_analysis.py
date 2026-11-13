@@ -22,28 +22,17 @@ import argparse
 import gc
 import json
 import logging
-import math
 from collections import defaultdict
 from pathlib import Path
 
 import torch
 
 from src.model_config import build_shard_map, detect_architecture, load_tensor
+from src.weight._common import cosine_sim, safe_mean, safe_median, safe_std
 
 log = logging.getLogger(__name__)
 
 THRESHOLD = 1e-10
-
-
-def cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
-    a_f = a.float().flatten()
-    b_f = b.float().flatten()
-    dot = (a_f * b_f).sum()
-    na = a_f.norm()
-    nb = b_f.norm()
-    if na < 1e-12 or nb < 1e-12:
-        return 0.0
-    return max(-1.0, min(1.0, (dot / (na * nb)).item()))
 
 
 def regression_slope(predictor: torch.Tensor, response: torch.Tensor) -> float:
@@ -74,25 +63,6 @@ def explained_variance(predictor: torch.Tensor, response: torch.Tensor) -> float
     if ss_tot < 1e-20:
         return 1.0
     return (1.0 - ss_res / ss_tot).item()
-
-
-def safe_mean(lst: list[float]) -> float | None:
-    return sum(lst) / len(lst) if lst else None
-
-
-def safe_median(lst: list[float]) -> float | None:
-    if not lst:
-        return None
-    s = sorted(lst)
-    mid = len(s) // 2
-    return (s[mid - 1] + s[mid]) / 2 if len(s) % 2 == 0 else s[mid]
-
-
-def safe_std(lst: list[float]) -> float | None:
-    if len(lst) < 2:
-        return None
-    m = sum(lst) / len(lst)
-    return math.sqrt(sum((x - m) ** 2 for x in lst) / len(lst))
 
 
 def main() -> None:
@@ -147,12 +117,17 @@ def main() -> None:
 
     exact_match_count = 0
     near_exact_count = 0
+    shape_skipped = 0
 
     for i, ck in enumerate(all_keys):
         t_base = load_tensor(base_map, ck)
         t_a = load_tensor(mapa, ck)
         t_b = load_tensor(mapb, ck)
         if t_base is None or t_a is None or t_b is None:
+            continue
+
+        if len({t_base.shape, t_a.shape, t_b.shape}) != 1:
+            shape_skipped += 1  # architecture-extending edit (e.g. appended neuron)
             continue
 
         t_base = t_base.float()
@@ -200,7 +175,6 @@ def main() -> None:
             shared_cosines.append(cos_ab)
 
             if norm_b > THRESHOLD:
-                entry["ratio_Dr_Db"] = norm_r / norm_b
                 ratio_on_shared.append(norm_r / norm_b)
 
             slope = regression_slope(D_a, D_b)
@@ -223,6 +197,9 @@ def main() -> None:
         for elabel in args.extra_labels:
             t_e = load_tensor(extra_maps[elabel], ck)
             if t_e is None:
+                continue
+            if t_e.shape != t_base.shape:
+                shape_skipped += 1  # architecture-extending edit in extra variant
                 continue
             t_e = t_e.float()
             D_e = t_e - t_base
@@ -267,12 +244,12 @@ def main() -> None:
 
     report: dict = {
         "results_version": 1,
-        "metadata": {},
         "architecture": {"family": cfg.family, "layers": cfg.layer_count},
         "variant_a": args.label_a,
         "variant_b": args.label_b,
         "extra_variants": args.extra_labels,
         "total_keys": len(all_keys),
+        "shape_skipped": shape_skipped,
         "a_changed_count": len(a_changed_keys),
         "b_changed_count": len(b_changed_keys),
         "shared_changed_count": len(shared_cosines),

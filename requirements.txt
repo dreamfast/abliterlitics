@@ -1,4 +1,5 @@
-# Abliterlitics — Python dependencies (pinned for Docker builds)
+# Abliterlitics — Python dependencies for Docker builds (keep in sync with pyproject [project].dependencies)
+# torch comes from the base image (nvcr.io/nvidia/pytorch), not this file.
 tqdm>=4.65.0
 safetensors>=0.4.0
 matplotlib>=3.7.0
@@ -7,5 +8,10 @@ matplotlib-venn>=1.1.0
 transformers>=4.45.0
 accelerate>=0.26.0
 datasets>=2.18.0
-bitsandbytes>=0.43.0
 jsonschema>=4.20.0
+numpy>=1.24.0
+pyyaml>=6.0
+requests>=2.31.0
+av>=11.0
+gguf>=0.6
+flask>=3.0

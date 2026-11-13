@@ -19,20 +19,35 @@ from src.db.pipeline import init_stages
 
 log = logging.getLogger(__name__)
 
-# Primary metrics to import per lm-eval task (skip aliases and subtasks).
+# Primary metrics per lm-eval task — SINGLE SOURCE OF TRUTH, shared with
+# src/db_tables.py (report tables import this dict; do not duplicate it).
 # Key: lm-eval task name (as it appears in results dict).
-# Value: list of metric names to import (e.g. "acc,none", "exact_match,strict-match").
+# Value: list of metric names (e.g. "acc,none", "exact_match,flexible-extract").
+# Ordered by category: v2 OLL suite first, then v1 supplement, then generative.
+# The import subtask-skip check keys off the first underscore segment, so the
+# leaderboard_* keys here are also what makes exact-key lookup work upstream.
 TASK_PRIMARY_METRICS: dict[str, list[str]] = {
-    "mmlu": ["acc,none"],
-    "gsm8k": ["exact_match,strict-match", "exact_match,flexible-extract"],
+    # v2 Open LLM Leaderboard suite (aggregates only, subtasks are filtered)
+    "leaderboard_mmlu_pro": ["acc,none"],
+    "leaderboard_gpqa_diamond": ["acc_norm,none"],
+    "leaderboard_bbh": ["acc_norm,none"],
+    "leaderboard_musr": ["acc_norm,none"],
+    "leaderboard_ifeval": ["prompt_level_strict_acc,none"],
+    # v1 forensic supplement
     "hellaswag": ["acc_norm,none"],
     "arc_challenge": ["acc_norm,none"],
     "winogrande": ["acc,none"],
+    "piqa": ["acc_norm,none"],
+    "lambada_openai": ["perplexity,none"],
+    # Legacy MMLU (kept for backwards compat with older comparisons)
+    "mmlu": ["acc,none"],
+    # Generative tasks
+    "gsm8k": ["exact_match,flexible-extract", "exact_match,strict-match"],
     "truthfulqa_mc1": ["acc,none"],
     "truthfulqa_mc2": ["acc,none"],
     "truthfulqa_gen": ["bleu_acc,none"],
-    "piqa": ["acc_norm,none"],
-    "lambada_openai": ["perplexity,none"],
+    # HumanEval (dead under chat-template scoring but tracked for completeness)
+    "humaneval": ["pass@1,none"],
 }
 
 
@@ -163,29 +178,44 @@ def _import_gsm8k_sample_stats(
 
     Sample file lookup (in priority order):
       1. New runner: ``<results_dir>/__model/<model>__samples_gsm8k_*.jsonl``
-      2. Legacy: ``<results_dir>/__model/samples_gsm8k_*.jsonl`` matched by
+      2. Per-model dir (lesson #51): ``<results_dir>/<model>/samples_gsm8k_*.jsonl``
+      3. Legacy: ``<results_dir>/__model/samples_gsm8k_*.jsonl`` matched by
          file mtime closest to ``result_file.stat().st_mtime``.
 
     Returns the number of metric rows imported (0 if no samples file found).
     """
+    # Layout 1: __model/<model>__samples_gsm8k_*.jsonl (renamed-by-runner)
     samples_dir = results_dir / "__model"
-    if not samples_dir.is_dir():
-        return 0
+    candidates: list[Path] = []
+    if samples_dir.is_dir():
+        candidates = sorted(samples_dir.glob(f"{model_name}__samples_gsm8k_*.jsonl"))
 
-    # Try new naming convention first: <model>__samples_gsm8k_*.jsonl
-    candidates = sorted(samples_dir.glob(f"{model_name}__samples_gsm8k_*.jsonl"))
+    # Layout 2 (lesson #51): the current runner writes Phase 2 samples to
+    # per-model dirs — results/lm_eval/<model>/samples_gsm8k_*.jsonl — which
+    # the __model/-only scan never saw (the manual docker-copy workaround).
+    if not candidates:
+        per_model_dir = results_dir / model_name
+        if per_model_dir.is_dir():
+            candidates = sorted(per_model_dir.glob("samples_gsm8k_*.jsonl"))
 
     # Fall back to legacy: match by mtime
+    # NOTE: the original 10-minute window was too tight for the actual
+    # Phase 2 → Phase 3 timing on thinking models (Phase 2 GSM8K finishes
+    # 25-30 min before the canonical result file is written by Phase 3
+    # HumanEval/LAMBADA). Empirically measured on gemma4-12b (journal #76,
+    # AGENTS.md lesson #32). Window now 60 min to cover the gap safely.
     if not candidates:
         result_mtime = result_file.stat().st_mtime
-        all_samples = list(samples_dir.glob("samples_gsm8k_*.jsonl"))
-        # Exclude any already renamed files
-        all_samples = [sf for sf in all_samples if "__" not in sf.stem]
-        if all_samples:
-            closest = min(all_samples, key=lambda sf: abs(sf.stat().st_mtime - result_mtime))
-            # Only use if within 10 minutes — otherwise it's a false match
-            if abs(closest.stat().st_mtime - result_mtime) < 600:
-                candidates = [closest]
+        if samples_dir.is_dir():
+            all_samples = list(samples_dir.glob("samples_gsm8k_*.jsonl"))
+            # Exclude any already renamed files
+            all_samples = [sf for sf in all_samples if "__" not in sf.stem]
+            if all_samples:
+                closest = min(all_samples, key=lambda sf: abs(sf.stat().st_mtime - result_mtime))
+                # Only use if within 1 hour — otherwise it's a false match.
+                # (Was 10 min, too tight — see comment above.)
+                if abs(closest.stat().st_mtime - result_mtime) < 3600:
+                    candidates = [closest]
 
     if not candidates:
         log.debug("No GSM8K samples file found for %s", model_name)
@@ -215,16 +245,19 @@ def _import_gsm8k_sample_stats(
                 if filt not in stats:
                     continue
                 resps = d.get("resps", [[]])
-                filtered = d.get("filtered_resps", [])
                 em = d.get("exact_match", 0)
                 resp_text = resps[0][0] if resps and resps[0] else ""
-                filt_text = filtered[0] if filtered else ""
                 stats[filt]["total"] += 1
                 if em == 1.0:
                     stats[filt]["correct"] += 1
-                if not filt_text.strip():
+                # Empty check: use the RAW response content (resps), not the
+                # filtered version. For thinking-loop nulls, resps[0][0] is ""
+                # but filtered_resps[0] is "[invalid]" (strict-match marker for
+                # "no number found") — non-empty, would miss the thinking-loop
+                # signal. AGENTS.md lesson #32.
+                if not (resp_text.strip() if isinstance(resp_text, str) else str(resp_text).strip()):
                     stats[filt]["empty"] += 1
-                stats[filt]["resp_lens"].append(len(resp_text))
+                stats[filt]["resp_lens"].append(len(resp_text) if isinstance(resp_text, str) else len(str(resp_text)))
     except OSError as exc:
         log.warning("Failed to read GSM8K samples %s: %s", samples_file.name, exc)
         return 0
@@ -240,11 +273,30 @@ def _import_gsm8k_sample_stats(
     adjusted = s["correct"] / (s["total"] - s["empty"]) if (s["total"] - s["empty"]) > 0 else 0.0
     gap = flex_pct - strict_pct
 
+    # Thinking-model-aware metrics (AGENTS.md lesson #32). For thinking models
+    # the strict-match score is always 0 (model doesn't emit "#### N" format),
+    # so `adjusted` (strict-based) is also 0 and useless. The TRUE capability
+    # signal is answered-only on flexible-extract: correct / (total - empty_flex).
+    # Empty-count and empty-pct are reported on flexible-extract rows because
+    # that's the filter whose content drives the headline score.
+    flex_total = f_stat["total"] or 1  # avoid div-by-zero
+    flex_empty = f_stat["empty"]
+    flex_correct = f_stat["correct"]
+    flex_nonempty = flex_total - flex_empty
+    answered_only_flex = flex_correct / flex_nonempty if flex_nonempty > 0 else 0.0
+    empty_pct_flex = (flex_empty / flex_total * 100.0) if flex_total else 0.0
+
     rows = [
+        # Existing metrics (kept for back-compat; useful for non-thinking models)
         ("empty_count,none", float(s["empty"])),
         ("mean_response_chars,none", float(mean_resp)),
         ("exact_match_adjusted,strict-match", float(adjusted)),
         ("strict_flexible_gap,none", float(gap)),
+        # Thinking-model-aware metrics (AGENTS.md lesson #32). These are the
+        # ones to use when comparing abliterations of thinking models.
+        ("empty_count_flex,none", float(flex_empty)),
+        ("empty_pct_flex,none", float(empty_pct_flex)),
+        ("answered_only_exact_match,flexible-extract", float(answered_only_flex)),
     ]
 
     count = 0
@@ -264,14 +316,17 @@ def _import_gsm8k_sample_stats(
             log.warning("Failed to insert GSM8K stat %s/%s: %s", model_name, metric_name, exc)
 
     log.info(
-        "  %s: GSM8K sample stats — empty=%d, mean_chars=%.0f, strict=%.4f, flex=%.4f, gap=%+.4f, adjusted=%.4f",
+        "  %s: GSM8K sample stats — strict_empty=%d, flex_empty=%d (%.1f%%), "
+        "strict=%.4f, flex=%.4f, gap=%+.4f, answered_only_flex=%.4f, mean_chars=%.0f",
         model_name,
         s["empty"],
-        mean_resp,
+        flex_empty,
+        empty_pct_flex,
         strict_pct,
         flex_pct,
         gap,
-        adjusted,
+        answered_only_flex,
+        mean_resp,
     )
     return count
 
@@ -441,6 +496,436 @@ def import_weight_results(
     return count
 
 
+def import_te_results(
+    conn: sqlite3.Connection,
+    comparison_name: str,
+    results_dir: Path,
+) -> int:
+    """Import text-encoder result JSON files into te_results table.
+
+    Parses te_<variant>.json files written by run_analysis.py.
+
+    Returns the number of metric rows imported.
+    """
+    pattern = "te_*.json"
+    files = sorted(results_dir.glob(pattern))
+    if not files:
+        log.warning("No %s files found in %s", pattern, results_dir)
+        return 0
+
+    count = 0
+    for f in files:
+        if f.name == "te_report.json" or f.name == "te_report.md":
+            continue  # skip aggregate report, only parse per-variant
+        # Phase-4 battery outputs use the tebench_ prefix and must never be
+        # parsed as conditioning results (their schema differs). The glob
+        # te_*.json does not match tebench_*, but guard explicitly so a
+        # future rename cannot silently corrupt this table.
+        if f.name.startswith("tebench_"):
+            log.debug("Skipping Phase-4 battery file %s (tebench_ prefix)", f.name)
+            continue
+        try:
+            data = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Failed to parse %s: %s", f, exc)
+            continue
+
+        backend = data.get("backend", "unknown")
+        for variant in data.get("variants", []):
+            # Use slug from filename (te_<slug>.json) for consistency with other tables
+            variant_slug = f.stem.replace("te_", "", 1)
+            for sr in variant.get("streams", []):
+                stream = sr.get("stream", "")
+                stage = sr.get("stage", "")
+                metrics = sr.get("metrics", {})
+                damage = sr.get("damage_quant_units")
+
+                for metric_name, metric_value in metrics.items():
+                    try:
+                        conn.execute(
+                            """INSERT OR REPLACE INTO te_results
+                               (comparison, variant, backend, stream, stage, metric_name,
+                                metric_value, damage_quant_units, result_path)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                comparison_name,
+                                variant_slug,
+                                backend,
+                                stream,
+                                stage,
+                                metric_name,
+                                float(metric_value),
+                                damage,
+                                str(f),
+                            ),
+                        )
+                        count += 1
+                    except (sqlite3.Error, ValueError, TypeError) as exc:
+                        log.warning("Failed to import TE metric %s from %s: %s", metric_name, f, exc)
+
+    conn.commit()
+    if count:
+        log.info("Imported %d text-encoder metric rows from %s", count, results_dir)
+    return count
+
+
+def import_te_ab_images(
+    conn: sqlite3.Connection,
+    comparison_name: str,
+    manifest_path: Path,
+) -> int:
+    """Import A/B image manifest (run_ab_test.py) into te_ab_images.
+
+    One row per image (gen_seconds) plus per-variant timing summary rows
+    (label='__timing__', pass=NULL, metric_name like 'cold_first_image_seconds').
+
+    Returns the number of rows imported.
+    """
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("Failed to parse A/B manifest %s: %s", manifest_path, exc)
+        return 0
+
+    count = 0
+    for img in manifest.get("images", []):
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO te_ab_images
+                   (comparison, variant, te_name, loader, label, category, pass,
+                    metric_name, metric_value, image_path, seed)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'gen_seconds', ?, ?, ?)""",
+                (
+                    comparison_name,
+                    img["variant"],
+                    img.get("te_name", ""),
+                    img.get("loader", ""),
+                    img.get("label") or "unlabeled",
+                    img.get("category"),
+                    img.get("pass"),
+                    float(img.get("gen_seconds", 0.0)),
+                    img.get("path"),
+                    int(img.get("seed", 0)),
+                ),
+            )
+            count += 1
+        except (sqlite3.Error, ValueError, TypeError, KeyError) as exc:
+            log.warning("Failed to import A/B image row from %s: %s", manifest_path, exc)
+
+    for variant, timing in manifest.get("timing", {}).items():
+        for pass_name, stats in timing.get("passes", {}).items():
+            for metric, value in stats.items():
+                if value is None:
+                    continue
+                try:
+                    conn.execute(
+                        """INSERT OR REPLACE INTO te_ab_images
+                           (comparison, variant, te_name, loader, label, category, pass,
+                            metric_name, metric_value, image_path, seed)
+                           VALUES (?, ?, ?, ?, '__timing__', NULL, NULL, ?, ?, NULL, NULL)""",
+                        (
+                            comparison_name,
+                            variant,
+                            timing.get("te_name", ""),
+                            timing.get("loader", ""),
+                            f"{pass_name}_{metric}",
+                            float(value),
+                        ),
+                    )
+                    count += 1
+                except (sqlite3.Error, ValueError, TypeError) as exc:
+                    log.warning("Failed to import A/B timing row for %s: %s", variant, exc)
+        # VRAM profiling pass (--vram-only): peak VRAM after TE cold load
+        vram = timing.get("vram", {})
+        for metric, value in vram.items():
+            if value is None:
+                continue
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO te_ab_images
+                       (comparison, variant, te_name, loader, label, category, pass,
+                        metric_name, metric_value, image_path, seed)
+                       VALUES (?, ?, ?, ?, '__vram__', NULL, NULL, ?, ?, NULL, NULL)""",
+                    (
+                        comparison_name,
+                        variant,
+                        timing.get("te_name", ""),
+                        timing.get("loader", ""),
+                        f"vram_{metric}",
+                        float(value),
+                    ),
+                )
+                count += 1
+            except (sqlite3.Error, ValueError, TypeError) as exc:
+                log.warning("Failed to import A/B vram row for %s: %s", variant, exc)
+
+    conn.commit()
+    if count:
+        log.info("Imported %d te_ab_images rows from %s", count, manifest_path)
+    return count
+
+
+def import_te_battery_results(
+    conn: sqlite3.Connection,
+    comparison_name: str,
+    results_dir: Path,
+) -> int:
+    """Import battery-investigation files (tebench_<battery>_*.json with flat rows).
+
+    Consumes consolidation outputs like tebench_h3_audio_damage.json: each has
+    a ``rows`` list of {battery, config, instrument, metric_name, metric_value,
+    [ci_low, ci_high, n]} plus a top-level ``verdict``. Files without ``rows``
+    (e.g. tebench_img_*, tebench_controls.json — different importers) are
+    skipped by the explicit row check.
+
+    Returns the number of metric rows imported.
+    """
+    n_total = 0
+    for f in sorted(results_dir.glob("tebench_*.json")):
+        try:
+            data = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Skipping unreadable %s: %s", f.name, exc)
+            continue
+        rows = data.get("rows")
+        # defense-in-depth: a battery file must carry rows AND a battery name —
+        # sibling tebench_* outputs (img/controls/attention/...) have neither
+        if not (isinstance(rows, list) and rows and data.get("battery")):
+            continue
+        n_imported = 0
+        for r in rows:
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO te_battery_results
+                       (comparison, battery, config, instrument, metric_name,
+                        metric_value, ci_low, ci_high, n, result_path)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        comparison_name,
+                        str(r["battery"]),
+                        str(r["config"]),
+                        str(r["instrument"]),
+                        str(r["metric_name"]),
+                        float(r["metric_value"]),
+                        float(r["ci_low"]) if r.get("ci_low") is not None else None,
+                        float(r["ci_high"]) if r.get("ci_high") is not None else None,
+                        int(r["n"]) if r.get("n") is not None else None,
+                        str(f),
+                    ),
+                )
+                n_imported += 1
+                n_total += 1
+            except (KeyError, TypeError, ValueError, sqlite3.Error) as exc:
+                log.warning("Bad row in %s: %s (%s)", f.name, exc, r)
+        if n_imported:
+            log.info("Imported %s: %d rows (verdict: %s)", f.name, len(rows), data.get("verdict", "n/a"))
+    conn.commit()
+    return n_total
+
+
+def import_te_img_metrics(
+    conn: sqlite3.Connection,
+    comparison_name: str,
+    results_dir: Path,
+) -> int:
+    """Import Phase-4 image-space metric files (tebench_img_*.json) into te_img_metrics.
+
+    Reads tebench_img_<variant>.json (te_swap + cross_prompt buckets, CLIP-score
+    deltas, anchor ratios) and tebench_img_anchors.json (pooled seed_change and
+    floor_band anchors, stored with variant='__anchor__').
+
+    Returns the number of metric rows imported.
+    """
+    files = sorted(results_dir.glob("tebench_img_*.json"))
+    if not files:
+        log.info("No tebench_img_*.json files in %s", results_dir)
+        return 0
+
+    count = 0
+    for f in files:
+        try:
+            data = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Failed to parse %s: %s", f, exc)
+            continue
+
+        is_anchor = f.name == "tebench_img_anchors.json"
+        variant = "__anchor__" if is_anchor else str(data.get("variant", f.stem.replace("tebench_img_", "", 1)))
+        reference = str(data.get("reference", ""))
+        buckets: list[tuple[str, dict[str, Any]]] = (
+            [(k, data[k]) for k in ("seed_change", "floor_band") if k in data]
+            if is_anchor
+            else [(k, data[k]) for k in ("te_swap", "cross_prompt") if k in data]
+        )
+
+        def _insert(
+            kind: str,
+            metric: str,
+            value: float,
+            ci: tuple[float, float] | None,
+            ratio: float | None,
+            *,
+            _variant: str = variant,
+            _reference: str = reference,
+            _f: Path = f,
+        ) -> None:
+            nonlocal count
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO te_img_metrics
+                       (comparison, variant, reference, kind, metric_name, metric_value,
+                        ci_low, ci_high, anchor_ratio, result_path)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        comparison_name,
+                        _variant,
+                        _reference,
+                        kind,
+                        metric,
+                        float(value),
+                        ci[0] if ci else None,
+                        ci[1] if ci else None,
+                        ratio,
+                        str(_f),
+                    ),
+                )
+                count += 1
+            except (sqlite3.Error, ValueError, TypeError) as exc:
+                log.warning("Failed to import te_img_metrics row %s/%s from %s: %s", kind, metric, _f, exc)
+
+        for kind, bucket in buckets:
+            ratios = bucket.get("anchor_ratios", {}) if isinstance(bucket, dict) else {}
+            for s in bucket.get("summaries", []):
+                metric = str(s.get("metric", ""))
+                # anchor_ratio: primary seed-change ratio for te_swap lpips rows;
+                # floor-band ratios are JOIN-able from the __anchor__ rows.
+                ratio = ratios.get("lpips/seed_change") if (kind == "te_swap" and metric == "lpips") else None
+                ci = (s.get("ci_low"), s.get("ci_high")) if s.get("ci_low") is not None else None
+                _insert(kind, metric, s.get("mean", 0.0), ci, ratio)
+
+        if not is_anchor and data.get("clip_score_delta_mean") is not None:
+            _insert("te_swap", "clip_score_delta", float(data["clip_score_delta_mean"]), None, None)
+
+    conn.commit()
+    if count:
+        log.info("Imported %d te_img_metrics rows from %s", count, results_dir)
+    return count
+
+
+def import_te_controls(
+    conn: sqlite3.Connection,
+    comparison_name: str,
+    results_dir: Path,
+) -> int:
+    """Import the Phase-4 control battery (tebench_controls.json) into te_controls."""
+    f = results_dir / "tebench_controls.json"
+    if not f.exists():
+        return 0
+    data = json.loads(f.read_text())
+    count = 0
+    for cond, payload in data.get("conditions", {}).items():
+        s = payload.get("summary", {})
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO te_controls
+                   (comparison, condition, mean_final_latent_div, noise_control_final,
+                    div_control_ratio, result_path)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    comparison_name,
+                    cond,
+                    float(s.get("mean_final_latent_div", 0.0)),
+                    s.get("noise_control_final"),
+                    s.get("div_control_ratio"),
+                    str(f),
+                ),
+            )
+            count += 1
+        except (sqlite3.Error, ValueError, TypeError) as exc:
+            log.warning("Failed to import te_controls row %s: %s", cond, exc)
+    conn.commit()
+    if count:
+        log.info("Imported %d te_controls rows", count)
+    return count
+
+
+def import_te_attention(
+    conn: sqlite3.Connection,
+    comparison_name: str,
+    results_dir: Path,
+) -> int:
+    """Import Phase-4 attention readout files (tebench_attention_*.json)."""
+    files = sorted(results_dir.glob("tebench_attention_*.json"))
+    count = 0
+    for f in files:
+        try:
+            d = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Failed to parse %s: %s", f, exc)
+            continue
+        per_layer = d.get("jsd_per_layer", {})
+        peak_layer = max(per_layer, key=lambda k: per_layer[k], default=None)
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO te_attention
+                   (comparison, variant, jsd_mean_all, jsd_peak_layer, jsd_peak_value, n_layers, result_path)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    comparison_name,
+                    str(d.get("variant_name", f.stem.replace("tebench_attention_", ""))),
+                    float(d.get("jsd_mean_all", 0.0)),
+                    int(peak_layer) if peak_layer is not None else None,
+                    per_layer.get(peak_layer) if peak_layer is not None else None,
+                    len(per_layer),
+                    str(f),
+                ),
+            )
+            count += 1
+        except (sqlite3.Error, ValueError, TypeError) as exc:
+            log.warning("Failed to import te_attention row from %s: %s", f, exc)
+    conn.commit()
+    if count:
+        log.info("Imported %d te_attention rows", count)
+    return count
+
+
+def import_te_discriminability(
+    conn: sqlite3.Connection,
+    comparison_name: str,
+    results_dir: Path,
+) -> int:
+    """Import Phase-4 discriminability files (tebench_discriminability_*.json)."""
+    files = sorted(results_dir.glob("tebench_discriminability_*.json"))
+    count = 0
+    for f in files:
+        try:
+            d = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Failed to parse %s: %s", f, exc)
+            continue
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO te_discriminability
+                   (comparison, variant, base_spread, variant_spread, spread_ratio, result_path)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    comparison_name,
+                    str(d.get("variant_name", f.stem.replace("tebench_discriminability_", ""))),
+                    float(d.get("base_spread", 0.0)),
+                    float(d.get("variant_spread", 0.0)),
+                    float(d.get("spread_ratio", 0.0)),
+                    str(f),
+                ),
+            )
+            count += 1
+        except (sqlite3.Error, ValueError, TypeError) as exc:
+            log.warning("Failed to import te_discriminability row from %s: %s", f, exc)
+    conn.commit()
+    if count:
+        log.info("Imported %d te_discriminability rows", count)
+    return count
+
+
 def import_all_results(
     conn: sqlite3.Connection,
     comparison_dir: str,
@@ -503,6 +988,40 @@ def import_all_results(
         counts["harmbench"] = len(list(harmbench_dir.glob("harmbench_*_responses.json")))
     else:
         log.info("No harmbench results directory found")
+
+    # Text-encoder results
+    te_dir = base / "results" / comparison_name / "text_encoder"
+    if not te_dir.exists():
+        te_dir = base / "results" / "text_encoder"
+    if te_dir.exists():
+        counts["text_encoder"] = import_te_results(conn, comparison_name, te_dir)
+    else:
+        log.info("No text_encoder results directory found")
+
+    # Text-encoder A/B image manifest
+    ab_manifest = te_dir / "ab_images" / "manifest.json"
+    if ab_manifest.exists():
+        counts["te_ab_images"] = import_te_ab_images(conn, comparison_name, ab_manifest)
+    else:
+        log.info("No A/B image manifest at %s", ab_manifest)
+
+    # Phase-4 battery: image metrics + controls + attention + discriminability
+    if te_dir.exists():
+        img_n = import_te_img_metrics(conn, comparison_name, te_dir)
+        if img_n:
+            counts["te_img_metrics"] = img_n
+        ctrl_n = import_te_controls(conn, comparison_name, te_dir)
+        if ctrl_n:
+            counts["te_controls"] = ctrl_n
+        attn_n = import_te_attention(conn, comparison_name, te_dir)
+        if attn_n:
+            counts["te_attention"] = attn_n
+        disc_n = import_te_discriminability(conn, comparison_name, te_dir)
+        if disc_n:
+            counts["te_discriminability"] = disc_n
+        batt_n = import_te_battery_results(conn, comparison_name, te_dir)
+        if batt_n:
+            counts["te_battery_results"] = batt_n
 
     log.info("Import complete for %s: %s", comparison_name, counts)
     return counts
@@ -830,15 +1349,26 @@ def _import_harmbench_scores(
 
 
 def _extract_weight_summary(script_name: str, raw: dict[str, Any]) -> dict[str, Any]:
-    """Extract key metrics from a weight analysis JSON for the summary column."""
+    """Extract key metrics from a weight analysis JSON for the summary column.
+
+    Keys follow the ACTUAL script output contracts (src/weight/*), verified
+    against each script's report dict — the pre-fix readers (total_changes /
+    effective_ranks / total_tensors) matched no emitted field and every
+    non-fingerprint summary silently came back empty.
+    """
     summary: dict[str, Any] = {"script": script_name}
 
     if script_name == "panel_comparison":
-        # multi_model_panel.json
+        # multi_model_panel.json — panel emits architecture.total_keys and
+        # model_key_counts (no top-level total_tensors).
         if "pairwise_changed_counts" in raw:
             summary["pairwise_changed_counts"] = raw["pairwise_changed_counts"]
-        if "total_tensors" in raw:
-            summary["total_tensors"] = raw["total_tensors"]
+        arch = raw.get("architecture")
+        if isinstance(arch, dict) and arch.get("total_keys") is not None:
+            summary["total_keys"] = arch["total_keys"]
+        mkc = raw.get("model_key_counts")
+        if isinstance(mkc, dict) and mkc:
+            summary["model_key_counts"] = mkc
 
     elif script_name == "fingerprint":
         scope = raw.get("scope", {})
@@ -861,23 +1391,53 @@ def _extract_weight_summary(script_name: str, raw: dict[str, Any]) -> dict[str, 
             summary["late_layer_pct"] = layer_profile.get("late_layer_pct")
 
     elif script_name == "svd":
-        ranks = raw.get("effective_ranks", {})
-        if ranks:
-            summary["effective_ranks"] = ranks
+        # svd emits per-tensor tensor_results[].effective_rank_90pct_energy —
+        # no top-level aggregate, so compute one at import. NOTE (lesson #54):
+        # rank90 == 20 is the svd_lowrank(k=20) saturation floor, not a value.
+        tensor_results = raw.get("tensor_results")
+        if isinstance(tensor_results, list):
+            ranks = sorted(
+                t["effective_rank_90pct_energy"]
+                for t in tensor_results
+                if isinstance(t, dict) and isinstance(t.get("effective_rank_90pct_energy"), (int, float))
+            )
+            if ranks:
+                summary["effective_rank_90pct_median"] = ranks[len(ranks) // 2]
+                summary["effective_rank_90pct_max"] = ranks[-1]
+                summary["tensors_ranked"] = len(ranks)
+        if raw.get("total_analyzed") is not None:
+            summary["total_analyzed"] = raw["total_analyzed"]
 
     elif script_name == "layer_analysis":
-        if "layers_modified" in raw:
-            summary["layers_modified"] = raw["layers_modified"]
-        if "total_layers" in raw:
-            summary["total_layers"] = raw["total_layers"]
+        # layer_analysis emits layer_progression: {layer: {changed_tensors, ...}}
+        # (no top-level layers_modified/total_layers) — derive both counts.
+        progression = raw.get("layer_progression")
+        if isinstance(progression, dict) and progression:
+            modified = [ly for ly, d in progression.items() if isinstance(d, dict) and d.get("changed_tensors")]
+            summary["layers_modified"] = len(modified)
+            summary["total_layers"] = len(progression)
 
     elif script_name == "correlation":
-        if "correlation_coefficient" in raw:
-            summary["correlation_coefficient"] = raw["correlation_coefficient"]
+        # technique_correlation emits pairwise_cosines: {pair: {mean, median,
+        # count, min, max}} (no top-level correlation_coefficient).
+        pw = raw.get("pairwise_cosines")
+        if isinstance(pw, dict) and pw:
+            summary["pairwise_cosines"] = {
+                pair: {k: stats.get(k) for k in ("mean", "median", "count")}
+                for pair, stats in pw.items()
+                if isinstance(stats, dict)
+            }
 
     elif script_name == "edit_vector":
-        if "total_changes" in raw:
-            summary["total_changes"] = raw["total_changes"]
+        # Single-variant mode emits changed_count/total_keys; two-variant mode
+        # emits overlap_count/nontrivial_overlap_count (never total_changes).
+        if raw.get("changed_count") is not None:
+            summary["changed_count"] = raw["changed_count"]
+            summary["total_keys"] = raw.get("total_keys")
+        if raw.get("overlap_count") is not None:
+            summary["overlap_count"] = raw["overlap_count"]
+            summary["nontrivial_overlap_count"] = raw.get("nontrivial_overlap_count")
+            summary["total_keys"] = raw.get("total_keys")
 
     return summary
 

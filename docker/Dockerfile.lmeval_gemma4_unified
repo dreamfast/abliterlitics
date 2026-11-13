@@ -1,0 +1,62 @@
+# Abliterlitics LM-Eval — vLLM with Gemma4Unified support
+#
+# Built on top of Google's vllm/vllm-openai:gemma4-unified image, pinned by
+# digest (the upstream tag is a floating dev snapshot; the pinned manifest is
+# on the vLLM 0.26 line — Gemma4UnifiedForConditionalGeneration support
+# landed in vLLM 0.23.0, see vllm-project/vllm#44429, and AGENTS.md lesson
+# #11 records the built image as shipping vLLM 0.26.0 / lm-eval 0.4.12). The
+# standard abliterlitics-lmeval:1.0.0 (vLLM
+# 0.19.0) and abliterlitics-lmeval-nightly:1.0.0 (vLLM 0.20.1) images do
+# NOT register Gemma4UnifiedForConditionalGeneration and will fail at model
+# load with "model type gemma4_unified but Transformers does not recognize
+# this architecture".
+#
+# Use this image for any Gemma4Unified model:
+#   - google/gemma-4-12B-it
+#   - OBLITERATUS/Gemma-4-12B-OBLITERATED
+#   - huihui-ai/Huihui-gemma-4-12B-it-abliterated
+#   - wangzhang/gemma-4-12B-it-abliterix
+#   - (any future fine-tune preserving the Gemma4Unified arch)
+#
+# Build:
+#   docker build -t abliterlitics-lmeval-gemma4unified:1.0.0 \
+#       -f docker/Dockerfile.lmeval_gemma4_unified docker/
+#
+# Set in comparison.json:
+#   "settings": { "lmeval_image": "abliterlitics-lmeval-gemma4unified:1.0.0" }
+
+FROM vllm/vllm-openai:gemma4-unified@sha256:e828735fba48bca2cf9701864d41693c91953394c5b1455b4668edd7563ed450
+
+USER root
+
+# Fix: vllm-openai image has distutils blinker 1.4 which blocks flask upgrade
+RUN pip install --no-cache-dir --ignore-installed "blinker>=1.9.0"
+
+# Install lm-eval + dependencies + bitsandbytes for large model quantization
+# (pin lm-eval <1.0.0 to keep the 0.4.x CLI surface the runners depend on)
+RUN pip install --no-cache-dir \
+    "lm-eval[vllm,api]>=0.4.0,<1.0.0" \
+    ray \
+    flask \
+    bitsandbytes
+
+# Transformers in the base image already recognises gemma4_unified (the image
+# exists for exactly that purpose) but we upgrade anyway as a safety net for
+# any other new arch we may throw at it (e.g. glm4_moe_lite).
+RUN pip install --no-cache-dir --upgrade "transformers>=5.5.0"
+
+# Install SGLang — alternative backend for lm-eval that handles
+# MLA + BNB4 without the dtype mismatch bug (vllm-project/vllm#37934).
+# Used for generate_until tasks (GSM8K) where vLLM has crashed historically.
+RUN pip install --no-cache-dir "sglang[all]"
+
+# Fix (MUST be last): vLLM 0.26.0 tool_parsers imports NamespaceTool from
+# openai.types.responses. The base image ships openai 2.6.1 (missing it) and
+# sglang's install downgrades openai back to 2.6.1. This upgrade must run
+# AFTER sglang to stick.
+RUN pip install --no-cache-dir --upgrade "openai>=2.9.0"
+
+# Override vLLM serve entrypoint — we use lm_eval directly
+ENTRYPOINT []
+
+WORKDIR /root

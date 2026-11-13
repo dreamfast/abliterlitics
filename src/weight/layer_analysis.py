@@ -71,6 +71,7 @@ def run_analysis(
 
     layer_type_deltas: dict[int, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
 
+    shape_skipped = 0
     for i, ck in enumerate(all_keys):
         layer = cfg.get_layer_index(ck)
         if layer is None:
@@ -79,6 +80,9 @@ def run_analysis(
         t_base = load_tensor(base_map, ck)
         t_var = load_tensor(var_map, ck)
         if t_base is None or t_var is None:
+            continue
+        if t_base.shape != t_var.shape:
+            shape_skipped += 1  # architecture-extending edit (e.g. appended neuron)
             continue
         t_base = t_base.float()
         t_var = t_var.float()
@@ -101,6 +105,9 @@ def run_analysis(
 
         if varb_map:
             t_varb = load_tensor(varb_map, ck)
+            if t_varb is not None and t_varb.shape != t_base.shape:
+                shape_skipped += 1  # architecture-extending edit in slot B
+                t_varb = None
             if t_varb is not None:
                 t_varb = t_varb.float()
                 delta_b = t_varb - t_base
@@ -171,6 +178,7 @@ def run_analysis(
         {
             "architecture": {"family": cfg.family, "layers": cfg.layer_count},
             "variant": label,
+            "shape_skipped": shape_skipped,
             "layer_progression": progression,
         }
     )
