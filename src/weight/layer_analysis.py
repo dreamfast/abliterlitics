@@ -80,6 +80,8 @@ def run_analysis(
         t_var = load_tensor(var_map, ck)
         if t_base is None or t_var is None:
             continue
+        if t_base.shape != t_var.shape:
+            continue  # architecture-extending edit (e.g. appended neuron)
         t_base = t_base.float()
         t_var = t_var.float()
         delta = t_var - t_base

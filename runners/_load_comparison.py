@@ -34,7 +34,7 @@ SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 # The reasoning_parser setting in comparison.json overrides auto-detection.
 _QWEN3_REASONING_PARSER = "qwen3"
 _QWEN3_REASONING_CONFIG = json.dumps(
-    {"reasoning_start_str": "<think}", "reasoning_end_str": "</think}"},
+    {"reasoning_start_str": "<think>", "reasoning_end_str": "</think>"},
     separators=(",", ":"),
 )
 
@@ -114,7 +114,11 @@ def main() -> None:
             print(f'error "Invalid variant key: {k}"')
             sys.exit(1)
         names.append(k)
-        var_name = k.replace("-", "_")
+        # Slug must be a valid bash identifier: model dir names like
+        # "Qwen3.8-27B" contain dots, which break bash indirect expansion
+        # (${!VAR.NAME} -> "invalid variable name"). Normalize ALL
+        # non-identifier chars (AGENTS.md lesson #64).
+        var_name = re.sub(r"[^A-Za-z0-9_]", "_", k)
         print(f"export VARIANT_PATH_{var_name}={shlex.quote(comp_dir + '/' + v['path'])}")
         # LoRA adapter path (for vLLM dynamic LoRA loading). When set, the runner
         # uses --enable-lora instead of loading a merged model. The variant's
@@ -160,7 +164,40 @@ def main() -> None:
     # Large-vocab models (e.g. Gemma, 256k vocab) need lower util so the
     # prompt_logprobs tensor (used by loglikelihood tasks) has headroom.
     print(f"export LM_EVAL_GPU_UTIL={shlex.quote(str(settings.get('lm_eval_gpu_util', '')))}")
+    # Dynamic-FP8 serving for models whose BF16 weights exceed a single GPU
+    # (AGENTS.md lesson #53). lm_eval_quantization: "" = bf16 native (default),
+    # "fp8" = dynamic online FP8 (quantized at load — identical path for base +
+    # variants), "bitsandbytes" = BNB4 (legacy, score-damaging). The kv-cache /
+    # language-model-only settings are fp8-recipe memory levers; lm_eval_gpus
+    # pins GPU selection (REQUIRED for >50GB-on-disk models — the size
+    # heuristic would otherwise auto-pick dual TP2 and touch GPU 1).
+    print(f"export LM_EVAL_QUANTIZATION={shlex.quote(str(settings.get('lm_eval_quantization', '')))}")
+    print(f"export LM_EVAL_KV_CACHE_DTYPE={shlex.quote(str(settings.get('lm_eval_kv_cache_dtype', '')))}")
+    print(f"export LM_EVAL_LANGUAGE_MODEL_ONLY={shlex.quote(str(settings.get('lm_eval_language_model_only', 0)))}")
+    print(f"export LM_EVAL_GPUS={shlex.quote(str(settings.get('lm_eval_gpus', '')))}")
+    # Extra raw vLLM server flags (AGENTS.md lesson #67): needed when FP8 serving
+    # + huge vocab (>=~200K) makes prompt_logprobs fp32 transients OOM the engine.
+    # Recipe for qwen38-27b class: "--gpu-memory-utilization 0.94
+    # --max-num-batched-tokens 512". Appended LAST to vllm_server_flags by the
+    # runner (last-wins vs the runner's own util flag). MUST live in
+    # comparison.json settings (not ad-hoc launch env): the watchdog relaunches
+    # `./abliterlitics.sh lm-eval` with a bare environment, so env-scoped flags
+    # are silently dropped on every auto-restart (2026-08-31 incident).
+    # Precedence: explicit launch env wins (mirrors GPUS_ARG convention, lesson #65).
+    print(f"export LM_EVAL_EXTRA_VLLM_FLAGS=${{LM_EVAL_EXTRA_VLLM_FLAGS:-{shlex.quote(str(settings.get('lm_eval_extra_vllm_flags', '')))}}}")
+    # MTP speculative decoding (inference acceleration only — at temperature=0
+    # speculative decoding is EXACTLY output-preserving: verification accepts
+    # only argmax tokens, so MTP-on and MTP-off arms produce identical greedy
+    # outputs). Runners auto-gate on mtp.* tensor presence in the model index
+    # (variants whose tooling dropped the MTP head, e.g. vanilla-heretic
+    # re-saves, simply skip the flag). 0 = off (default).
+    print(f"export LM_EVAL_SPEC_TOKENS={shlex.quote(str(settings.get('lm_eval_speculative_tokens', 0)))}")
     print(f"export HARMBENCH_MAX_TOKENS={shlex.quote(str(settings.get('harmbench_max_tokens', 8096)))}")
+    # HarmBench GPU utilization: dedicated knob so lm-eval's tighter util floor
+    # (prompt_logprobs fp32 transients, lesson #67/#70) does NOT bleed into
+    # HarmBench serving (no prompt_logprobs there -> can use the higher util).
+    # Explicit env wins (lesson #70 pattern). Fallback: LM_EVAL_GPU_UTIL.
+    print(f"export HARMBENCH_GPU_UTIL=${{HARMBENCH_GPU_UTIL:-{shlex.quote(str(settings.get('harmbench_gpu_util', '')))}}}")
 
     # Tokenizer dir: explicit setting, or fall back to base model
     tokenizer_dir = settings.get("tokenizer_dir")
@@ -230,7 +267,7 @@ def main() -> None:
 
     # Per-variant TE skip flags + te_file paths + per-variant reference override
     for k, v in d["variants"].items():
-        var_name = k.replace("-", "_")
+        var_name = re.sub(r"[^A-Za-z0-9_]", "_", k)  # lesson #64: valid identifier
         print(f"export VARIANT_SKIP_TE_{var_name}={'1' if v.get('skip_te', False) else '0'}")
         te_f = v.get("te_file", "")
         if te_f and not te_f.startswith("/"):

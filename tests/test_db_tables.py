@@ -5,12 +5,15 @@ from __future__ import annotations
 from src.db.core import get_db
 from src.db_tables import (
     _bold_best,
+    CARD_KL_CLAIMS,
     generate_all,
     generate_benchmark_delta_table,
     generate_benchmark_table,
     generate_combined_summary_table,
     generate_harmbench_category_table,
+    generate_harmbench_judge_table,
     generate_harmbench_table,
+    generate_kl_calibration_table,
     generate_kl_table,
     generate_weight_summary_table,
 )
@@ -322,4 +325,127 @@ class TestSummaryTable:
         assert "## Benchmarks" in result
         assert "## HarmBench" in result
         assert "## KL Divergence" in result
+        conn.close()
+
+
+class TestHarmbenchJudgeTable:
+    """Tests for the 4-way rubric judge table (no_refusal/refusal/soft_refusal/degenerate)."""
+
+    def _setup_judge(self, conn) -> None:
+        """base + 2 variants; llm_reviews mixing LEGACY and NEW verdict vocabulary.
+
+        Expected under the 4-way rubric:
+        - base: b1/b2 refused (legacy), b3 soft_refusal (new) -> 0 no_refusal,
+          ASR 0/(3-0) = 0.0%, Soft-Refusal col = 1
+        - v1: b1/b2 complied (legacy -> no_refusal), b3 refused
+          -> ASR 2/3 = 66.7%
+        - v2: b1 legacy refused (judge-a wins over judge-old's older
+          'complied'), b2 legacy refused, b3 'degenerate' (new vocab)
+          -> ASR 0/(3-1) = 0.0%, Degenerate col = 1
+        """
+        _setup_comparison(conn)
+        _setup_harmbench(conn)
+        verdicts = {("base", "b1"): "refused", ("base", "b2"): "refused", ("base", "b3"): "soft_refusal",
+                    ("v1", "b1"): "complied", ("v1", "b2"): "complied", ("v1", "b3"): "refused",
+                    ("v2", "b1"): "refused", ("v2", "b2"): "refused", ("v2", "b3"): "degenerate"}
+        for (model, bid), verdict in verdicts.items():
+            conn.execute(
+                "INSERT INTO llm_reviews (comparison, model_name, behavior_id, reviewer_model, verdict) "
+                "VALUES ('tc', ?, ?, 'judge-a', ?)",
+                (model, bid, verdict),
+            )
+        # v2: an older second reviewer on b1 (superseded by judge-a's later review)
+        conn.execute(
+            "INSERT INTO llm_reviews (comparison, model_name, behavior_id, reviewer_model, verdict, reviewed_at) "
+            "VALUES ('tc', 'v2', 'b1', 'judge-old', 'complied', '2026-01-01T00:00:00Z')"
+        )
+        conn.commit()
+
+    def test_judge_asr_and_4way_counts(self, tmp_path):
+        conn = get_db(str(tmp_path / "test.db"))
+        self._setup_judge(conn)
+        table = generate_harmbench_judge_table(conn, "tc")
+        # v1: 2 no_refusal / 3 judged = 66.7%
+        assert "66.7%" in table
+        # v2: b3 degenerate excluded from denominator -> 0/2 = 0.0%
+        assert "0.0%" in table
+        # 4-way columns present + rubric footnote
+        assert "Soft-Refusal" in table
+        assert "Degenerate" in table
+        assert "Rubric:" in table
+        conn.close()
+
+    def test_degenerate_verdict_excluded_from_denominator(self, tmp_path):
+        conn = get_db(str(tmp_path / "test.db"))
+        self._setup_judge(conn)
+        # v1 b3 flips from refusal to degenerate verdict -> ASR 2/(3-1) = 100%
+        conn.execute(
+            "UPDATE llm_reviews SET verdict = 'degenerate' "
+            "WHERE comparison = 'tc' AND model_name = 'v1' AND behavior_id = 'b3'"
+        )
+        conn.commit()
+        table = generate_harmbench_judge_table(conn, "tc")
+        assert "100.0%" in table
+        conn.close()
+
+    def test_base_never_bolded(self, tmp_path):
+        conn = get_db(str(tmp_path / "test.db"))
+        self._setup_judge(conn)
+        table = generate_harmbench_judge_table(conn, "tc")
+        base_line = next(line for line in table.splitlines() if line.startswith("| Base |"))
+        assert "**" not in base_line
+        conn.close()
+
+    def test_all_degenerate_arm_shows_dash(self, tmp_path):
+        """An arm whose every verdict is degenerate has no determinate items."""
+        conn = get_db(str(tmp_path / "test.db"))
+        self._setup_judge(conn)
+        conn.execute("UPDATE llm_reviews SET verdict = 'degenerate' WHERE comparison = 'tc' AND model_name = 'v1'")
+        conn.commit()
+        table = generate_harmbench_judge_table(conn, "tc")
+        v1_line = next(line for line in table.splitlines() if "Variant1" in line)
+        assert "| - |" in v1_line  # ASR placeholder, denominator = 0
+        conn.close()
+
+    def test_arm_without_judge_coverage(self, tmp_path):
+        conn = get_db(str(tmp_path / "test.db"))
+        self._setup_judge(conn)
+        conn.execute("DELETE FROM llm_reviews WHERE comparison = 'tc' AND model_name = 'v1'")
+        conn.commit()
+        table = generate_harmbench_judge_table(conn, "tc")
+        assert "No LLM-judge review coverage for: Variant1" in table
+        assert "- | - | - | - | - | -" in table  # placeholder cells for the uncovered arm
+        conn.close()
+
+
+class TestCardKlClaims:
+    """CARD_KL_CLAIMS is per-comparison (stale cross-comparison claims = bug #167-class)."""
+
+    def test_per_comparison_structure(self):
+        assert isinstance(CARD_KL_CLAIMS, dict)
+        for cmp_name, claims in CARD_KL_CLAIMS.items():
+            assert isinstance(claims, dict), f"{cmp_name} claims must be a dict"
+            for variant, value in claims.items():
+                assert isinstance(value, float), f"{cmp_name}/{variant} claim must be float"
+
+    def test_qwen38_claims_do_not_leak_into_gemma4(self):
+        q = CARD_KL_CLAIMS.get("qwen38-27b", {})
+        # The qwen38 apostate claim (kcrn_report) must not overwrite the gemma one
+        assert q.get("apostate") == 0.0032
+        gemma = CARD_KL_CLAIMS["gemma4-e4b"]
+        assert gemma["apostate"] == 0.119
+        # qwen38-only arms are absent from gemma dicts
+        assert "ultra_heretic" not in gemma
+        assert "trohrbaugh" not in gemma
+
+    def test_calibration_table_scoped_to_comparison(self, tmp_path):
+        conn = get_db(str(tmp_path / "test.db"))
+        conn.execute("INSERT INTO comparisons (name, base_model, num_variants) VALUES ('tc', 'b', 0)")
+        conn.execute(
+            "INSERT INTO kl_results (comparison, variant, kl_batchmean) VALUES ('tc', 'apostate', 0.004)"
+        )
+        conn.commit()
+        # Comparison with no claims entry -> no data (does not use gemma claims)
+        table = generate_kl_calibration_table(conn, "tc")
+        assert "No KL calibration data available" in table
         conn.close()

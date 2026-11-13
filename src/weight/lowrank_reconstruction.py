@@ -73,11 +73,15 @@ def run_analysis(
     total_orig_energy_a = 0.0
     total_orig_energy_b = 0.0
 
+    shape_skipped = 0
     for i, ck in enumerate(all_keys):
         t_base = load_tensor(base_map, ck)
         t_a = load_tensor(mapa, ck)
         t_b = load_tensor(mapb, ck)
         if t_base is None or t_a is None or t_b is None:
+            continue
+        if t_base.shape != t_a.shape or t_base.shape != t_b.shape:
+            shape_skipped += 1  # architecture-extending edit (e.g. appended neuron)
             continue
 
         numel = t_base.numel()

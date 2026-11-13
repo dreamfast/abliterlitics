@@ -97,3 +97,20 @@ archive/
 temp/
 .opencode-docker
 upload_graphs.sh
+REDDIT_GEMMA4_12B.md
+
+# One-off probe scripts + logs (session artifacts, not the toolkit)
+tmp_scripts/
+solve_sdft_mystery.py
+
+# Hugo build output
+public/
+
+# Blog post sources (published separately, see markdown/)
+kl-divergence-post.md
+
+# Generated pi-subagent config (source of truth: .pi/agents/*.md + scripts/build_pi_agents.py)
+.pi/settings.json
+
+# Hugo website lives in its own repository (github:dreamfast/abliterlitics_website)
+abliterlitics_website/

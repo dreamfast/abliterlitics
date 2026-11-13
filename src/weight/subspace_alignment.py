@@ -87,6 +87,7 @@ def run_analysis(
     all_keys = sorted(set(base_map) & set(mapa) & set(mapb))
     log.info("  Common keys: %d", len(all_keys))
 
+    shape_skipped = 0
     type_vectors_a: dict[str, list[torch.Tensor]] = defaultdict(list)
     type_vectors_b: dict[str, list[torch.Tensor]] = defaultdict(list)
     per_key_cos: list[dict] = []
@@ -97,6 +98,9 @@ def run_analysis(
         t_a = load_tensor(mapa, ck)
         t_b = load_tensor(mapb, ck)
         if t_base is None or t_a is None or t_b is None:
+            continue
+        if t_base.shape != t_a.shape or t_base.shape != t_b.shape:
+            shape_skipped += 1  # architecture-extending edit (e.g. appended neuron)
             continue
 
         t_base = t_base.float()

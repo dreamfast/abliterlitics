@@ -123,6 +123,11 @@
           "default": 8096,
           "description": "Maximum generation tokens for HarmBench. Reasoning models need ~5K thinking + ~3K response."
         },
+        "harmbench_gpu_util": {
+          "type": "number",
+          "default": null,
+          "description": "GPU memory utilization for HarmBench vLLM serving. Dedicated knob: HarmBench has no prompt_logprobs, so it can run a higher util than lm-eval's fp32-transient floor (lessons #67/#70). Empty = fall back to lm_eval_gpu_util."
+        },
         "gsm8k_gen_toks": {
           "type": "integer",
           "default": 7168,
@@ -135,6 +140,44 @@
           ],
           "default": "",
           "description": "vLLM gpu_memory_utilization override (0-1). Empty string = use runner default."
+        },
+        "lm_eval_quantization": {
+          "type": "string",
+          "enum": [
+            "",
+            "fp8",
+            "bitsandbytes"
+          ],
+          "default": "",
+          "description": "vLLM quantization for lm-eval + HarmBench serving. Empty = bf16 native. 'fp8' = dynamic online FP8 from the BF16 checkpoint (AGENTS.md lesson #53) for models whose BF16 weights exceed a single GPU \u2014 identical quantization path for base + variants."
+        },
+        "lm_eval_kv_cache_dtype": {
+          "type": "string",
+          "default": "",
+          "description": "vLLM --kv-cache-dtype (e.g. 'fp8'). Memory lever for tight FP8 budgets; empty = default (auto/bf16 KV)."
+        },
+        "lm_eval_language_model_only": {
+          "type": [
+            "integer",
+            "boolean"
+          ],
+          "default": 0,
+          "description": "Pass --language-model-only to vLLM (skips the vision tower for multimodal models on text-only benchmarks). Decisive memory lever for FP8-on-32GB recipes (lesson #53)."
+        },
+        "lm_eval_gpus": {
+          "type": "string",
+          "default": "",
+          "description": "Pin GPU selection for the lm-eval runner (same values as --gpus: single/dual/0/1/0,1). REQUIRED for models >50GB on disk served quantized on one GPU \u2014 prevents the auto-dual TP2 heuristic from touching GPU 1."
+        },
+        "lm_eval_extra_vllm_flags": {
+          "type": "string",
+          "default": "",
+          "description": "Extra raw flags appended to the vLLM server command (last-wins). Required for FP8 + huge-vocab (>=~200K) models where prompt_logprobs fp32 transients OOM the engine (lesson #67), e.g. '--gpu-memory-utilization 0.94 --max-num-batched-tokens 512'. MUST be set here rather than as ad-hoc launch env: the watchdog relaunches with a bare environment and would silently drop it."
+        },
+        "lm_eval_speculative_tokens": {
+          "type": "integer",
+          "default": 0,
+          "description": "MTP speculative decoding tokens (e.g. 3) for vLLM serving. Pure inference acceleration: at temperature=0 outputs are EXACTLY identical with/without it. Runners auto-skip for models lacking mtp.* tensors (dropped-MTP variants). 0 = off."
         },
         "lmeval_image": {
           "type": "string",

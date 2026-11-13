@@ -115,10 +115,14 @@ def analyze_single_variant(
     log.info("  %s: %d common keys", label, len(all_keys))
 
     per_key: list[dict] = []
+    shape_skipped = 0
     for i, ck in enumerate(all_keys):
         t_base = load_tensor(base_map, ck)
         t_var = load_tensor(variant_map, ck)
         if t_base is None or t_var is None:
+            continue
+        if t_base.shape != t_var.shape:
+            shape_skipped += 1  # architecture-extending edit (e.g. appended neuron)
             continue
         t_base = t_base.float()
         t_var = t_var.float()

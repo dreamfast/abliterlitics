@@ -66,9 +66,17 @@ def run_analysis(
     relative_edits: list[float] = []
     per_key: list[dict] = []
 
+    shape_skipped = 0
     for i, ck in enumerate(all_keys):
-        t_base = load_tensor(base_map, ck).float()
-        t_var = load_tensor(var_map, ck).float()
+        t_base = load_tensor(base_map, ck)
+        t_var = load_tensor(var_map, ck)
+        if t_base is None or t_var is None:
+            continue
+        if t_base.shape != t_var.shape:
+            shape_skipped += 1  # architecture-extending edit (e.g. appended neuron)
+            continue
+        t_base = t_base.float()
+        t_var = t_var.float()
         delta = t_var - t_base
         norm = delta.norm().item()
         base_norm = t_base.norm().item()
