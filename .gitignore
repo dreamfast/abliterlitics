@@ -113,7 +113,7 @@ kl-divergence-post.md
 .pi/settings.json
 
 # Hugo website lives in its own repository (github:dreamfast/abliterlitics_website)
-abliterlitics_website/
+abliterlitics_website
 
 # Personal runtime config (llmdev containers)
 .llmdev

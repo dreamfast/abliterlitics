@@ -20,10 +20,11 @@ log = logging.getLogger(__name__)
 
 DB_PATH = "abliterlitics.db"
 
-# Pinned HarmBench behaviors CSV (same as harmbench_generate.py)
+# Pinned HarmBench behaviors CSV (same as harmbench_generate.py / benchmark_eval.py)
 HARMBENCH_BEHAVIORS_CSV = (
     "https://raw.githubusercontent.com/centerforaisafety/HarmBench/"
-    "main/data/behavior_datasets/harmbench_behaviors_text_all.csv"
+    "9d0e87a7e6776614c546f2e3d4392635e6e0cf8a/"
+    "data/behavior_datasets/harmbench_behaviors_text_all.csv"
 )
 
 # Canonical stage names for model_stages

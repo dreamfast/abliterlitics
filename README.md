@@ -100,8 +100,8 @@ cp comparison.example.json my-comparison/comparison.json
 # SVG graphs for all analyses
 ./abliterlitics.sh graphs ./my-comparison/
 
-# Provenance report (markdown + CSV outputs)
-./abliterlitics.sh report ./my-comparison/
+# Markdown tables from the DB
+./abliterlitics.sh tables all ./my-comparison/
 ```
 
 ## Commands
@@ -136,7 +136,7 @@ All commands are invoked through `./abliterlitics.sh <command> [args]`.
 | Command | Description |
 |---------|-------------|
 | `graphs` | Generate SVG graphs from existing results |
-| `report` | Generate provenance report (markdown + CSV outputs) |
+| `tables` | Generate markdown tables from the DB (`benchmark`, `harmbench`, `kl`, `summary`, `all`) |
 | `db` | Database operations (`init`, `status`, `import-results`, `pipeline-status`, `stage-start/complete/fail/skip`, `journal add/list/latest/search`, `export-review`, `export-prompt`, `import-reviews`, `asr`) via `python3 -m src.db` |
 | `tables` | Generate markdown tables from the DB (`benchmark`, `harmbench`, `kl`, `summary`, `all`) |
 | `build` | Build Docker images |

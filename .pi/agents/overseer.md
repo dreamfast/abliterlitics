@@ -53,7 +53,7 @@ A single sub-agent failure is NOT an exit — retry. A single model failing one 
 | lm_eval | `lm-eval` | Yes | Per-model |
 | harmbench | `harmbench` | Yes | Per-model |
 | harm-review | `harm-reviewer` | No | Batch (after harmbench) |
-| graphs + report | `report` | No | All at once |
+| graphs + tables | `report` | No | All at once |
 
 ## Phase 0: Pre-flight (run ONCE at start)
 

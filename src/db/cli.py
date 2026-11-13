@@ -606,7 +606,7 @@ def main() -> None:
         conn = get_db(args.db)
         # NOTE: Prompt building is not yet implemented in this package.
         # For now, this delegates to export-review (raw review items).
-        # Use src/benchmark/reviewer_prompt.py for interactive prompt building.
+        # Use the harm-reviewer agent file (.pi/agents/harm-reviewer.md) for interactive prompt building.
         if args.batch_size != 10:
             log.warning("--batch-size is not yet supported by export-prompt; delegating to export-review")
         cmd_export_review(

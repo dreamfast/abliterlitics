@@ -143,5 +143,5 @@ class TestStackingShapeGuardAndReport:
 
         data = json.loads(output.read_text())
         assert "metadata" not in data
-        # The single ratio write survives (consumed by provenance_report.py).
+        # The single ratio write survives (consumed by report generation).
         assert "ratio_Dr_Db" in data["stacking_metrics"]

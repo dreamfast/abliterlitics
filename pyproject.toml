@@ -61,7 +61,7 @@ extend-exclude = [
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
 
 # Math/linear-algebra conventions: U, S, Vh are standard SVD variable names.
-# Report generation: long f-strings in provenance reports are acceptable.
+# Report generation: long f-strings in generated reports are acceptable.
 # E741: single-letter loop variables (l) are acceptable in matplotlib contexts.
 # E501: long lines in docstrings/comments in benchmark scripts accepted.
 [tool.ruff.lint.per-file-ignores]
@@ -72,7 +72,6 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
 "src/report/generate_graphs.py" = ["E741", "E501"]         # l in matplotlib labels, long format strings
 "src/text_encoder/generate_report.py" = ["E501"]            # Long HTML template f-strings in TE report
 "src/text_encoder/backends/gguf_dequant.py" = ["N802", "N806", "E501"]  # Vendored verbatim from ComfyUI-GGUF (city96) — do not rename/reformat
-"src/report/provenance_report.py" = ["E501", "N802"]       # Long f-strings in reports, L() helper
 "src/kl/kl_divergence.py" = ["N812", "E501", "N806"]       # torch.nn.functional as F, AutoModelClass, long log messages (FROZEN module)
 "src/benchmark/benchmark_eval.py" = ["N806", "E501", "B905"]  # BitsAndBytesConfig, docstring lines, zip
 "src/benchmark/harmbench_classify.py" = ["E501"]            # Long docstring and regex patterns

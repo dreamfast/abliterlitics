@@ -33,7 +33,7 @@ The journal contains `discovery` (architecture findings, thinking mode, benchmar
 ## What You Do
 
 1. **Generate graphs**: `./abliterlitics.sh graphs ./comparisons/<name>/` → `comparisons/<name>/graphs/`
-2. **Generate reports**: `./abliterlitics.sh report ./comparisons/<name>/` → `comparisons/<name>/report/`
+2. **Generate tables**: `./abliterlitics.sh tables all ./comparisons/<name>/` → markdown tables to stdout (pipe into the report files). The `report` subcommand was RETIRED (hardcoded one-off provenance generator, deleted 2026-11); graphs + tables + your written model cards are the outputs now.
 
 ### Graph types (`src/report/generate_graphs.py`)
 
@@ -41,10 +41,9 @@ The journal contains `discovery` (architecture findings, thinking mode, benchmar
 |---|---|
 | Venn diagrams | `panel_comparison.json` — edit overlap (2-way or 3-way) |
 | Aggressiveness bars | `panel_comparison.json` — tensors changed per variant |
-| Layer heatmaps | `layer_<variant>.json` — edit density/norm by layer |
+| Layer bars | `layer_analysis_<variant>.json` — edit density/norm by layer |
 | SVD spectrum | `svd_<variant>.json` — effective rank and energy by tensor type |
 | Expert heatmaps | `expert_analysis.json` — per-expert edit magnitude (MoE only) |
-| Technique radar | `fingerprint_<variant>.json` — fingerprint comparison (clone detection) |
 
 Auto-discovery of result files and variant names — no hardcoded model names. Pass `--label` for chart titles (uses `COMPARISON_NAME`).
 
@@ -77,7 +76,7 @@ Each outputs markdown table to stdout — pipe into report files or model cards.
    - **Weight** (`results/<variant>/fingerprint_<variant>.json`, `svd_<variant>.json`, `layer_analysis_<variant>.json`): `scope.changed_tensors`, targeting stats, layer_profile, SVD.
    - **Comparison config** (`comparison.json`): variant display names, settings, architecture.
 3. **Write report** following TEMPLATE.md. Data tables mechanical (from JSONs); prose sections (ELI5, analysis, findings) written by you based on what data shows. Apply abliteration vs distillation fingerprints (AGENTS.md #21), method classification (ARA surgical vs Obliterated brute-force, AGENTS.md #22), thinking-tax/empty-rate reporting for GSM8K (AGENTS.md #20), methodology footnote for LL MC vs generative gap (AGENTS.md #26).
-4. **Output** to `comparisons/<name>/report/<variant>_model_card.md`.
+4. **Output** to `comparisons/<name>/report/<variant>_model_card.md` (you create this dir).
 
 ### Key placeholders
 
@@ -109,8 +108,7 @@ comparisons/<name>/
 ├── results/{weight,kl,lm_eval,harmbench,harmbench_classified}/
 ├── graphs/                          # SVG
 └── report/
-    ├── <variant>_model_card.md      # HuggingFace (from TEMPLATE.md)
-    └── provenance_report.md         # Provenance investigation (if applicable)
+    └── <variant>_model_card.md      # HuggingFace model cards (written by you)
 ```
 
 ## Troubleshooting

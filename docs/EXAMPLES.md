@@ -70,9 +70,7 @@ This runs 10 weight analysis scripts:
 Results are saved under `~/comparisons/qwen35-4b/results/weight/` in a per-variant layout:
 per-variant files like `svd_<variant>.json`, plus aggregates
 (`multi_model_panel.json`, `fingerprint_all.json`, `correlation_all.json`, ...).
-The runner writes to `results/<comparison>/weight/` — check the aggregate file names
-there rather than assuming per-script filenames.
-
+Scripts write per-variant files (`edit_vector_<v>.json`, `svd_<v>.json`, `fingerprint_<v>.json`, ...) and pairwise files (`correlation_<a>_vs_<b>.json`, ...) directly under the comparison's `results/` dir, plus the `multi_model_panel.json` aggregate.
 ---
 
 ## Example 3: Running the Full Pipeline
@@ -88,7 +86,7 @@ This runs all phases in order:
    large thinking models — thinking-generation tasks dominate the wall time)
 4. HarmBench (~30-60 minutes per model at default budgets; thinking models at high
    token budgets can take 7-15 hours per arm)
-5. Graph + report generation
+5. Graph + tables generation (`graphs` + `tables all`; model cards are written by the report agent)
 
 **Tip:** Use `--skip-existing` (default) to resume interrupted runs; lm-eval's
 response cache also resumes mid-phase after a crash.
