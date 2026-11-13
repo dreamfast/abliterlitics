@@ -36,3 +36,27 @@ class TestLayerEntropy:
         result = _layer_entropy(counts, total_layers=1)
         # With 1 layer, max_entropy = log2(1) = 0, so division guard returns 0
         assert result == 0.0
+
+
+class TestRunAnalysisShapeSkipped:
+    """Lesson #79 observability: scope.shape_skipped must be emitted."""
+
+    def test_emits_shape_skipped(self, tmp_path):
+        import json
+
+        from src.weight.technique_fingerprint import run_analysis
+        from tests.conftest import create_mock_model
+        from tests.test_weight._arch_extending import make_arch_extending_variant
+
+        base_dir = create_mock_model(tmp_path / "base", arch="qwen3", seed=42)
+        var_dir = create_mock_model(tmp_path / "variant", arch="qwen3", seed=99)
+        ext_dir = make_arch_extending_variant(var_dir, tmp_path / "ext", "model.layers.0.mlp.gate_proj.weight")
+        output = tmp_path / "fingerprint.json"
+
+        run_analysis(base_path=str(base_dir), variant_path=str(ext_dir), label="v", output_path=str(output))
+
+        data = json.loads(output.read_text())
+        assert data["scope"]["shape_skipped"] == 1
+        assert len(data["per_key"]) == len(
+            [e for e in data["per_key"] if e["key"] != "model.layers.0.mlp.gate_proj.weight"]
+        )

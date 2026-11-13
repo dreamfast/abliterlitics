@@ -41,7 +41,7 @@ from safetensors import safe_open
 
 from src.text_encoder.artifact import ConditioningArtifact, Pooling, Stage, Stream, StreamSpec
 from src.text_encoder.backends import comfyui_loader
-from src.text_encoder.backends.base import BaseBackend, HookManager
+from src.text_encoder.backends.base import BaseBackend, HookManager, _pack_sequences, dtype_label
 from src.text_encoder.metrics import pool_mean
 
 log = logging.getLogger(__name__)
@@ -244,7 +244,10 @@ class H3Backend(BaseBackend):
                 "not comparable at the consumed_hidden interface)"
             )
 
-        comfyui_loader.import_comfy(self.comfyui_path, cpu=True)
+        # cpu=True would leave comfy's model_management on CPU argv even
+        # under the documented H3_ALLOW_CUDA=1 escape hatch — mirror the
+        # z_image/krea2 device symmetry (audit te-backends.md, Bugs #3).
+        comfyui_loader.import_comfy(self.comfyui_path, cpu=(device == "cpu"))
 
         self.ckpt_id = str(ckpt)
         self._device = device
@@ -419,12 +422,7 @@ class H3Backend(BaseBackend):
                 streams[name] = Stream(name=name, spec=spec, activations=acts)
             # consumed_hidden: full-seq, right-padded to max length; the mask
             # carries text-vs-vision positions (all 1 for text-only prompts)
-            max_len = max(s.shape[0] for s in consumed_seqs)
-            consumed_padded = torch.zeros(len(prompts), max_len, HIDDEN_DIM)
-            consumed_mask = torch.zeros(len(prompts), max_len, dtype=torch.int)
-            for j, s in enumerate(consumed_seqs):
-                consumed_padded[j, : s.shape[0]] = s
-                consumed_mask[j, : s.shape[0]] = text_masks[j]
+            consumed_padded, consumed_mask = _pack_sequences(consumed_seqs, HIDDEN_DIM, masks=text_masks)
             spec = _build_spec("consumed_hidden")
             streams["consumed_hidden"] = Stream(
                 name="consumed_hidden", spec=spec, activations=consumed_padded, mask=consumed_mask
@@ -432,12 +430,7 @@ class H3Backend(BaseBackend):
             artifacts.append(self._make_artifact(Stage.RAW_HIDDEN, streams, prompts, categories, tags_all))
 
         if Stage.PROJECTED in wanted:
-            max_len = max(s.shape[0] for s in projected_seqs)
-            acts = torch.zeros(len(prompts), max_len, DIH_HIDDEN)
-            mask = torch.zeros(len(prompts), max_len, dtype=torch.int)
-            for j, s in enumerate(projected_seqs):
-                acts[j, : s.shape[0]] = s
-                mask[j, : s.shape[0]] = text_masks[j]
+            acts, mask = _pack_sequences(projected_seqs, DIH_HIDDEN, masks=text_masks)
             spec = _build_spec("condition_projected")
             artifacts.append(
                 self._make_artifact(
@@ -450,12 +443,7 @@ class H3Backend(BaseBackend):
             )
 
         if Stage.CONNECTOR_OUT in wanted:
-            max_len = max(s.shape[0] for s in refined_seqs)
-            acts = torch.zeros(len(prompts), max_len, DIH_HIDDEN)
-            mask = torch.zeros(len(prompts), max_len, dtype=torch.int)
-            for j, s in enumerate(refined_seqs):
-                acts[j, : s.shape[0]] = s
-                mask[j, : s.shape[0]] = text_masks[j]
+            acts, mask = _pack_sequences(refined_seqs, DIH_HIDDEN, masks=text_masks)
             spec = _build_spec("refined_context")
             artifacts.append(
                 self._make_artifact(
@@ -477,12 +465,12 @@ class H3Backend(BaseBackend):
         categories: list[str],
         tags_all: list[list[int]] | None = None,
     ) -> ConditioningArtifact:
-        if self._te_fake_quant:
-            dtype_str = f"fakequant_{self._te_fake_quant}"
-        elif self._quantized:
-            dtype_str = "comfy_int8_convrot"
-        else:
-            dtype_str = "comfy_bf16"
+        dtype_str = dtype_label(
+            fake_quant=self._te_fake_quant,
+            gguf_quant_label=None,  # h3 has no GGUF path
+            comfy_quantized=self._quantized,
+            comfy_quant_label="comfy_int8_convrot",
+        )
         meta: dict[str, Any] = {
             "comfyui_commit": comfyui_loader.get_comfyui_commit(self.comfyui_path),
             "quantized": self._quantized,

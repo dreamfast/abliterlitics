@@ -19,6 +19,7 @@ import torch
 
 from src.config import ComparisonConfig, make_metadata
 from src.model_config import build_shard_map, detect_architecture, load_tensor
+from src.weight._common import add_batch_args, resolve_results_dir, variant_output_path
 
 log = logging.getLogger(__name__)
 
@@ -151,12 +152,14 @@ def run_analysis(
 
     t0 = time.time()
     results: list[dict] = []
+    shape_skipped = 0
     for i, key in enumerate(keys_to_analyze):
         t_base = load_tensor(base_map, key)
         t_a = load_tensor(mapa, key)
         if t_base is None or t_a is None:
             continue
         if t_base.shape != t_a.shape:
+            shape_skipped += 1  # architecture-extending edit (e.g. appended neuron)
             continue
 
         dev = _device_for_tensor(t_base.numel())
@@ -202,6 +205,7 @@ def run_analysis(
             "variant_a": label_a,
             "variant_b": label_b if mapb else None,
             "total_analyzed": len(results),
+            "shape_skipped": shape_skipped,
             "full_svd": full_svd,
             "tensor_results": results,
         }
@@ -212,26 +216,23 @@ def run_analysis(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--comparison", help="Path to comparison.json dir (batch mode)")
-    parser.add_argument("--base", help="Base model dir")
+    add_batch_args(parser)
     parser.add_argument("--variant-a", help="First variant")
     parser.add_argument("--variant-b", default=None, help="Second variant (optional)")
     parser.add_argument("--label-a", default="variant_a")
     parser.add_argument("--label-b", default="variant_b")
-    parser.add_argument("--output", help="Output JSON path")
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--full-svd", action="store_true")
     parser.add_argument("--panel", default=None, help="Panel JSON to get changed keys (optional)")
-    parser.add_argument("--results-dir", help="Base results directory")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     if args.comparison:
         config = ComparisonConfig.from_dir(Path(args.comparison))
-        results_dir = Path(args.results_dir) if args.results_dir else config.weight_results_dir(Path("results"))
+        results_dir = resolve_results_dir(args, config)
         for variant in config.variants:
-            out_path = results_dir / variant.name / f"svd_{variant.name}.json"
+            out_path = variant_output_path(results_dir, variant.name, "svd")
             run_analysis(
                 base_path=str(config.base_path),
                 variant_a_path=str(variant.path),

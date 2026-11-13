@@ -11,10 +11,9 @@ WER/MOS stay clean.
 
 Usage (container):
     python3 -m src.text_encoder.run_h3_attention \
-        --dit /home/maxx/extra/comfyui-models/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors \
-        --base /home/maxx/extra/comfyui-models/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors \
-        --variants /home/maxx/extra/comfyui-models/text_encoders/\
-qwen3vl_32b_h3_ultra_uncensored_heretic_int8_convrot.safetensors \
+        --dit /models/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors \
+        --base /models/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors \
+        --variants /models/text_encoders/qwen3vl_32b_h3_ultra_uncensored_heretic_int8_convrot.safetensors \
         --variant-names heretic \
         --suite prompts/te_h3_suite.yaml --n-prompts 2 \
         --results-dir /comp/results/te-h3/text_encoder
@@ -40,6 +39,39 @@ from src.text_encoder.attention_metrics import summarize_readout
 log = logging.getLogger(__name__)
 
 H3_TOKENIZER_LAYER = "qwen3vl_32b"
+
+
+def _segment_means(
+    recs_b_all: list[dict[str, Any]], recs_v_all: list[dict[str, Any]]
+) -> dict[str, dict[str, list[float]]]:
+    """Per-modality (audio/video) mean readouts with an empty-segment guard.
+
+    A capture layout that yields no records for a segment must not reach
+    torch.stack([]) — that raises AFTER all GPU work for the variant is
+    done. Guard + clear error instead: emit empty means and log loudly so
+    the JSON still gets written and the condition is visible.
+    """
+    seg_means: dict[str, dict[str, list[float]]] = {}
+    for seg in ("audio", "video"):
+        pairs_b = [r["segment_readouts"][seg] for r in recs_b_all if seg in r["segment_readouts"]]
+        pairs_v = [r["segment_readouts"][seg] for r in recs_v_all if seg in r["segment_readouts"]]
+        if not pairs_b or not pairs_v:
+            log.error(
+                "segment_readouts %r missing from capture records (base=%d, variant=%d records) — "
+                "emitting empty means; check the DiT layout spans (h3_dit.build_layout)",
+                seg,
+                len(pairs_b),
+                len(pairs_v),
+            )
+            seg_means[seg] = {"base_mean_readout": [], "variant_mean_readout": []}
+            continue
+        pb = torch.stack(pairs_b)
+        pv = torch.stack(pairs_v)
+        seg_means[seg] = {
+            "base_mean_readout": [round(float(x), 6) for x in pb.mean(dim=0)],
+            "variant_mean_readout": [round(float(x), 6) for x in pv.mean(dim=0)],
+        }
+    return seg_means
 
 
 def parse_args() -> argparse.Namespace:
@@ -216,14 +248,7 @@ def main() -> int:
                             )
             base_mean = torch.stack([r["text_readout"] for r in recs_b_all]).mean(dim=0) if recs_b_all else None
             var_mean = torch.stack([r["text_readout"] for r in recs_v_all]).mean(dim=0) if recs_v_all else None
-            seg_means: dict[str, dict[str, Any]] = {}
-            for seg in ("audio", "video"):
-                pb = torch.stack([r["segment_readouts"][seg] for r in recs_b_all if seg in r["segment_readouts"]])
-                pv = torch.stack([r["segment_readouts"][seg] for r in recs_v_all if seg in r["segment_readouts"]])
-                seg_means[seg] = {
-                    "base_mean_readout": [round(float(x), 6) for x in pb.mean(dim=0)] if pb.numel() else [],
-                    "variant_mean_readout": [round(float(x), 6) for x in pv.mean(dim=0)] if pv.numel() else [],
-                }
+            seg_means = _segment_means(recs_b_all, recs_v_all)
             per_prompt.append(
                 {
                     "prompt": prompts[pi],

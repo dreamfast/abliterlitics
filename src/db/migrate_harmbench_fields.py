@@ -58,6 +58,7 @@ import logging
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Any
 
 from src.db.core import DB_PATH, get_db
 
@@ -72,7 +73,7 @@ def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(row[1] == column for row in conn.execute(f"PRAGMA table_info({table})"))
 
 
-def db_swap_counts(conn: sqlite3.Connection, comparison: str) -> list[tuple]:
+def db_swap_counts(conn: sqlite3.Connection, comparison: str) -> list[tuple[Any, ...]]:
     """Per-arm counts of rows matching the migration guard (no writes)."""
     return conn.execute(
         """
@@ -88,7 +89,7 @@ def db_swap_counts(conn: sqlite3.Connection, comparison: str) -> list[tuple]:
     ).fetchall()
 
 
-def db_degenerate_counts(conn: sqlite3.Connection, comparison: str, max_tokens: int) -> list[tuple]:
+def db_degenerate_counts(conn: sqlite3.Connection, comparison: str, max_tokens: int) -> list[tuple[Any, ...]]:
     """Per-arm counts of would-be is_degenerate rows as of NOW (no writes).
 
     Bucket (b) (stop + empty response) only becomes fully populated after the
@@ -113,7 +114,7 @@ def db_degenerate_counts(conn: sqlite3.Connection, comparison: str, max_tokens: 
     ).fetchall()
 
 
-def migrate_db(conn: sqlite3.Connection, comparison: str, max_tokens: int) -> dict:
+def migrate_db(conn: sqlite3.Connection, comparison: str, max_tokens: int) -> dict[str, Any]:
     """Run the DB field swap + is_degenerate backfill. Idempotent."""
     # 1. Field swap (guarded — post-migration rows have response_text = '')
     cur = conn.execute(
@@ -228,9 +229,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     results_dir = (
-        Path(args.results_dir)
-        if args.results_dir
-        else Path("comparisons") / args.comparison / "results" / "harmbench"
+        Path(args.results_dir) if args.results_dir else Path("comparisons") / args.comparison / "results" / "harmbench"
     )
 
     print(f"Comparison: {args.comparison}  (dry_run={args.dry_run}, max_tokens={args.max_tokens})")

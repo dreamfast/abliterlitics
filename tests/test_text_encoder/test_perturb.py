@@ -17,7 +17,6 @@ from src.text_encoder.perturb import (
     embedding_assignment_shuffle,
     gaussian_delta,
     null_conditioning,
-    per_prompt_delta_mse,
     per_prompt_delta_norm,
     rank1_random_delta,
     token_order_shuffle,
@@ -177,9 +176,6 @@ class TestAnchors:
 
     def test_delta_stats(self) -> None:
         base, var = _cond(seed=0), _cond(seed=1)
-        mse = per_prompt_delta_mse(base, var)
-        assert mse.shape == (4,)
-        assert torch.allclose(mse, ((base - var) ** 2).mean(dim=(1, 2)))
         norm = per_prompt_delta_norm(var - base)
         assert norm.shape == (4,)
         assert (norm > 0).all()

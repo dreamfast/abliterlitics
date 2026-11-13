@@ -1,7 +1,8 @@
 """Suite-wide word decode probe: do drifted words still decode to themselves?
 
-Extends probe_refusal_parse from 12 key words on one battery to EVERY word
-group in the A/B stress suite, for every variant with cached conditioning.
+Extends the earlier single-battery refusal-word probes (12 key words, one
+battery; retired 2026-08-17) to EVERY word group in the A/B stress suite,
+for every variant with cached conditioning.
 
 Method: per prompt, group consumed-conditioning tokens into words with the
 same token_groups used by the gallery. Build a base vocabulary from the mean
@@ -62,7 +63,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    from src.text_encoder.attention_metrics import token_groups
+    from src.text_encoder.attention_metrics import decode_bpe_tokens, token_groups
     from src.text_encoder.backends import comfyui_loader
     from src.text_encoder.run_attention import _suite_labels, _token_strings
     from src.text_encoder.run_dit_divergence import _load_consumed_from_cache
@@ -114,7 +115,7 @@ def main() -> int:
                 acts = stream.activations[i]
                 mask = stream.mask[i] if stream.mask is not None else None
                 n = int(mask.sum()) if mask is not None else acts.shape[0]
-                toks = [t.replace("Ġ", " ").replace("Ċ", "\n") for t in inner.convert_ids_to_tokens(ids_all[i])]
+                toks = decode_bpe_tokens(inner.convert_ids_to_tokens(ids_all[i]))
                 if n != len(toks):
                     log.warning("%s: prompt %d mask %d vs %d tokens — using min", Path(te_file).name, i, n, len(toks))
                 token_strings.setdefault(p, toks[: min(n, len(toks))])

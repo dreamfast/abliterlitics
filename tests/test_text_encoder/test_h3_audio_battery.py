@@ -125,3 +125,46 @@ def test_run_battery_no_base_arm_warns_and_disables_calibration(tmp_path: Path, 
         result = run_battery(clips, entries, tier_map(), fake, {})
     assert "NO BASE ARM" in caplog.text
     assert result["floors"]["a_whisper_intrinsic"] is None
+
+
+class _FlakyTranscriber:
+    """Transcribes per scripts but raises on ONE clip (corrupt mp4 sim)."""
+
+    def __init__(self, scripts: dict[str, str], fail_key: str) -> None:
+        self.inner = _FakeTranscriber(scripts)
+        self.fail_key = fail_key
+
+    def transcribe(self, path: Path) -> str:
+        key = f"{path.parent.name}/{path.stem}"
+        if key == self.fail_key:
+            raise ValueError("corrupt mp4: no audio decoded")
+        return self.inner.transcribe(path)
+
+
+def test_run_battery_isolates_one_bad_clip(tmp_path: Path, caplog: Any) -> None:
+    """One corrupt/undecodable clip skips with a warning; the battery completes.
+
+    Regression for the audit crash fix (run_h3_audio run_battery): a raising
+    transcriber used to abort the whole multi-hour battery mid-run.
+    """
+    import logging
+
+    clips, entries, scripts = _manifest_clips(tmp_path)
+    fake = _FlakyTranscriber(scripts, "heretic/line_a__seed42")
+    with caplog.at_level(logging.WARNING):
+        result = run_battery(clips, entries, tier_map(), fake, {})
+
+    assert "transcribe failed" in caplog.text
+    assert result["n_clips"] == 7  # 8 minus the skipped clip
+    assert len(result["clips"]) == 7
+    # the bad clip is absent, everything else scored
+    scored = {(c["variant"], c["label"], c["seed"]) for c in result["clips"]}
+    assert ("heretic", "line_a", 42) not in scored
+    assert ("heretic", "line_a", 43) in scored
+    # battery still completed for both arms with base intact
+    assert set(result["arms"]) == {"base", "heretic"}
+    assert result["arms"]["base"]["tiers"]["rare_polysyllabic"]["correct"] == 4
+    heretic_rare = result["arms"]["heretic"]["tiers"]["rare_polysyllabic"]
+    assert heretic_rare["correct"] == 1  # surviving seed only
+    assert heretic_rare["mispronounced"] == 1
+    json.dumps(result)

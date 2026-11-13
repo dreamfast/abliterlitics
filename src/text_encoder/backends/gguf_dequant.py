@@ -1,8 +1,9 @@
 """Vendored GGUF block dequantization (torch) for the qtypes we measure.
 
 Vendored VERBATIM from ComfyUI-GGUF ``dequant.py`` (c) City96, Apache-2.0
-(https://github.com/city96/ComfyUI-GGUF), commit checked out at
-/home/maxx/comfyui-docker/custom_nodes/ComfyUI-GGUF. Only the functions
+(https://github.com/city96/ComfyUI-GGUF), commit
+6ea2651e7df66d7585f6ffee804b20e92fb38b8a (upstream HEAD at vendoring
+time). Only the functions
 needed by our qtype set (Q8_0, Q6_K, Q5_K, Q4_K, Q3_K + F16/F32/BF16
 passthrough) are kept; unsupported qtypes fail loud. Do NOT "modernize"
 the vendored block functions — byte-fidelity with ComfyUI-GGUF's runtime

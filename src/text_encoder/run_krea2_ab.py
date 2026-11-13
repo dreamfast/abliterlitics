@@ -36,31 +36,22 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from collections import OrderedDict
+import os
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-from src.text_encoder.comfy_client import comfy_te_name, query_vram, queue_and_fetch, sanitize
+from src.text_encoder.common_ab import (
+    build_arm_jobs,
+    filter_suite_labels,
+    find_unique_node,
+    load_prompt_suite,
+    run_ab_loop,
+)
 
 log = logging.getLogger(__name__)
 
 TE_LOADER_SAFETENSORS = "CLIPLoader"
 TE_LOADER_GGUF = "CLIPLoaderGGUF"
-
-
-def _find_node(wf: dict[str, Any], class_type: str, input_name: str = "") -> tuple[str, dict[str, Any]]:
-    """Find the UNIQUE node of a class_type (fail loud on 0 or >1 matches)."""
-    matches = [(nid, n) for nid, n in wf.items() if n.get("class_type") == class_type]
-    if len(matches) != 1:
-        raise ValueError(
-            f"Expected exactly one {class_type} node in workflow, found {len(matches)}: {[nid for nid, _ in matches]}"
-        )
-    nid, node = matches[0]
-    if input_name and input_name not in node.get("inputs", {}):
-        raise ValueError(f"Node {nid} ({class_type}) lacks input {input_name!r}")
-    return nid, node
 
 
 def _find_te_loader(wf: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -125,10 +116,10 @@ def krea2_patch_workflow(
         clip_node["inputs"]["clip_name"] = te_name
 
     if dit_name is not None:
-        _unid, unet_node = _find_node(wf, "UNETLoader", input_name="unet_name")
+        _unid, unet_node = find_unique_node(wf, "UNETLoader", input_name="unet_name")
         unet_node["inputs"]["unet_name"] = dit_name
 
-    _nid, encode_node = _find_node(wf, "CLIPTextEncode", input_name="text")
+    _nid, encode_node = find_unique_node(wf, "CLIPTextEncode", input_name="text")
     encode_node["inputs"]["text"] = prompt
 
     sampler_nodes = [(nid, n) for nid, n in wf.items() if n.get("class_type") == "KSampler"]
@@ -148,21 +139,12 @@ def krea2_patch_workflow(
 
 
 def load_krea2_suite(suite_path: Path) -> list[dict[str, Any]]:
-    """Load prompt entries: {prompts: [{text, category, label?, targets?}]}.
+    """Load prompt entries (shared loader; contract in common_ab).
 
     ``targets`` (K4 word-content checks) lists words expected to appear IN
     the rendered image; passed through to the manifest for the scorer.
     """
-    raw = yaml.safe_load(suite_path.read_text())
-    if isinstance(raw, dict):
-        raw = raw.get("prompts", [])
-    if not raw:
-        raise ValueError(f"No prompts in {suite_path}")
-    entries: list[dict[str, Any]] = list(raw)
-    for p in entries:
-        if "text" not in p or "category" not in p:
-            raise ValueError(f"Prompt entry missing text/category: {p}")
-    return entries
+    return load_prompt_suite(suite_path)
 
 
 def main() -> None:
@@ -172,7 +154,11 @@ def main() -> None:
     p.add_argument("--comparison", required=True)
     p.add_argument("--api-url", default="http://host.docker.internal:8190")
     p.add_argument("--out-dir", required=True)
-    p.add_argument("--models-root", default="/home/maxx/extra/comfyui-models")
+    p.add_argument(
+        "--models-root",
+        default=os.environ.get("COMFYUI_MODELS_ROOT", ""),
+        help="ComfyUI models root for te_name relativization (default: $COMFYUI_MODELS_ROOT)",
+    )
     p.add_argument("--prompt-suite", required=True)
     p.add_argument(
         "--dit-name",
@@ -206,29 +192,10 @@ def main() -> None:
         log.info("DiT: patching UNETLoader -> %s", dit_name)
     else:
         log.info("DiT: leaving workflow DiT untouched")
-    if args.labels:
-        label_filter = {s.strip() for s in args.labels.split(",") if s.strip()}
-        suite = [pr for pr in suite if (pr.get("label") or sanitize(pr["text"])) in label_filter]
-        if not suite:
-            raise SystemExit(f"--labels filter matched no prompts: {sorted(label_filter)}")
+    suite = filter_suite_labels(suite, args.labels)
     seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
+    jobs = build_arm_jobs(comparison, args.models_root, args.variants)
 
-    # Arm list: global base first, then variants with te_file
-    filter_set = {v.strip() for v in args.variants.split(",") if v.strip()}
-    jobs: list[tuple[str, str]] = []
-    base_te = comparison.get("settings", {}).get("tebench", {}).get("base_te_file", "")
-    if base_te and (not filter_set or "base" in filter_set):
-        jobs.append(("base", comfy_te_name(base_te, args.models_root)))
-    for name, cfg in comparison["variants"].items():
-        te_file = cfg.get("te_file")
-        if not te_file:
-            continue
-        if filter_set and name not in filter_set:
-            continue
-        jobs.append((name, comfy_te_name(te_file, args.models_root)))
-
-    if not jobs:
-        raise SystemExit("No arms to generate (no base_te_file and no variants with te_file)")
     log.info("Krea2 A/B plan: %d arms x %d prompts x %d seeds", len(jobs), len(suite), len(seeds))
 
     out_dir = Path(args.out_dir)
@@ -256,62 +223,35 @@ def main() -> None:
                 log.warning("Manifest dit_name %r != this run's %r — mixed-DiT manifest!", prior, dit_name)
             manifest["dit_name"] = dit_name
 
-    done: set[str] = {e["key"] for e in manifest.get("images", [])}
-    by_variant: OrderedDict[str, str] = OrderedDict(jobs)
+    def patch_and_node(
+        wf_base: dict[str, Any], name: str, te_name: str, prompt: str, seed: int
+    ) -> tuple[dict[str, Any], str]:
+        wf = krea2_patch_workflow(
+            wf_base,
+            te_name=te_name,
+            prompt=prompt,
+            seed=seed,
+            filename_prefix=f"abliterlitics-krea2/{name}",
+            dit_name=dit_name,
+        )
+        return wf, _find_te_loader(wf)[0]
 
-    for name, te_name in by_variant.items():
-        first_clip = True
-        for seed in seeds:
-            for pr in suite:
-                stem = pr.get("label") or sanitize(pr["text"])
-                key = f"{name}::{pr.get('label', pr['category'])}::{pr['text']}"
-                out_path = out_dir / name / f"{stem}__seed{seed}.webp"
-                if args.skip_existing and key in done and out_path.exists():
-                    continue
-                if args.dry_run:
-                    log.info("[dry-run] %s seed%d :: %s -> %s (te=%s)", name, seed, pr["category"], out_path, te_name)
-                    continue
-                wf = krea2_patch_workflow(
-                    workflow,
-                    te_name=te_name,
-                    prompt=pr["text"],
-                    seed=seed,
-                    filename_prefix=f"abliterlitics-krea2/{name}",
-                    dit_name=dit_name,
-                )
-                data, perf = queue_and_fetch(args.api_url, wf, te_node_id=_find_te_loader(wf)[0])
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                out_path.write_bytes(data)
-                vram_cap = query_vram(args.api_url) if first_clip else None
-                first_clip = False
-                log.info(
-                    "%s seed%d | %s | %s (%d KB, gen %sms)",
-                    name,
-                    seed,
-                    pr["category"],
-                    out_path.name,
-                    len(data) // 1024,
-                    perf.get("server_gen_ms"),
-                )
-                manifest.setdefault("images", []).append(
-                    {
-                        "key": key,
-                        "pass": "warm",
-                        "variant": name,
-                        "te_name": te_name,
-                        "gen_seconds": round(perf.get("client_wall_ms", 0) / 1000, 2),
-                        "perf": perf,
-                        "vram": vram_cap,
-                        "category": pr["category"],
-                        "label": pr.get("label", ""),
-                        "prompt": pr["text"],
-                        "targets": pr.get("targets", []),
-                        "path": str(out_path),
-                        "seed": seed,
-                    }
-                )
-                manifest_path.parent.mkdir(parents=True, exist_ok=True)
-                manifest_path.write_text(json.dumps(manifest, indent=2))
+    run_ab_loop(
+        manifest=manifest,
+        manifest_path=manifest_path,
+        out_dir=out_dir,
+        jobs=jobs,
+        suite=suite,
+        seeds=seeds,
+        workflow=workflow,
+        api_url=args.api_url,
+        skip_existing=args.skip_existing,
+        dry_run=args.dry_run,
+        list_key="images",
+        ext=".webp",
+        patch_and_node=patch_and_node,
+        extra_entry={"pass": "warm"},
+    )
 
     log.info("=== Krea2 A/B generation complete: %d images ===", len(manifest.get("images", [])))
 

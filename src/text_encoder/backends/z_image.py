@@ -32,7 +32,7 @@ from safetensors import safe_open
 
 from src.text_encoder.artifact import ConditioningArtifact, Pooling, Stage, Stream, StreamSpec
 from src.text_encoder.backends import comfyui_loader, gguf_loader
-from src.text_encoder.backends.base import BaseBackend, HookManager
+from src.text_encoder.backends.base import BaseBackend, HookManager, _pack_sequences, dtype_label
 from src.text_encoder.backends.gguf_loader import GGUFMeta
 from src.text_encoder.metrics import pool_mean
 
@@ -48,6 +48,52 @@ N_REFINER_LAYERS = 2
 PAD_TOKENS_MULTIPLE = 32
 
 _DIT_COND_PREFIXES = ("cap_embedder.", "context_refiner.", "cap_pad_token")
+
+
+def _build_spec(name: str) -> StreamSpec:
+    """Single source of truth for stream specs (streams() AND encode).
+
+    Mirrors the h3/krea2 ``_build_spec`` contract guard: constructing the
+    spec in exactly one place keeps the artifact's per-stream ``spec``
+    equal to the backend's declared ``streams`` even if one path is
+    edited without the other (audit te-backends.md, Bugs #1).
+    """
+    if name == "consumed_hidden":
+        return StreamSpec(
+            name=name,
+            source_encoder="qwen3",
+            layers=(CONSUMED_LAYER_IDX,),
+            pooling=Pooling.NONE,
+            stage=Stage.RAW_HIDDEN,
+            dim=HIDDEN_DIM,
+        )
+    if name == "cap_embedded":
+        return StreamSpec(
+            name=name,
+            source_encoder="qwen3",
+            layers=(CONSUMED_LAYER_IDX,),
+            pooling=Pooling.NONE,
+            stage=Stage.PROJECTED,
+            dim=CONTEXT_DIM,
+        )
+    if name == "refined_context":
+        return StreamSpec(
+            name=name,
+            source_encoder="qwen3",
+            layers=(CONSUMED_LAYER_IDX,),
+            pooling=Pooling.NONE,
+            stage=Stage.CONNECTOR_OUT,
+            dim=CONTEXT_DIM,
+        )
+    # layer_XX: per-layer mean-pooled raw hidden
+    return StreamSpec(
+        name=name,
+        source_encoder="qwen3",
+        layers=(int(name.split("_")[1]),),
+        pooling=Pooling.MEAN,
+        stage=Stage.RAW_HIDDEN,
+        dim=HIDDEN_DIM,
+    )
 
 
 def _load_dit_conditioning_sd(dit_file: str | Path) -> dict[str, torch.Tensor]:
@@ -152,47 +198,10 @@ class ZImageBackend(BaseBackend):
 
     @property
     def streams(self) -> list[StreamSpec]:
-        specs = [
-            StreamSpec(
-                name=f"layer_{i:02d}",
-                source_encoder="qwen3",
-                layers=(i,),
-                pooling=Pooling.MEAN,
-                stage=Stage.RAW_HIDDEN,
-                dim=HIDDEN_DIM,
-            )
-            for i in range(N_LAYERS)
-        ]
-        specs.append(
-            StreamSpec(
-                name="consumed_hidden",
-                source_encoder="qwen3",
-                layers=(CONSUMED_LAYER_IDX,),
-                pooling=Pooling.NONE,
-                stage=Stage.RAW_HIDDEN,
-                dim=HIDDEN_DIM,
-            )
-        )
-        specs.append(
-            StreamSpec(
-                name="cap_embedded",
-                source_encoder="qwen3",
-                layers=(CONSUMED_LAYER_IDX,),
-                pooling=Pooling.NONE,
-                stage=Stage.PROJECTED,
-                dim=CONTEXT_DIM,
-            )
-        )
-        specs.append(
-            StreamSpec(
-                name="refined_context",
-                source_encoder="qwen3",
-                layers=(CONSUMED_LAYER_IDX,),
-                pooling=Pooling.NONE,
-                stage=Stage.CONNECTOR_OUT,
-                dim=CONTEXT_DIM,
-            )
-        )
+        specs = [_build_spec(f"layer_{i:02d}") for i in range(N_LAYERS)]
+        specs.append(_build_spec("consumed_hidden"))
+        specs.append(_build_spec("cap_embedded"))
+        specs.append(_build_spec("refined_context"))
         return specs
 
     def load(self, ckpt: str, dtype: str = "bf16", device: str = "cpu", dit_file: str = "") -> None:
@@ -211,6 +220,13 @@ class ZImageBackend(BaseBackend):
             # llama.cpp container: eager dequant -> HF-named state dict
             # (ComfyUI-GGUF qwen3 path, see gguf_loader.py).
             self._te_sd, self._gguf_meta = gguf_loader.load_gguf_te_state_dict(ckpt)
+            # Fail fast on a wrong/truncated GGUF BEFORE handing ~4GB to
+            # load_sd — same posture as krea2.load / h3._probe_layer_count.
+            n_layers = gguf_loader.infer_layer_count(self._te_sd)
+            if n_layers != N_LAYERS:
+                raise ValueError(
+                    f"GGUF text stack has {n_layers} layers, expected {N_LAYERS} — wrong model or truncated container"
+                )
         else:
             self._te_sd = comfyui_loader.load_te_state_dict(ckpt)
 
@@ -387,78 +403,51 @@ class ZImageBackend(BaseBackend):
             streams: dict[str, Stream] = {}
             for i in range(N_LAYERS):
                 name = f"layer_{i:02d}"
-                spec = StreamSpec(
-                    name=name,
-                    source_encoder="qwen3",
-                    layers=(i,),
-                    pooling=Pooling.MEAN,
-                    stage=Stage.RAW_HIDDEN,
-                    dim=HIDDEN_DIM,
-                )
                 acts = torch.stack(layer_pooled[i])  # [n, 2560]
-                streams[name] = Stream(name=name, spec=spec, activations=acts)
+                streams[name] = Stream(name=name, spec=_build_spec(name), activations=acts)
             # consumed_hidden: full-seq, right-padded to max length
-            max_len = max(s.shape[0] for s in consumed_seqs)
-            consumed_padded = torch.zeros(len(prompts), max_len, HIDDEN_DIM)
-            consumed_mask = torch.zeros(len(prompts), max_len, dtype=torch.int)
-            for j, s in enumerate(consumed_seqs):
-                consumed_padded[j, : s.shape[0]] = s
-                consumed_mask[j, : s.shape[0]] = 1
-            spec = StreamSpec(
-                name="consumed_hidden",
-                source_encoder="qwen3",
-                layers=(CONSUMED_LAYER_IDX,),
-                pooling=Pooling.NONE,
-                stage=Stage.RAW_HIDDEN,
-                dim=HIDDEN_DIM,
-            )
+            consumed_padded, consumed_mask = _pack_sequences(consumed_seqs, HIDDEN_DIM)
             streams["consumed_hidden"] = Stream(
-                name="consumed_hidden", spec=spec, activations=consumed_padded, mask=consumed_mask
+                name="consumed_hidden",
+                spec=_build_spec("consumed_hidden"),
+                activations=consumed_padded,
+                mask=consumed_mask,
             )
             artifacts.append(self._make_artifact(Stage.RAW_HIDDEN, streams, prompts, categories))
 
         if Stage.PROJECTED in wanted:
-            max_len = max(s.shape[0] for s in projected_seqs)
-            acts = torch.zeros(len(prompts), max_len, CONTEXT_DIM)
-            mask = torch.zeros(len(prompts), max_len, dtype=torch.int)
-            for j, s in enumerate(projected_seqs):
-                acts[j, : s.shape[0]] = s
-                mask[j, : s.shape[0]] = 1
-            spec = StreamSpec(
-                name="cap_embedded",
-                source_encoder="qwen3",
-                layers=(CONSUMED_LAYER_IDX,),
-                pooling=Pooling.NONE,
-                stage=Stage.PROJECTED,
-                dim=CONTEXT_DIM,
-            )
+            acts, mask = _pack_sequences(projected_seqs, CONTEXT_DIM)
             artifacts.append(
                 self._make_artifact(
                     Stage.PROJECTED,
-                    {"cap_embedded": Stream(name="cap_embedded", spec=spec, activations=acts, mask=mask)},
+                    {
+                        "cap_embedded": Stream(
+                            name="cap_embedded",
+                            spec=_build_spec("cap_embedded"),
+                            activations=acts,
+                            mask=mask,
+                        )
+                    },
                     prompts,
                     categories,
                 )
             )
 
         if Stage.CONNECTOR_OUT in wanted:
-            max_len = max(s.shape[0] for s in refined_seqs)
-            acts = torch.zeros(len(prompts), max_len, CONTEXT_DIM)
-            mask = torch.stack([torch.nn.functional.pad(m, (0, max_len - m.shape[0])) for m in refined_masks])
-            for j, s in enumerate(refined_seqs):
-                acts[j, : s.shape[0]] = s
-            spec = StreamSpec(
-                name="refined_context",
-                source_encoder="qwen3",
-                layers=(CONSUMED_LAYER_IDX,),
-                pooling=Pooling.NONE,
-                stage=Stage.CONNECTOR_OUT,
-                dim=CONTEXT_DIM,
-            )
+            # refined_seqs already include cap-pad positions; refined_masks
+            # carry 1 = real token / 0 = cap-pad — pack preserves them.
+            acts, mask = _pack_sequences(refined_seqs, CONTEXT_DIM, masks=refined_masks)
             artifacts.append(
                 self._make_artifact(
                     Stage.CONNECTOR_OUT,
-                    {"refined_context": Stream(name="refined_context", spec=spec, activations=acts, mask=mask)},
+                    {
+                        "refined_context": Stream(
+                            name="refined_context",
+                            spec=_build_spec("refined_context"),
+                            activations=acts,
+                            mask=mask,
+                        )
+                    },
                     prompts,
                     categories,
                 )
@@ -473,16 +462,12 @@ class ZImageBackend(BaseBackend):
         prompts: list[str],
         categories: list[str],
     ) -> ConditioningArtifact:
-        if self._gguf_meta is not None:
-            dtype_str = f"gguf_{self._gguf_meta.quant_label}"
-        elif self._te_fake_quant:
-            dtype_str = f"fakequant_{self._te_fake_quant}"
-        elif self._quantized:
-            dtype_str = "comfy_int8_convrot"
-        elif self._te_dtype_probe is not None and self._te_dtype_probe == torch.bfloat16:
-            dtype_str = "comfy_bf16"
-        else:
-            dtype_str = "comfy_bf16"
+        dtype_str = dtype_label(
+            fake_quant=self._te_fake_quant,
+            gguf_quant_label=self._gguf_meta.quant_label if self._gguf_meta is not None else None,
+            comfy_quantized=self._quantized,
+            comfy_quant_label="comfy_int8_convrot",
+        )
         meta: dict[str, Any] = {
             "comfyui_commit": comfyui_loader.get_comfyui_commit(self.comfyui_path),
             "quantized": self._quantized,

@@ -28,6 +28,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from src.text_encoder._cli import add_backend, add_cache_dir, add_device, add_results_dir
+
 if TYPE_CHECKING:
     import torch
 
@@ -41,9 +43,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--variant", required=True, help="VARIANT TE safetensors (cache key)")
     p.add_argument("--variant-name", default="variant", help="Variant display name")
     p.add_argument("--dit", required=True, help="Z-Image DiT checkpoint")
-    p.add_argument("--cache-dir", default="/te_cache", help="Activation cache (from run_analysis)")
-    p.add_argument("--results-dir", default="/results", help="Output directory")
-    p.add_argument("--device", default="cuda", help="cpu or cuda (DiT + trajectories)")
+    add_cache_dir(p, default="/te_cache", help_text="Activation cache (from run_analysis)")
+    add_results_dir(p, default="/results", help_text="Output directory")
+    add_device(p, default="cuda", help_text="cpu or cuda (DiT + trajectories)")
     p.add_argument(
         "--cache-device",
         default="",
@@ -62,11 +64,11 @@ def parse_args() -> argparse.Namespace:
         help="Latent spatial size (None = backend default: 128 zimage / 64 krea2)",
     )
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument(
-        "--backend",
-        choices=["zimage", "krea2"],
+    add_backend(
+        p,
         default="zimage",
-        help="DiT + conditioning-interface family (stream name, loader, forward)",
+        choices=("zimage", "krea2"),
+        help_text="DiT + conditioning-interface family (stream name, loader, forward)",
     )
     p.add_argument("--suite", default="/prompts/te_suite.yaml", help="Prompt suite (must match run_analysis cache)")
     return p.parse_args()

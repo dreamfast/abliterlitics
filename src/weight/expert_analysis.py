@@ -79,6 +79,7 @@ def run_analysis(
     expert_norms: dict[str, dict[tuple[int, int], float]] = {label: defaultdict(float) for label in labels}
     per_expert: dict[str, dict[str, dict]] = {label: {} for label in labels}
 
+    shape_skipped = 0
     for i, ck in enumerate(expert_keys):
         layer = cfg.get_layer_index(ck)
         eid = cfg.get_expert_id(ck)
@@ -91,6 +92,9 @@ def run_analysis(
         for label in labels:
             t_var = load_tensor(variants[label], ck)
             if t_var is None:
+                continue
+            if t_var.shape != t_base.shape:
+                shape_skipped += 1  # architecture-extending edit (e.g. appended neuron)
                 continue
             t_var = t_var.float()
             delta = t_var - t_base
@@ -125,6 +129,9 @@ def run_analysis(
             t_var = load_tensor(variants[label], ck)
             if t_var is None:
                 continue
+            if t_var.shape != t_base.shape:
+                shape_skipped += 1  # architecture-extending edit (e.g. appended neuron)
+                continue
             t_var = t_var.float()
             delta = t_var - t_base
             norm = delta.norm().item()
@@ -149,6 +156,9 @@ def run_analysis(
         for label in labels:
             t_var = load_tensor(variants[label], ck)
             if t_var is None:
+                continue
+            if t_var.shape != t_base.shape:
+                shape_skipped += 1  # architecture-extending edit (e.g. appended neuron)
                 continue
             t_var = t_var.float()
             delta = t_var - t_base
@@ -198,6 +208,7 @@ def run_analysis(
             },
             "variants": labels,
             "total_expert_tensors": len(expert_keys),
+            "shape_skipped": shape_skipped,
             "expert_edits_summary": {
                 label: {
                     "changed_expert_layer_pairs": len(per_expert[label]),

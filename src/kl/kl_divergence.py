@@ -30,10 +30,13 @@ generated token position, using 100 harmless prompts from mlabonne/harmless_alpa
 Key methodology points (matching Heretic reference):
   - model.generate(max_new_tokens=1, output_scores=True) — NOT direct forward pass
   - scores are float32 from generate internals — NO .float() cast needed
-  - F.log_softmax(logits, dim=-1) — no clamping of -inf values
+  - F.log_softmax(logits, dim=-1); non-finite logprobs (-inf/+inf/NaN) are clamped
+    to LP_FLOOR=-100 before F.kl_div in the compute phase (see below)
    - Left-padding on tokenizer
    - System prompt + response_prefix appended before tokenization
-   - No -inf clamping in compute phase
+   - Non-finite logprobs clamped to LP_FLOOR in the compute phase (lesson #37:
+     F.kl_div(log_target=True) computes exp(-inf)*(target-input) = 0*-inf = NaN
+     on PyTorch >= 2.11, which NaN'd every variant on 262K-vocab models)
 
 Optional comparison-level chat template override (--chat-template-file):
    When variants ship modified bundled templates (jailbreak system prompts,
@@ -286,32 +289,6 @@ def get_loading_config(model_path: str, model_size_gb: float) -> dict:
         "device_map": "auto",
         "max_memory": {0: GPU0_BUDGET, "cpu": CPU_BUDGET},
     }
-
-
-def validate_model_loaded(model) -> bool:
-    """Abort if any parameters are still on meta device (= not loaded)."""
-    meta_params = []
-    total = 0
-    for name, param in model.named_parameters():
-        total += 1
-        if param.device.type == "meta":
-            meta_params.append(name)
-
-    if meta_params:
-        for name in meta_params[:10]:
-            log.info(f"  FATAL meta param: {name}")
-        if len(meta_params) > 10:
-            log.info(f"  ... and {len(meta_params) - 10} more")
-        log.info(f"  FATAL: {len(meta_params)}/{total} parameters on meta device!")
-        return False
-
-    # Summarise device allocation
-    devices: dict[str, int] = {}
-    for _, param in model.named_parameters():
-        d = str(param.device)
-        devices[d] = devices.get(d, 0) + 1
-    log.info(f"  Device allocation: {devices}")
-    return True
 
 
 def get_input_device(model) -> torch.device:
@@ -580,9 +557,7 @@ def cmd_collect(args):
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": load_prompts(1)[0]},
         ]
-        probe_render = tokenizer.apply_chat_template(
-            probe_messages, add_generation_prompt=True, tokenize=False
-        )
+        probe_render = tokenizer.apply_chat_template(probe_messages, add_generation_prompt=True, tokenize=False)
         if probe_render.endswith("<think>") or probe_render.endswith("<think>\n"):
             response_prefix = "</think>\n\n"
             log.info(
@@ -623,6 +598,7 @@ def cmd_collect(args):
     # sub-precision edits are preserved at FP32 during the forward pass.
     if args.lora_adapter:
         from peft import PeftModel
+
         log.info(f"Applying LoRA adapter: {args.lora_adapter}")
         model = PeftModel.from_pretrained(model, args.lora_adapter)
         model.eval()
@@ -632,9 +608,7 @@ def cmd_collect(args):
     meta_params = sum(1 for _, p in model.named_parameters() if p.device.type == "meta")
     total_params = sum(1 for _ in model.named_parameters())
     hf_map = getattr(model, "hf_device_map", None)
-    has_accel_offload = isinstance(hf_map, dict) and any(
-        d in ("cpu", "disk") for d in set(hf_map.values())
-    )
+    has_accel_offload = isinstance(hf_map, dict) and any(d in ("cpu", "disk") for d in set(hf_map.values()))
     if meta_params > 0 and has_accel_offload:
         # transformers 5.x / accelerate: weights placed on cpu/disk by the device
         # map legitimately REMAIN ON THE META DEVICE and are streamed via dispatch
@@ -766,9 +740,7 @@ def cmd_collect(args):
             top_toks = [tokenizer.decode([int(t)], skip_special_tokens=False) for t in top_ids]
             log.info(
                 "  Prompt 0 top-5 first tokens: "
-                + ", ".join(
-                    f"{tok!r}({float(v.exp()):.3f})" for tok, v in zip(top_toks, top_vals)
-                )
+                + ", ".join(f"{tok!r}({float(v.exp()):.3f})" for tok, v in zip(top_toks, top_vals, strict=True))
             )
             if finite_pct < 1.0:
                 log.info("ABORTING: first prompt logprobs are ~100% -inf. Model did not load correctly.")
@@ -805,7 +777,7 @@ def cmd_collect(args):
         for d in hf_map.values():
             key = str(d)
             offload_summary[key] = offload_summary.get(key, 0) + 1
-        device_allocation["hf_offload_summary"] = offload_summary  # type: ignore[assignment]
+        device_allocation["hf_offload_summary"] = offload_summary
 
     # Save enriched metadata matching Heretic's reproducibility requirements
     # TODO: migrate to safetensors format
@@ -819,8 +791,7 @@ def cmd_collect(args):
             "system_prompt": SYSTEM_PROMPT,
             "chat_template": chat_template_source,
             "response_prefix": response_prefix or "",
-            "response_prefix_mode": response_prefix_mode
-            or ("auto" if args.response_prefix == "auto" else "explicit"),
+            "response_prefix_mode": response_prefix_mode or ("auto" if args.response_prefix == "auto" else "explicit"),
             "split": DEFAULT_SPLIT,
             "column": DEFAULT_COLUMN,
             "methodology_version": METHODOLOGY_VERSION,
@@ -895,7 +866,8 @@ def cmd_compute(args):
     variant_lp = variant_lp[:n]
     log.info(f"  Comparing {n} prompts, vocab_size={base_lp.shape[-1]}")
 
-    # Report -inf statistics (informational only — NO clamping)
+    # Report -inf statistics BEFORE clamping (informational); clamped below per
+    # lesson #37 (F.kl_div log_target=True produces 0*-inf=NaN on PyTorch >= 2.11).
     base_inf_pct = (torch.isinf(base_lp) & (base_lp < 0)).float().mean().item() * 100
     var_inf_pct = (torch.isinf(variant_lp) & (variant_lp < 0)).float().mean().item() * 100
     log.info(f"  Base -inf: {base_inf_pct:.2f}%, Variant -inf: {var_inf_pct:.2f}%")
@@ -927,12 +899,8 @@ def cmd_compute(args):
             f"variant(-inf={var_neginf},+inf={var_posinf},nan={var_nan}), "
             f"base(-inf={base_neginf},+inf={base_posinf},nan={base_nan})"
         )
-    variant_lp = torch.nan_to_num(
-        variant_lp, nan=LP_FLOOR, posinf=0.0, neginf=LP_FLOOR
-    )
-    base_lp = torch.nan_to_num(
-        base_lp, nan=LP_FLOOR, posinf=0.0, neginf=LP_FLOOR
-    )
+    variant_lp = torch.nan_to_num(variant_lp, nan=LP_FLOOR, posinf=0.0, neginf=LP_FLOOR)
+    base_lp = torch.nan_to_num(base_lp, nan=LP_FLOOR, posinf=0.0, neginf=LP_FLOOR)
 
     # Compute KL divergence (matching Heretic evaluator.py lines 98-103)
     kl_div = F.kl_div(
@@ -1037,7 +1005,6 @@ def main():
     p_collect.add_argument("--model", required=True, help="Path to model directory")
     p_collect.add_argument("--tokenizer", default=None, help="Path to tokenizer (defaults to --model)")
     p_collect.add_argument("--output", required=True, help="Path to save logits .pt file")
-    p_collect.add_argument("--comparison", help="Path to comparison.json dir (resolves --model)")
     p_collect.add_argument(
         "--num-prompts",
         type=int,

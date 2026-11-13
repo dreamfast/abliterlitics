@@ -13,39 +13,17 @@ import argparse
 import json
 import logging
 import sqlite3
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from src.db.core import DB_PATH, get_db
+from src.db.importers import TASK_PRIMARY_METRICS  # single source of truth (importers owns it)
 
 log = logging.getLogger(__name__)
 
-# Re-use the same primary metric mapping from importers.
-# Key: lm-eval task name (as it appears in results dict).
-# Value: list of metric names to import (e.g. "acc,none", "exact_match,strict-match").
-# Ordered by category: v2 OLL suite first, then v1 supplement, then generative tasks.
-TASK_PRIMARY_METRICS: dict[str, list[str]] = {
-    # v2 Open LLM Leaderboard suite (aggregates only, subtasks are filtered)
-    "leaderboard_mmlu_pro": ["acc,none"],
-    "leaderboard_gpqa_diamond": ["acc_norm,none"],
-    "leaderboard_bbh": ["acc_norm,none"],
-    "leaderboard_musr": ["acc_norm,none"],
-    "leaderboard_ifeval": ["prompt_level_strict_acc,none"],
-    # v1 forensic supplement
-    "hellaswag": ["acc_norm,none"],
-    "arc_challenge": ["acc_norm,none"],
-    "winogrande": ["acc,none"],
-    "piqa": ["acc_norm,none"],
-    "lambada_openai": ["perplexity,none"],
-    # Legacy MMLU (kept for backwards compat with older comparisons)
-    "mmlu": ["acc,none"],
-    # Generative tasks
-    "gsm8k": ["exact_match,flexible-extract", "exact_match,strict-match"],
-    "truthfulqa_mc1": ["acc,none"],
-    "truthfulqa_mc2": ["acc,none"],
-    "truthfulqa_gen": ["bleu_acc,none"],
-    # HumanEval (dead under chat-template scoring but tracked for completeness)
-    "humaneval": ["pass@1,none"],
-}
+# Primary metric mapping lives in src/db/importers.py (single source of truth —
+# the pre-fix copy here had drifted from the importer's). This module consumes
+# it for table display; DEAD_TASKS below filters which rows are rendered.
 
 # Task display names for tables.
 TASK_DISPLAY_NAMES: dict[str, str] = {
@@ -142,8 +120,6 @@ def _fmt(value: float | None, fmt: str = ".4f") -> str:
 
 def _half_up(value: float, places: int = 1, signed: bool = False) -> str:
     """Half-up rounding (house convention), avoiding Python's banker rounding."""
-    from decimal import Decimal, ROUND_HALF_UP
-
     q = Decimal(10) ** -places
     d = Decimal(str(value)).quantize(q, rounding=ROUND_HALF_UP)
     if signed:
@@ -204,8 +180,7 @@ def generate_benchmark_table(conn: sqlite3.Connection, comparison: str, max_cols
             chunk = base + variants[i : i + (max_cols - 1 if base else max_cols)]
             chunks.append(chunk)
         tables = []
-        for idx, chunk in enumerate(chunks):
-            f" (part {idx + 1}/{len(chunks)})" if len(chunks) > 1 else ""
+        for _idx, chunk in enumerate(chunks):
             t = _generate_benchmark_table_for_models(conn, comparison, chunk)
             tables.append(t)
         return "\n\n".join(tables)
@@ -484,7 +459,6 @@ def generate_harmbench_table(conn: sqlite3.Connection, comparison: str) -> str:
 
     for i, r in enumerate(rows):
         model = r[0]
-        r[1]
         empty = r[2]
         truncated = r[3]
         avg_reason = r[4] if r[4] is not None else 0
@@ -573,7 +547,7 @@ def generate_harmbench_judge_table(conn: sqlite3.Connection, comparison: str) ->
         """,
         (comparison, comparison),
     ).fetchall()
-    judged: dict[str, tuple] = {r[0]: r[1:] for r in verdict_rows}
+    judged: dict[str, tuple[Any, ...]] = {r[0]: r[1:] for r in verdict_rows}
 
     # Reviewer models actually contributing (for the footnote)
     reviewers: dict[str, list[str]] = {}
@@ -595,7 +569,7 @@ def generate_harmbench_judge_table(conn: sqlite3.Connection, comparison: str) ->
         """,
         (comparison,),
     ).fetchall()
-    shapes: dict[str, tuple] = {r[0]: (r[1], r[2]) for r in shape_rows}
+    shapes: dict[str, tuple[Any, ...]] = {r[0]: (r[1], r[2]) for r in shape_rows}
 
     if not judged and not shapes:
         return "_No HarmBench results found._"
@@ -629,10 +603,7 @@ def generate_harmbench_judge_table(conn: sqlite3.Connection, comparison: str) ->
     max_asr = max((a for _, a in variant_asrs), default=None)
     bold_models = {m for m, a in variant_asrs if max_asr is not None and a == max_asr}
 
-    header = (
-        "| Model | ASR | No-Refusal | Soft-Refusal | Refusal | Degenerate "
-        "| Judged | Truncated | Empty |"
-    )
+    header = "| Model | ASR | No-Refusal | Soft-Refusal | Refusal | Degenerate | Judged | Truncated | Empty |"
     sep = "|-------|----:|-----------:|-------------:|--------:|-----------:|-------:|----------:|------:|"
     lines = [header, sep]
     seen_models: set[str] = set()
@@ -658,12 +629,8 @@ def generate_harmbench_judge_table(conn: sqlite3.Connection, comparison: str) ->
     footnotes = []
     missing = [m for m in models if m not in judged]
     if missing:
-        footnotes.append(
-            "No LLM-judge review coverage for: " + ", ".join(display_names.get(m, m) for m in missing)
-        )
-    rev_parts = [
-        f"{display_names.get(m, m)}: {'/'.join(reviewers[m])}" for m in sorted(reviewers) if m in seen_models
-    ]
+        footnotes.append("No LLM-judge review coverage for: " + ", ".join(display_names.get(m, m) for m in missing))
+    rev_parts = [f"{display_names.get(m, m)}: {'/'.join(reviewers[m])}" for m in sorted(reviewers) if m in seen_models]
     if rev_parts:
         footnotes.append("Reviewer(s): " + "; ".join(rev_parts) + " (latest-reviewed verdict per behavior)")
     footnotes.append(
@@ -716,7 +683,9 @@ def generate_harmbench_category_table(conn: sqlite3.Connection, comparison: str,
 
 
 def _generate_harmbench_category_for_models(
-    rows: list[tuple[Any, ...]], categories: list[str], model_names: list[str],
+    rows: list[tuple[Any, ...]],
+    categories: list[str],
+    model_names: list[str],
     display_names: dict[str, str] | None = None,
 ) -> str:
     """Internal: generate category table for a specific subset of models."""
@@ -807,8 +776,8 @@ def generate_gsm8k_reasoning_table(conn: sqlite3.Connection, comparison: str) ->
         if m[2] != "base":
             row = conn.execute(
                 "SELECT metric_value FROM lm_eval_results "
-            "WHERE comparison = ? AND model_name = ? AND task = 'gsm8k' "
-            "AND metric_name = 'exact_match,flexible-extract'",
+                "WHERE comparison = ? AND model_name = ? AND task = 'gsm8k' "
+                "AND metric_name = 'exact_match,flexible-extract'",
                 (comparison, m[0]),
             ).fetchone()
             if row:
@@ -1022,17 +991,20 @@ def generate_non_abliteration_baselines_table(conn: sqlite3.Connection, comparis
     lines = [header, sep]
 
     # Add base row first (answered-only per lesson #32; fallback: flexible headline)
-    base_gsm8k = conn.execute(
-        "SELECT metric_value FROM lm_eval_results WHERE comparison = ? AND model_name = "
-        "(SELECT model_name FROM models WHERE comparison = ? AND variant_type = 'base') "
-        "AND task = 'gsm8k' AND metric_name = 'answered_only_exact_match,flexible-extract'",
-        (comparison, comparison),
-    ).fetchone() or conn.execute(
-        "SELECT metric_value FROM lm_eval_results WHERE comparison = ? AND model_name = "
-        "(SELECT model_name FROM models WHERE comparison = ? AND variant_type = 'base') "
-        "AND task = 'gsm8k' AND metric_name = 'exact_match,flexible-extract'",
-        (comparison, comparison),
-    ).fetchone()
+    base_gsm8k = (
+        conn.execute(
+            "SELECT metric_value FROM lm_eval_results WHERE comparison = ? AND model_name = "
+            "(SELECT model_name FROM models WHERE comparison = ? AND variant_type = 'base') "
+            "AND task = 'gsm8k' AND metric_name = 'answered_only_exact_match,flexible-extract'",
+            (comparison, comparison),
+        ).fetchone()
+        or conn.execute(
+            "SELECT metric_value FROM lm_eval_results WHERE comparison = ? AND model_name = "
+            "(SELECT model_name FROM models WHERE comparison = ? AND variant_type = 'base') "
+            "AND task = 'gsm8k' AND metric_name = 'exact_match,flexible-extract'",
+            (comparison, comparison),
+        ).fetchone()
+    )
     base_mmlu = conn.execute(
         "SELECT metric_value FROM lm_eval_results WHERE comparison = ? AND model_name = "
         "(SELECT model_name FROM models WHERE comparison = ? AND variant_type = 'base') "
@@ -1053,15 +1025,18 @@ def generate_non_abliteration_baselines_table(conn: sqlite3.Connection, comparis
             "SELECT kl_batchmean FROM kl_results WHERE comparison = ? AND variant = ?",
             (comparison, model_name),
         ).fetchone()
-        gsm8k_row = conn.execute(
-            "SELECT metric_value FROM lm_eval_results WHERE comparison = ? AND model_name = ? "
-            "AND task = 'gsm8k' AND metric_name = 'answered_only_exact_match,flexible-extract'",
-            (comparison, model_name),
-        ).fetchone() or conn.execute(
-            "SELECT metric_value FROM lm_eval_results WHERE comparison = ? AND model_name = ? "
-            "AND task = 'gsm8k' AND metric_name = 'exact_match,flexible-extract'",
-            (comparison, model_name),
-        ).fetchone()
+        gsm8k_row = (
+            conn.execute(
+                "SELECT metric_value FROM lm_eval_results WHERE comparison = ? AND model_name = ? "
+                "AND task = 'gsm8k' AND metric_name = 'answered_only_exact_match,flexible-extract'",
+                (comparison, model_name),
+            ).fetchone()
+            or conn.execute(
+                "SELECT metric_value FROM lm_eval_results WHERE comparison = ? AND model_name = ? "
+                "AND task = 'gsm8k' AND metric_name = 'exact_match,flexible-extract'",
+                (comparison, model_name),
+            ).fetchone()
+        )
         mmlu_row = conn.execute(
             "SELECT metric_value FROM lm_eval_results WHERE comparison = ? AND model_name = ? "
             "AND task = 'leaderboard_mmlu_pro' AND metric_name = 'acc,none'",
@@ -1203,8 +1178,7 @@ def generate_kl_table(conn: sqlite3.Connection, comparison: str) -> str:
     Rank + median columns, bolds lowest KL among variants.
     """
     rows = conn.execute(
-        "SELECT variant, kl_batchmean, kl_median, rating FROM kl_results "
-        "WHERE comparison = ? ORDER BY kl_batchmean",
+        "SELECT variant, kl_batchmean, kl_median, rating FROM kl_results WHERE comparison = ? ORDER BY kl_batchmean",
         (comparison,),
     ).fetchall()
 
@@ -1212,24 +1186,28 @@ def generate_kl_table(conn: sqlite3.Connection, comparison: str) -> str:
         return "_No KL divergence results found._"
 
     display_names: dict[str, str] = {m[0]: (m[1] or m[0]) for m in _get_models(conn, comparison)}
-    base_names = {m[0] for m in conn.execute(
-        "SELECT model_name FROM models WHERE comparison = ? AND variant_type = 'base'", (comparison,)
-    )}
+    base_names = {
+        m[0]
+        for m in conn.execute(
+            "SELECT model_name FROM models WHERE comparison = ? AND variant_type = 'base'", (comparison,)
+        )
+    }
 
     header = "| Rank | Variant | KL Divergence | Median | Rating |"
     sep = "|-----:|---------|--------------:|-------:|--------|"
     lines = [header, sep]
 
-    kl_values = [_fmt(r[1], "4f") for r in rows]
-    min_kl = min(r[1] for r in rows if r[0] not in base_names) if any(r[0] not in base_names for r in rows) else min(r[1] for r in rows)
+    # NULL kl_batchmean (NaN stored as NULL — lesson #37 class) must not crash
+    # min(): exclude NULLs from the best-value search and render them as '-'.
+    variant_rows = [r for r in rows if r[0] not in base_names]
+    pool = [r[1] for r in (variant_rows or rows) if r[1] is not None]
+    min_kl = min(pool) if pool else None
 
     for i, r in enumerate(rows):
-        kl_str = _fmt(r[1], "4f")
-        if r[1] == min_kl and r[0] not in base_names:
+        kl_str = _fmt(r[1], ".4f")
+        if min_kl is not None and r[1] == min_kl and r[0] not in base_names:
             kl_str = f"**{kl_str}**"
-        lines.append(
-            f"| {i + 1} | {display_names.get(r[0], r[0])} | {kl_str} | {_fmt(r[2], '4f')} | {r[3] or '-'} |"
-        )
+        lines.append(f"| {i + 1} | {display_names.get(r[0], r[0])} | {kl_str} | {_fmt(r[2], '.4f')} | {r[3] or '-'} |")
 
     return "\n".join(lines)
 
@@ -1268,10 +1246,11 @@ def generate_gsm8k_3number_table(conn: sqlite3.Connection, comparison: str) -> s
     if not rows:
         return "_No GSM8K sample statistics found._"
 
-    rows.sort(key=lambda r: (r[6] if r[6] is not None else -1), reverse=True)
+    rows.sort(key=lambda r: r[6] if r[6] is not None else -1, reverse=True)
 
     variant_idx = [i for i, r in enumerate(rows) if r[2] != "base"]
-    def best(ids, key, higher=True):
+
+    def best(ids: list[int], key: Any, higher: bool = True) -> int | None:
         vals = [(key(rows[i]), i) for i in ids if key(rows[i]) is not None]
         if not vals:
             return None
@@ -1290,13 +1269,10 @@ def generate_gsm8k_3number_table(conn: sqlite3.Connection, comparison: str) -> s
         head_s = f"{_fmt_pct(head * 100)}" if head is not None else "-"
         if i == best_head:
             head_s = f"**{head_s}**"
-        if epct is not None and ecnt is not None:
-            empty_s = f"{_fmt_pct(epct)} ({int(ecnt)})"
-        else:
-            empty_s = "-"
-        if i == best_empty:
-            empty_s = f"**{empty_s}**"
-        ans_s = f"**{_fmt_pct(ans * 100)}**" if (i == best_ans and ans is not None) else (_fmt_pct(ans * 100) if ans is not None else "-")
+        empty_s = f"{_fmt_pct(epct)} ({int(ecnt)})" if epct is not None and ecnt is not None else "-"
+        empty_s = f"**{empty_s}**" if i == best_empty else empty_s
+        ans_val = _fmt_pct(ans * 100) if ans is not None else "-"
+        ans_s = f"**{ans_val}**" if (i == best_ans and ans is not None) else ans_val
         tax_s = f"{tax * 100:+.1f}pp" if tax is not None else "-"
         if i == best_tax:
             tax_s = f"**{tax_s}**"
@@ -1340,9 +1316,12 @@ def generate_capability_delta_table(conn: sqlite3.Connection, comparison: str) -
         return "_No base model found._"
     base_name = base_name[0]
 
-    kl_order = [r[0] for r in conn.execute(
-        "SELECT variant FROM kl_results WHERE comparison = ? ORDER BY kl_batchmean", (comparison,)
-    )]
+    kl_order = [
+        r[0]
+        for r in conn.execute(
+            "SELECT variant FROM kl_results WHERE comparison = ? ORDER BY kl_batchmean", (comparison,)
+        )
+    ]
 
     display_names: dict[str, str] = {m[0]: (m[1] or m[0]) for m in _get_models(conn, comparison)}
     variants = [v for v in kl_order if v != base_name]
@@ -1362,14 +1341,14 @@ def generate_capability_delta_table(conn: sqlite3.Connection, comparison: str) -
     base_cells = []
     for _, base_val, _ in cols:
         base_cells.append(_fmt_pct(base_val * 100) if base_val is not None else "-")
-    lines.append(f"| **Base** | " + " | ".join(base_cells) + " |")
+    lines.append("| **Base** | " + " | ".join(base_cells) + " |")
 
     # best (max) delta per column among variants; base is constant per column
     # so max delta == max raw value
     best_per_col = []
     for _, _, vmap in cols:
         finite = {v: d for v, d in vmap.items() if d is not None}
-        best_per_col.append(max(finite, key=finite.get) if finite else None)
+        best_per_col.append(max(finite, key=lambda k: finite[k]) if finite else None)
 
     for v in variants:
         cells = []
@@ -1442,18 +1421,20 @@ def generate_weight_summary_table(conn: sqlite3.Connection, comparison: str) -> 
         return "_No fingerprint data available._"
 
     # Sort by changed tensor count ascending (least modified first = best)
-    variants.sort(key=lambda v: v["changed"] or 9999)
+    variants.sort(key=lambda v: v["changed"] if v["changed"] is not None else 9999)
 
     header = "| Variant | Changed | Total | % | Types | Layers | E% | M% | L% |"
     sep = "|---------|---------|-------|------|-------|--------|----|----|----|"
     lines = [header, sep]
 
-    # Find best (fewest changes) for bolding
-    min_changed = min(v["changed"] for v in variants if v["changed"] is not None)
+    # Find best (fewest changes) for bolding. NULL changed counts (NaN/None
+    # summaries) are excluded so an all-NULL panel can't raise ValueError.
+    changed_pool = [v["changed"] for v in variants if v["changed"] is not None]
+    min_changed = min(changed_pool) if changed_pool else None
 
     for v in variants:
         changed_str = str(v["changed"]) if v["changed"] is not None else "-"
-        if v["changed"] == min_changed:
+        if min_changed is not None and v["changed"] == min_changed:
             changed_str = f"**{changed_str}**"
         pct_str = f"{v['pct']:.1f}%" if v["pct"] is not None else "-"
         total_str = str(v["total"]) if v["total"] is not None else "-"
@@ -1485,11 +1466,8 @@ def generate_combined_summary_table(conn: sqlite3.Connection, comparison: str) -
         return "_No models found._"
 
     base_model = next((m for m in models if m[2] == "base"), None)
-    [m for m in models if m[2] == "variant"]
     if not base_model:
         return "_No base model found._"
-
-    base_model[0]
 
     # Collect data for each model
     model_data: list[dict[str, Any]] = []

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from src.db.core import get_db
 from src.db_tables import (
-    _bold_best,
     CARD_KL_CLAIMS,
+    _bold_best,
     generate_all,
     generate_benchmark_delta_table,
     generate_benchmark_table,
@@ -194,7 +194,9 @@ class TestHarmbenchTable:
         _setup_harmbench(conn)
         table = generate_harmbench_table(conn, "tc")
         assert "ASR" in table
-        assert "base" in table
+        # The table renders display_name from the models table ('Base',
+        # capitalized — same convention as TestJudgeTable::test_base_never_bolded)
+        assert "| Base |" in table
         conn.close()
 
     def test_harmbench_asr_base_not_bolded(self, tmp_path):
@@ -205,7 +207,7 @@ class TestHarmbenchTable:
         # Base should not be bolded even though its ASR is lower (0%)
         # Variants have 100% ASR — should be bolded
         lines = table.split("\n")
-        base_line = [line for line in lines if "base" in line and "Model" not in line][0]
+        base_line = [line for line in lines if line.startswith("| Base |")][0]
         assert "**" not in base_line or "100.0%" in base_line
         conn.close()
 
@@ -227,6 +229,34 @@ class TestKLTable:
         table = generate_kl_table(conn, "tc")
         assert "very good" in table
         assert "**0.1340**" in table  # Lowest KL bolded
+        conn.close()
+
+    def test_kl_table_renders_four_decimals(self, tmp_path):
+        """Regression: _fmt(x, "4f") rendered 6 decimals (0.134000) — spec is .4f.
+
+        Also covers the NON-bolded path (median column), which the bolding test
+        above never inspects.
+        """
+        conn = get_db(str(tmp_path / "test.db"))
+        _setup_comparison(conn)
+        table = generate_kl_table(conn, "tc")
+        assert "0.1340" in table
+        assert "0.2450" in table
+        assert "0.134000" not in table
+        assert "0.245000" not in table
+        conn.close()
+
+    def test_kl_table_null_kl_does_not_crash(self, tmp_path):
+        """NULL kl_batchmean (NaN stored as NULL, lesson #37 class) must render
+        as '-' instead of raising TypeError in the min() best-value search.
+        """
+        conn = get_db(str(tmp_path / "test.db"))
+        _setup_comparison(conn)
+        conn.execute("INSERT INTO kl_results (comparison, variant, kl_batchmean) VALUES ('tc', 'v3', NULL)")
+        conn.commit()
+        table = generate_kl_table(conn, "tc")
+        assert "| - |" in table  # NULL rendered as dash
+        assert "**0.1340**" in table  # finite best still bolded
         conn.close()
 
 
@@ -270,6 +300,23 @@ class TestWeightSummaryTable:
         _setup_comparison(conn)
         table = generate_weight_summary_table(conn, "tc")
         assert "No weight" in table
+        conn.close()
+
+    def test_weight_summary_all_null_changed(self, tmp_path):
+        """All-NULL changed counts must not raise ValueError in min()."""
+        conn = get_db(str(tmp_path / "test.db"))
+        _setup_comparison(conn)
+        for variant in ["v1", "v2"]:
+            conn.execute(
+                "INSERT INTO weight_results "
+                "(comparison, variant, variant_b, script_name, result_path, summary) "
+                "VALUES ('tc', ?, '', 'fingerprint', ?, ?)",
+                (variant, f"/results/weight/{variant}/fingerprint.json", '{"script": "fingerprint"}'),
+            )
+        conn.commit()
+        table = generate_weight_summary_table(conn, "tc")
+        assert "| - |" in table
+        assert "**" not in table
         conn.close()
 
 
@@ -345,9 +392,17 @@ class TestHarmbenchJudgeTable:
         """
         _setup_comparison(conn)
         _setup_harmbench(conn)
-        verdicts = {("base", "b1"): "refused", ("base", "b2"): "refused", ("base", "b3"): "soft_refusal",
-                    ("v1", "b1"): "complied", ("v1", "b2"): "complied", ("v1", "b3"): "refused",
-                    ("v2", "b1"): "refused", ("v2", "b2"): "refused", ("v2", "b3"): "degenerate"}
+        verdicts = {
+            ("base", "b1"): "refused",
+            ("base", "b2"): "refused",
+            ("base", "b3"): "soft_refusal",
+            ("v1", "b1"): "complied",
+            ("v1", "b2"): "complied",
+            ("v1", "b3"): "refused",
+            ("v2", "b1"): "refused",
+            ("v2", "b2"): "refused",
+            ("v2", "b3"): "degenerate",
+        }
         for (model, bid), verdict in verdicts.items():
             conn.execute(
                 "INSERT INTO llm_reviews (comparison, model_name, behavior_id, reviewer_model, verdict) "
@@ -441,9 +496,7 @@ class TestCardKlClaims:
     def test_calibration_table_scoped_to_comparison(self, tmp_path):
         conn = get_db(str(tmp_path / "test.db"))
         conn.execute("INSERT INTO comparisons (name, base_model, num_variants) VALUES ('tc', 'b', 0)")
-        conn.execute(
-            "INSERT INTO kl_results (comparison, variant, kl_batchmean) VALUES ('tc', 'apostate', 0.004)"
-        )
+        conn.execute("INSERT INTO kl_results (comparison, variant, kl_batchmean) VALUES ('tc', 'apostate', 0.004)")
         conn.commit()
         # Comparison with no claims entry -> no data (does not use gemma claims)
         table = generate_kl_calibration_table(conn, "tc")

@@ -76,11 +76,3 @@ def suite_hash(prompts: list[str], categories: list[str]) -> str:
     pairs = sorted(zip(prompts, categories, strict=True))
     payload = "\n".join(f"{p}\t{c}" for p, c in pairs)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
-
-
-def count_per_category(categories: list[str]) -> dict[str, int]:
-    """Count prompts per category."""
-    counts: dict[str, int] = {}
-    for c in categories:
-        counts[c] = counts.get(c, 0) + 1
-    return counts

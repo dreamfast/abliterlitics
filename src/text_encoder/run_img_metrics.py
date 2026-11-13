@@ -34,6 +34,7 @@ import torch
 from PIL import Image
 
 from src.text_encoder import TE_RESULTS_VERSION
+from src.text_encoder._cli import add_device
 from src.text_encoder.image_metrics import (
     CLIPMeter,
     LPIPSMeter,
@@ -53,8 +54,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--floor-pair", default="base_int8,base_fp8", help="Two variants defining the quant-floor band")
     p.add_argument("--clip-model", default="ViT-L-14", help="open_clip model name")
     p.add_argument("--clip-pretrained", default="openai", help="open_clip pretrained tag")
-    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    p.add_argument("--base-seed", type=int, default=42, help="The A/B fixed seed")
+    add_device(p, default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument(
+        "--base-seed",
+        type=int,
+        default=None,
+        help="The A/B fixed seed (default: the manifest's recorded 'seed', else 42)",
+    )
     p.add_argument("--cross-prompt-max", type=int, default=30, help="Cross-prompt pairs per variant")
     p.add_argument("--n-boot", type=int, default=1000)
     p.add_argument("--limit", type=int, default=0, help="Debug: cap pairs per kind (0 = all)")
@@ -185,6 +191,33 @@ def _summary_mean(bucket_json: dict[str, Any], metric: str) -> float | None:
     return None
 
 
+def _resolve_base_seed(base_seed: int | None, manifest: dict[str, Any]) -> int:
+    """A/B fixed seed for pair mining: --base-seed wins, else the manifest's
+    recorded 'seed', else 42 (audit bug #6 — the old hardcoded 42 default made
+    manifests generated with any other seed mine 0 te_swap/seed_change pairs
+    and still exit 0, the lesson #48 silent-empty class)."""
+    if base_seed is not None:
+        return base_seed
+    seed = manifest.get("seed")
+    return int(seed) if seed is not None else 42
+
+
+def _assert_pairs_mined(counts: dict[str, int]) -> None:
+    """Fail loud when the miner found NO pairs of any kind.
+
+    A zero-everything result means the seed/reference/floor config doesn't
+    match the manifest (or the manifest is empty) — writing empty buckets and
+    exiting 0 is exactly the silent-empty failure class.
+    """
+    if any(counts.values()):
+        return
+    raise SystemExit(
+        "no pairs mined from the manifest — seed/reference/floor config likely "
+        f"doesn't match it (counts: {counts}). Check --base-seed vs the manifest's "
+        "'seed', --reference and --floor-pair variant names."
+    )
+
+
 def main() -> int:
     args = parse_args()
     manifest_path = Path(args.manifest)
@@ -193,6 +226,7 @@ def main() -> int:
 
     manifest: dict[str, Any] = json.loads(manifest_path.read_text())
     images: list[dict[str, Any]] = manifest.get("images", [])
+    args.base_seed = _resolve_base_seed(args.base_seed, manifest)
     log.info(
         "Manifest: %d images, %d variants, base seed %s",
         len(images),
@@ -220,6 +254,14 @@ def main() -> int:
     cross_prompt = mine_cross_prompt_pairs(images, per_variant=args.cross_prompt_max, base_seed=args.base_seed)
     seed_change = mine_seed_change_pairs(images, base_seed=args.base_seed)
     floor_band = mine_floor_band_pairs(images, floor_pair=floor_pair, base_seed=args.base_seed)
+    _assert_pairs_mined(
+        {
+            "te_swap": len(te_swap),
+            "cross_prompt": len(cross_prompt),
+            "seed_change": len(seed_change),
+            "floor_band": len(floor_band),
+        }
+    )
     log.info(
         "Pairs: te_swap=%d cross_prompt=%d seed_change=%d floor_band=%d",
         len(te_swap),

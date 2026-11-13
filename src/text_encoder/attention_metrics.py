@@ -151,6 +151,25 @@ def summarize_readout(
 
 
 # ---------------------------------------------------------------------------
+# BPE token decode (shared — the Ġ/Ċ byte-marker convention)
+# ---------------------------------------------------------------------------
+
+
+def decode_bpe_token(tok: str) -> str:
+    """Decode one HF BPE token string to display form: Ġ -> space, Ċ -> newline.
+
+    Single home for the byte-marker decode previously copy-pasted at the
+    token-string call sites (attention/word-content runners, probes).
+    """
+    return tok.replace("Ġ", " ").replace("Ċ", "\n")
+
+
+def decode_bpe_tokens(toks: list[str]) -> list[str]:
+    """Decode a list of HF BPE token strings (see ``decode_bpe_token``)."""
+    return [decode_bpe_token(t) for t in toks]
+
+
+# ---------------------------------------------------------------------------
 # Word-level readout diff (pure)
 # ---------------------------------------------------------------------------
 
@@ -192,28 +211,6 @@ def group_words(tokens: list[str], mass: list[float]) -> list[tuple[str, float]]
             order.append(w)
         merged[w] = merged.get(w, 0.0) + m
     return [(w, merged[w]) for w in order]
-
-
-def word_diff(
-    tokens: list[str],
-    base_mass: list[float],
-    variant_mass: list[float],
-    top_k: int = 15,
-) -> list[dict[str, float | str]]:
-    """Rank words by |variant mass − base mass| — what the DiT reads differently.
-
-    Returns rows sorted by absolute delta, each: {word, base, variant, delta}.
-    """
-    b = group_words(tokens, base_mass)
-    v = group_words(tokens, variant_mass)
-    v_map = dict(v)
-    rows: list[dict[str, float | str]] = []
-    for w, bm in b:
-        vm = v_map.get(w, 0.0)
-        delta: float = vm - bm
-        rows.append({"word": w, "base": bm, "variant": vm, "delta": delta})
-    rows.sort(key=lambda r: abs(float(r["delta"])), reverse=True)
-    return rows[:top_k]
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -176,38 +175,3 @@ def load_artifact(cache_dir: Path | str, key: str) -> ConditioningArtifact | Non
         device=payload["device"],
         meta=payload.get("meta", {}),
     )
-
-
-def get_or_compute(
-    cache_dir: Path | str,
-    ckpt_id: str,
-    prompt_set_hash: str,
-    dtype: str,
-    device: str,
-    stage: str,
-    transform: str,
-    compute_fn: Callable[[], ConditioningArtifact],
-) -> ConditioningArtifact:
-    """Get artifact from cache, or compute + cache it.
-
-    Args:
-        cache_dir: Cache directory.
-        ckpt_id, prompt_set_hash, dtype, device, stage, transform: Cache key components.
-        compute_fn: Callable() -> ConditioningArtifact, called on cache miss.
-
-    Returns:
-        The artifact (from cache or freshly computed).
-    """
-    key = cache_key(ckpt_id, prompt_set_hash, dtype, device, stage, transform)
-    cached = load_artifact(cache_dir, key)
-    if cached is not None:
-        log.info("Cache hit: %s (transform=%s, stage=%s)", ckpt_id, transform, stage)
-        return cached
-
-    log.info("Cache miss: %s (transform=%s, stage=%s) — computing", ckpt_id, transform, stage)
-    artifact: ConditioningArtifact = compute_fn()
-    # Ensure meta matches the requested transform so save_artifact uses the
-    # correct key (reviewer C1 — prevents silent cache key mismatch).
-    artifact.meta["transform"] = transform
-    save_artifact(artifact, cache_dir)
-    return artifact

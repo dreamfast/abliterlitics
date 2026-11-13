@@ -132,22 +132,26 @@ class TestWordReadout:
         assert words["<pad>"] == pytest.approx(0.05)  # consecutive pads merged
         assert sum(words.values()) == pytest.approx(1.0)
 
-    def test_word_diff_ranks_by_delta(self) -> None:
-        from src.text_encoder.attention_metrics import word_diff
-
-        toks = ["a", " red", " square"]
-        base = [0.5, 0.3, 0.2]
-        var = [0.5, 0.1, 0.4]
-        rows = word_diff(toks, base, var, top_k=3)
-        assert rows[0]["word"] == "square" or rows[0]["word"] == "red"
-        deltas = [abs(float(r["delta"])) for r in rows]
-        assert deltas == sorted(deltas, reverse=True)
-
     def test_empty(self) -> None:
-        from src.text_encoder.attention_metrics import group_words, word_diff
+        from src.text_encoder.attention_metrics import group_words
 
         assert group_words([], []) == []
-        assert word_diff(["a"], [], []) == []
+
+
+class TestDecodeBpeToken:
+    def test_g_context_space(self) -> None:
+        from src.text_encoder.attention_metrics import decode_bpe_token
+
+        assert decode_bpe_token("Ġred") == " red"
+        assert decode_bpe_token("Ċ") == "\n"
+        assert decode_bpe_token("ĠĊ") == " \n"
+        assert decode_bpe_token("plain") == "plain"  # no markers -> unchanged
+
+    def test_decode_list_preserves_order(self) -> None:
+        from src.text_encoder.attention_metrics import decode_bpe_tokens
+
+        assert decode_bpe_tokens(["Ġa", "Ġred", "Ċ", "square"]) == [" a", " red", "\n", "square"]
+        assert decode_bpe_tokens([]) == []
 
 
 class TestWordRowsOrdered:

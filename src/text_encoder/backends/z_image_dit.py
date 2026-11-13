@@ -33,6 +33,7 @@ import torch
 from safetensors import safe_open
 
 from src.text_encoder.backends import comfyui_loader
+from src.text_encoder.backends.dit_common import count_blocks as _count_blocks
 
 log = logging.getLogger(__name__)
 
@@ -57,14 +58,6 @@ ZIMAGE_DIT_CONFIG: dict[str, Any] = {
 }
 SAMPLING_SHIFT = 3.0
 SAMPLING_MULTIPLIER = 1.0
-
-
-def _count_blocks(keys: list[str], pattern: str) -> int:
-    import re
-
-    pat = re.compile(pattern)
-    ids = {int(m.group(1)) for k in keys if (m := pat.search(k))}
-    return len(ids)
 
 
 def load_zimage_dit(dit_file: str | Path, device: str = "cuda", dtype: torch.dtype = torch.bfloat16) -> Any:

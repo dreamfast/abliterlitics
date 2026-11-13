@@ -22,7 +22,6 @@ end-to-end path.
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +29,7 @@ import torch
 from safetensors import safe_open
 
 from src.text_encoder.backends import comfyui_loader
+from src.text_encoder.backends.dit_common import count_blocks as _count_blocks
 
 log = logging.getLogger(__name__)
 
@@ -37,12 +37,6 @@ SAMPLING_SHIFT = 1.15
 SAMPLING_MULTIPLIER = 1.0
 TIME_SCALE = 1000.0
 _DIT_PREFIX = "model.diffusion_model."
-
-
-def _count_blocks(keys: list[str], pattern: str) -> int:
-    pat = re.compile(pattern)
-    ids = {int(m.group(1)) for k in keys if (m := pat.search(k))}
-    return len(ids)
 
 
 def load_krea2_dit(dit_file: str | Path, device: str = "cuda", dtype: torch.dtype = torch.bfloat16) -> Any:
@@ -103,14 +97,12 @@ def load_krea2_dit(dit_file: str | Path, device: str = "cuda", dtype: torch.dtyp
 
     model = SingleStreamDiT(operations=ops, device=device, dtype=dtype, image_model="krea2", **cfg)
     stripped = {(k[len(dit_prefix) :] if dit_prefix else k): v for k, v in sd.items()}
-    unexpected = [k for k in stripped if not k.endswith((".comfy_quant", ".weight_scale"))]
     missing, unexpected_keys = model.load_state_dict(stripped, strict=False)
     if missing:
         raise RuntimeError(f"Krea2 DiT load failed: {len(missing)} missing (first 5: {missing[:5]})")
     bad_unexpected = [k for k in unexpected_keys if not k.endswith((".comfy_quant", ".weight_scale"))]
     if bad_unexpected:
         raise RuntimeError(f"Krea2 DiT load failed: unexpected keys {bad_unexpected[:5]}")
-    del unexpected
     model.eval()
     for p in model.parameters():
         p.requires_grad_(False)

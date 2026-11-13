@@ -22,6 +22,7 @@ from typing import Any
 import torch
 
 from src.text_encoder import TE_RESULTS_VERSION
+from src.text_encoder._cli import add_backend, add_cache_dir, add_device, add_results_dir
 
 log = logging.getLogger(__name__)
 
@@ -32,9 +33,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--variants", required=True, help="Comma-separated variant TE files")
     p.add_argument("--variant-names", default="")
     p.add_argument("--dit", required=True)
-    p.add_argument("--cache-dir", default="/te_cache")
-    p.add_argument("--results-dir", default="/results")
-    p.add_argument("--device", default="cuda")
+    add_cache_dir(p, default="/te_cache")
+    add_results_dir(p, default="/results")
+    add_device(p, default="cuda")
     p.add_argument(
         "--cache-device",
         default="cpu",
@@ -44,12 +45,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--n-prompts", type=int, default=6)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--latent-hw", type=int, default=None, help="None = backend default (128 zimage / 64 krea2)")
-    p.add_argument(
-        "--backend",
-        choices=["zimage", "krea2"],
-        default="zimage",
-        help="DiT + conditioning family",
-    )
+    add_backend(p, default="zimage", choices=("zimage", "krea2"), help_text="DiT + conditioning family")
     p.add_argument("--suite", default="/prompts/te_suite.yaml")
     return p.parse_args()
 

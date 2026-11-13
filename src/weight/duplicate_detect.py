@@ -97,21 +97,27 @@ def fingerprint_model(model_dir: str | Path, name: str = "") -> ModelFingerprint
     family = ""
     t0 = time.time()
 
+    key_hashes: list[tuple[str, str]] = []
     for shard in shards:
-        with safe_open(str(shard), framework="pt", device="cpu") as sf:  # type: ignore[no-untyped-call]
+        with safe_open(str(shard), framework="pt", device="cpu") as sf:
             shard_keys = list(sf.keys())
             if not family:
                 family = detect_family(set(shard_keys))
             for raw_key in shard_keys:
                 tensor: torch.Tensor = sf.get_tensor(raw_key)
-                tensor_hash = _hash_tensor(tensor)
-                digest.update(raw_key.encode())
-                digest.update(tensor_hash.encode())
+                key_hashes.append((raw_key, _hash_tensor(tensor)))
                 tensor_count += 1
                 total_bytes += tensor.nelement() * tensor.element_size()
 
     if not family:
         family = detect_family(set())  # empty -> default qwen3
+
+    # Fold (key, hash) pairs sorted by key so the digest is independent of how
+    # tensors were grouped across shards — a re-shard that moves a tensor
+    # between shards (non-alphabetically) must not change the fingerprint.
+    for raw_key, tensor_hash in sorted(key_hashes):
+        digest.update(raw_key.encode())
+        digest.update(tensor_hash.encode())
 
     digest.update(family.encode())
 

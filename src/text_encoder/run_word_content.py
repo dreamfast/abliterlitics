@@ -24,7 +24,7 @@ Usage (in the te container, repo at /app):
         --variant-names heretic,... \
         --dit /models/diffusion_models/z_image_turbo_bf16.safetensors \
         --suite /app/prompts/ab_stress_prompts.yaml \
-        --cache-dir /te_cache --results-dir /results --device cuda
+        --cache-dir /te_cache --results-dir /results --device cpu
 """
 
 from __future__ import annotations
@@ -53,7 +53,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--suite", default="/prompts/te_suite.yaml")
     p.add_argument("--cache-dir", default="/te_cache")
     p.add_argument("--results-dir", default="/results")
-    p.add_argument("--device", default="cuda", help="Cache-key device (artifacts load to CPU for compare)")
+    p.add_argument(
+        "--device",
+        default="cpu",
+        help="Cache-key device for the zimage branch (the forensics cache is populated with "
+        "'run_analysis --device cpu'; artifacts load to CPU for compare either way)",
+    )
     p.add_argument(
         "--backend",
         choices=["zimage", "krea2", "h3"],

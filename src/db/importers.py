@@ -19,20 +19,35 @@ from src.db.pipeline import init_stages
 
 log = logging.getLogger(__name__)
 
-# Primary metrics to import per lm-eval task (skip aliases and subtasks).
+# Primary metrics per lm-eval task — SINGLE SOURCE OF TRUTH, shared with
+# src/db_tables.py (report tables import this dict; do not duplicate it).
 # Key: lm-eval task name (as it appears in results dict).
-# Value: list of metric names to import (e.g. "acc,none", "exact_match,strict-match").
+# Value: list of metric names (e.g. "acc,none", "exact_match,flexible-extract").
+# Ordered by category: v2 OLL suite first, then v1 supplement, then generative.
+# The import subtask-skip check keys off the first underscore segment, so the
+# leaderboard_* keys here are also what makes exact-key lookup work upstream.
 TASK_PRIMARY_METRICS: dict[str, list[str]] = {
-    "mmlu": ["acc,none"],
-    "gsm8k": ["exact_match,strict-match", "exact_match,flexible-extract"],
+    # v2 Open LLM Leaderboard suite (aggregates only, subtasks are filtered)
+    "leaderboard_mmlu_pro": ["acc,none"],
+    "leaderboard_gpqa_diamond": ["acc_norm,none"],
+    "leaderboard_bbh": ["acc_norm,none"],
+    "leaderboard_musr": ["acc_norm,none"],
+    "leaderboard_ifeval": ["prompt_level_strict_acc,none"],
+    # v1 forensic supplement
     "hellaswag": ["acc_norm,none"],
     "arc_challenge": ["acc_norm,none"],
     "winogrande": ["acc,none"],
+    "piqa": ["acc_norm,none"],
+    "lambada_openai": ["perplexity,none"],
+    # Legacy MMLU (kept for backwards compat with older comparisons)
+    "mmlu": ["acc,none"],
+    # Generative tasks
+    "gsm8k": ["exact_match,flexible-extract", "exact_match,strict-match"],
     "truthfulqa_mc1": ["acc,none"],
     "truthfulqa_mc2": ["acc,none"],
     "truthfulqa_gen": ["bleu_acc,none"],
-    "piqa": ["acc_norm,none"],
-    "lambada_openai": ["perplexity,none"],
+    # HumanEval (dead under chat-template scoring but tracked for completeness)
+    "humaneval": ["pass@1,none"],
 }
 
 
@@ -163,17 +178,25 @@ def _import_gsm8k_sample_stats(
 
     Sample file lookup (in priority order):
       1. New runner: ``<results_dir>/__model/<model>__samples_gsm8k_*.jsonl``
-      2. Legacy: ``<results_dir>/__model/samples_gsm8k_*.jsonl`` matched by
+      2. Per-model dir (lesson #51): ``<results_dir>/<model>/samples_gsm8k_*.jsonl``
+      3. Legacy: ``<results_dir>/__model/samples_gsm8k_*.jsonl`` matched by
          file mtime closest to ``result_file.stat().st_mtime``.
 
     Returns the number of metric rows imported (0 if no samples file found).
     """
+    # Layout 1: __model/<model>__samples_gsm8k_*.jsonl (renamed-by-runner)
     samples_dir = results_dir / "__model"
-    if not samples_dir.is_dir():
-        return 0
+    candidates: list[Path] = []
+    if samples_dir.is_dir():
+        candidates = sorted(samples_dir.glob(f"{model_name}__samples_gsm8k_*.jsonl"))
 
-    # Try new naming convention first: <model>__samples_gsm8k_*.jsonl
-    candidates = sorted(samples_dir.glob(f"{model_name}__samples_gsm8k_*.jsonl"))
+    # Layout 2 (lesson #51): the current runner writes Phase 2 samples to
+    # per-model dirs — results/lm_eval/<model>/samples_gsm8k_*.jsonl — which
+    # the __model/-only scan never saw (the manual docker-copy workaround).
+    if not candidates:
+        per_model_dir = results_dir / model_name
+        if per_model_dir.is_dir():
+            candidates = sorted(per_model_dir.glob("samples_gsm8k_*.jsonl"))
 
     # Fall back to legacy: match by mtime
     # NOTE: the original 10-minute window was too tight for the actual
@@ -183,15 +206,16 @@ def _import_gsm8k_sample_stats(
     # AGENTS.md lesson #32). Window now 60 min to cover the gap safely.
     if not candidates:
         result_mtime = result_file.stat().st_mtime
-        all_samples = list(samples_dir.glob("samples_gsm8k_*.jsonl"))
-        # Exclude any already renamed files
-        all_samples = [sf for sf in all_samples if "__" not in sf.stem]
-        if all_samples:
-            closest = min(all_samples, key=lambda sf: abs(sf.stat().st_mtime - result_mtime))
-            # Only use if within 1 hour — otherwise it's a false match.
-            # (Was 10 min, too tight — see comment above.)
-            if abs(closest.stat().st_mtime - result_mtime) < 3600:
-                candidates = [closest]
+        if samples_dir.is_dir():
+            all_samples = list(samples_dir.glob("samples_gsm8k_*.jsonl"))
+            # Exclude any already renamed files
+            all_samples = [sf for sf in all_samples if "__" not in sf.stem]
+            if all_samples:
+                closest = min(all_samples, key=lambda sf: abs(sf.stat().st_mtime - result_mtime))
+                # Only use if within 1 hour — otherwise it's a false match.
+                # (Was 10 min, too tight — see comment above.)
+                if abs(closest.stat().st_mtime - result_mtime) < 3600:
+                    candidates = [closest]
 
     if not candidates:
         log.debug("No GSM8K samples file found for %s", model_name)
@@ -221,10 +245,8 @@ def _import_gsm8k_sample_stats(
                 if filt not in stats:
                     continue
                 resps = d.get("resps", [[]])
-                filtered = d.get("filtered_resps", [])
                 em = d.get("exact_match", 0)
                 resp_text = resps[0][0] if resps and resps[0] else ""
-                filt_text = filtered[0] if filtered else ""
                 stats[filt]["total"] += 1
                 if em == 1.0:
                     stats[filt]["correct"] += 1
@@ -294,7 +316,8 @@ def _import_gsm8k_sample_stats(
             log.warning("Failed to insert GSM8K stat %s/%s: %s", model_name, metric_name, exc)
 
     log.info(
-        "  %s: GSM8K sample stats — strict_empty=%d, flex_empty=%d (%.1f%%), strict=%.4f, flex=%.4f, gap=%+.4f, answered_only_flex=%.4f, mean_chars=%.0f",
+        "  %s: GSM8K sample stats — strict_empty=%d, flex_empty=%d (%.1f%%), "
+        "strict=%.4f, flex=%.4f, gap=%+.4f, answered_only_flex=%.4f, mean_chars=%.0f",
         model_name,
         s["empty"],
         flex_empty,
@@ -511,7 +534,6 @@ def import_te_results(
         for variant in data.get("variants", []):
             # Use slug from filename (te_<slug>.json) for consistency with other tables
             variant_slug = f.stem.replace("te_", "", 1)
-            variant_id = variant.get("variant_id", variant_slug)
             for sr in variant.get("streams", []):
                 stream = sr.get("stream", "")
                 stage = sr.get("stage", "")
@@ -1327,15 +1349,26 @@ def _import_harmbench_scores(
 
 
 def _extract_weight_summary(script_name: str, raw: dict[str, Any]) -> dict[str, Any]:
-    """Extract key metrics from a weight analysis JSON for the summary column."""
+    """Extract key metrics from a weight analysis JSON for the summary column.
+
+    Keys follow the ACTUAL script output contracts (src/weight/*), verified
+    against each script's report dict — the pre-fix readers (total_changes /
+    effective_ranks / total_tensors) matched no emitted field and every
+    non-fingerprint summary silently came back empty.
+    """
     summary: dict[str, Any] = {"script": script_name}
 
     if script_name == "panel_comparison":
-        # multi_model_panel.json
+        # multi_model_panel.json — panel emits architecture.total_keys and
+        # model_key_counts (no top-level total_tensors).
         if "pairwise_changed_counts" in raw:
             summary["pairwise_changed_counts"] = raw["pairwise_changed_counts"]
-        if "total_tensors" in raw:
-            summary["total_tensors"] = raw["total_tensors"]
+        arch = raw.get("architecture")
+        if isinstance(arch, dict) and arch.get("total_keys") is not None:
+            summary["total_keys"] = arch["total_keys"]
+        mkc = raw.get("model_key_counts")
+        if isinstance(mkc, dict) and mkc:
+            summary["model_key_counts"] = mkc
 
     elif script_name == "fingerprint":
         scope = raw.get("scope", {})
@@ -1358,23 +1391,53 @@ def _extract_weight_summary(script_name: str, raw: dict[str, Any]) -> dict[str, 
             summary["late_layer_pct"] = layer_profile.get("late_layer_pct")
 
     elif script_name == "svd":
-        ranks = raw.get("effective_ranks", {})
-        if ranks:
-            summary["effective_ranks"] = ranks
+        # svd emits per-tensor tensor_results[].effective_rank_90pct_energy —
+        # no top-level aggregate, so compute one at import. NOTE (lesson #54):
+        # rank90 == 20 is the svd_lowrank(k=20) saturation floor, not a value.
+        tensor_results = raw.get("tensor_results")
+        if isinstance(tensor_results, list):
+            ranks = sorted(
+                t["effective_rank_90pct_energy"]
+                for t in tensor_results
+                if isinstance(t, dict) and isinstance(t.get("effective_rank_90pct_energy"), (int, float))
+            )
+            if ranks:
+                summary["effective_rank_90pct_median"] = ranks[len(ranks) // 2]
+                summary["effective_rank_90pct_max"] = ranks[-1]
+                summary["tensors_ranked"] = len(ranks)
+        if raw.get("total_analyzed") is not None:
+            summary["total_analyzed"] = raw["total_analyzed"]
 
     elif script_name == "layer_analysis":
-        if "layers_modified" in raw:
-            summary["layers_modified"] = raw["layers_modified"]
-        if "total_layers" in raw:
-            summary["total_layers"] = raw["total_layers"]
+        # layer_analysis emits layer_progression: {layer: {changed_tensors, ...}}
+        # (no top-level layers_modified/total_layers) — derive both counts.
+        progression = raw.get("layer_progression")
+        if isinstance(progression, dict) and progression:
+            modified = [ly for ly, d in progression.items() if isinstance(d, dict) and d.get("changed_tensors")]
+            summary["layers_modified"] = len(modified)
+            summary["total_layers"] = len(progression)
 
     elif script_name == "correlation":
-        if "correlation_coefficient" in raw:
-            summary["correlation_coefficient"] = raw["correlation_coefficient"]
+        # technique_correlation emits pairwise_cosines: {pair: {mean, median,
+        # count, min, max}} (no top-level correlation_coefficient).
+        pw = raw.get("pairwise_cosines")
+        if isinstance(pw, dict) and pw:
+            summary["pairwise_cosines"] = {
+                pair: {k: stats.get(k) for k in ("mean", "median", "count")}
+                for pair, stats in pw.items()
+                if isinstance(stats, dict)
+            }
 
     elif script_name == "edit_vector":
-        if "total_changes" in raw:
-            summary["total_changes"] = raw["total_changes"]
+        # Single-variant mode emits changed_count/total_keys; two-variant mode
+        # emits overlap_count/nontrivial_overlap_count (never total_changes).
+        if raw.get("changed_count") is not None:
+            summary["changed_count"] = raw["changed_count"]
+            summary["total_keys"] = raw.get("total_keys")
+        if raw.get("overlap_count") is not None:
+            summary["overlap_count"] = raw["overlap_count"]
+            summary["nontrivial_overlap_count"] = raw.get("nontrivial_overlap_count")
+            summary["total_keys"] = raw.get("total_keys")
 
     return summary
 

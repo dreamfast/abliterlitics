@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from src.text_encoder import TE_RESULTS_VERSION
+from src.text_encoder.report_style import ACCENT, CSS_VERDICT_CELLS, FONT_STACK, verdict_css_class
 
 log = logging.getLogger(__name__)
 
@@ -346,14 +347,7 @@ def _damage_ladder_rows(damage: dict[str, Any] | None) -> str:
 
 def verdict_row(hid: str, text: str, res: dict[str, str]) -> str:
     v = escape(res["verdict"])
-    benign_null = "no damage" in res["verdict"] or "no structure" in res["verdict"]
-    cls = (
-        "ok"
-        if "SUPPORTED" in res["verdict"] and "PARTIAL" not in res["verdict"]
-        else "bad"
-        if "REFUTED" in res["verdict"] and not benign_null
-        else "mid"
-    )
+    cls = verdict_css_class(res["verdict"])
     return (
         f"<tr><td><b>{hid}</b></td><td>{escape(text)}</td>"
         f"<td>{escape(res['detail'])}</td><td class='{cls}'>{v}</td></tr>"
@@ -442,16 +436,14 @@ def build_report(results_dir: Path, out_html: Path) -> str:
 <html lang="en"><head><meta charset="utf-8">
 <title>MiniMax H3 Text-Encoder Battery — Phase 7</title>
 <style>
- body {{ font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+ body {{ font-family: {FONT_STACK};
         margin: 24px auto; max-width: 1080px; color: #222; }}
- h1 {{ font-size: 26px; }} h2 {{ margin-top: 36px; border-bottom: 2px solid #4c72b0; padding-bottom: 4px; }}
+ h1 {{ font-size: 26px; }} h2 {{ margin-top: 36px; border-bottom: 2px solid {ACCENT}; padding-bottom: 4px; }}
  table {{ border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }}
  th, td {{ border: 1px solid #d0d7e2; padding: 6px 10px; text-align: left; vertical-align: top; }}
  th {{ background: #f2f5fa; }}
- td.ok {{ color: #1e7d32; font-weight: 600; }}
- td.bad {{ color: #b3261e; font-weight: 600; }}
- td.mid {{ color: #946200; font-weight: 600; }}
- .explainer {{ background: #f6f8fb; border-left: 4px solid #4c72b0;
+{CSS_VERDICT_CELLS}
+ .explainer {{ background: #f6f8fb; border-left: 4px solid {ACCENT};
               border-radius: 0 8px 8px 0; padding: 10px 14px; font-size: 13px; }}
  .meta {{ color: #666; font-size: 12.5px; }}
  code {{ background: #f0f2f6; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }}

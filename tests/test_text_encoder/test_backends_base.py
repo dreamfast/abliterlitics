@@ -1,7 +1,8 @@
 """Tests for backend infrastructure (BaseBackend, HookManager, FakeQuantizer).
 
 These test the abstract infrastructure without loading any real model.
-Model-specific backend tests live in backends/test_ltx2.py etc.
+Model-specific backend tests live in test_backends_<model>.py
+(h3, krea2, zimage).
 """
 
 from __future__ import annotations
@@ -11,7 +12,11 @@ import torch
 import torch.nn as nn
 
 from src.text_encoder.backends import BaseBackend, HookManager, get_backend, register_backend
-from src.text_encoder.backends.base import fake_quantize_weights
+from src.text_encoder.backends.base import (
+    _pack_sequences,
+    dtype_label,
+    fake_quantize_weights,
+)
 
 # ---------------------------------------------------------------------------
 # HookManager
@@ -132,3 +137,81 @@ class TestBackendRegistry:
         from src.text_encoder.backends import BACKENDS
 
         del BACKENDS["dummy_test"]
+
+
+# ---------------------------------------------------------------------------
+# _pack_sequences (shared right-pad/mask helper)
+# ---------------------------------------------------------------------------
+
+
+class TestPackSequences:
+    def test_pads_with_default_mask(self) -> None:
+        seqs = [torch.ones(3, 4), torch.ones(5, 4) * 2.0]
+        acts, mask = _pack_sequences(seqs, 4)
+        assert acts.shape == (2, 5, 4)
+        assert mask.shape == (2, 5)
+        assert mask[0].tolist() == [1, 1, 1, 0, 0]
+        assert mask[1].tolist() == [1] * 5
+        assert torch.equal(acts[1], torch.full((5, 4), 2.0))
+        assert torch.equal(acts[0, 3:], torch.zeros(2, 4))
+
+    def test_explicit_masks_win_over_default(self) -> None:
+        # 0 inside a sequence = backend-applied pad (e.g. z_image cap-pad)
+        seqs = [torch.zeros(4, 2), torch.zeros(4, 2)]
+        m0 = torch.tensor([1, 1, 0, 1], dtype=torch.int)
+        m1 = torch.tensor([1, 1, 1, 1], dtype=torch.int)
+        _, mask = _pack_sequences(seqs, 2, masks=[m0, m1])
+        assert mask[0].tolist() == [1, 1, 0, 1]
+        assert mask[1].tolist() == [1, 1, 1, 1]
+
+    def test_masks_shorter_than_max_len_right_pad_with_zero(self) -> None:
+        seqs = [torch.zeros(2, 2), torch.zeros(5, 2)]
+        masks = [torch.ones(2, dtype=torch.int), torch.ones(5, dtype=torch.int)]
+        _, mask = _pack_sequences(seqs, 2, masks=masks)
+        assert mask[0].tolist() == [1, 1, 0, 0, 0]
+        assert mask[1].tolist() == [1] * 5
+
+    def test_empty_raises(self) -> None:
+        with pytest.raises(ValueError, match="no sequences"):
+            _pack_sequences([], 4)
+
+
+# ---------------------------------------------------------------------------
+# dtype_label (shared artifact dtype ladder — one precedence for all backends)
+# ---------------------------------------------------------------------------
+
+
+class TestDtypeLabel:
+    def test_fakequant_outranks_gguf(self) -> None:
+        # the unified precedence (audit Bugs #2): krea2's order everywhere
+        assert dtype_label("int8", "q4_k_m", False) == "fakequant_int8"
+
+    def test_gguf(self) -> None:
+        assert dtype_label(None, "q4_k_m", True) == "gguf_q4_k_m"
+
+    def test_comfy_quant_label_override(self) -> None:
+        assert dtype_label(None, None, True, comfy_quant_label="comfy_int8_tensorwise") == "comfy_int8_tensorwise"
+
+    def test_comfy_quant_default_label(self) -> None:
+        assert dtype_label(None, None, True) == "comfy_int8_convrot"
+
+    def test_fallback(self) -> None:
+        assert dtype_label(None, None, False) == "comfy_bf16"
+
+
+# ---------------------------------------------------------------------------
+# BaseBackend.apply_fake_quant declaration
+# ---------------------------------------------------------------------------
+
+
+class TestApplyFakeQuantStub:
+    def test_stub_raises_not_implemented(self) -> None:
+        with pytest.raises(NotImplementedError, match="fake quantization"):
+            _DummyBackend().apply_fake_quant("int8")
+
+    def test_ltx2_inherits_stub(self) -> None:
+        from src.text_encoder.backends.ltx2 import LTX2Backend
+
+        assert "apply_fake_quant" not in LTX2Backend.__dict__  # inherits, not overrides
+        with pytest.raises(NotImplementedError):
+            LTX2Backend().apply_fake_quant("fp8")

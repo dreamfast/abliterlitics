@@ -48,7 +48,7 @@ from safetensors import safe_open
 
 from src.text_encoder.artifact import ConditioningArtifact, Pooling, Stage, Stream, StreamSpec
 from src.text_encoder.backends import comfyui_loader, gguf_loader
-from src.text_encoder.backends.base import BaseBackend, fake_quantize_weights
+from src.text_encoder.backends.base import BaseBackend, _pack_sequences, dtype_label, fake_quantize_weights
 from src.text_encoder.metrics import pool_mean
 
 log = logging.getLogger(__name__)
@@ -461,22 +461,12 @@ class Krea2Backend(BaseBackend):
                 acts = torch.stack(tap_pooled[t])  # [n, 2560]
                 streams[name] = Stream(name=name, spec=_build_spec(name), activations=acts)
             # tap_stack: full-seq, right-padded; mask carries real positions
-            max_len = max(s.shape[0] for s in stack_seqs)
-            acts = torch.zeros(len(prompts), max_len, TAP_STACK_DIM)
-            mask = torch.zeros(len(prompts), max_len, dtype=torch.int)
-            for j, s in enumerate(stack_seqs):
-                acts[j, : s.shape[0]] = s
-                mask[j, : s.shape[0]] = 1
+            acts, mask = _pack_sequences(stack_seqs, TAP_STACK_DIM)
             streams["tap_stack"] = Stream(name="tap_stack", spec=_build_spec("tap_stack"), activations=acts, mask=mask)
             artifacts.append(self._make_artifact(Stage.RAW_HIDDEN, streams, prompts, categories))
 
         if Stage.PROJECTED in wanted:
-            max_len = max(s.shape[0] for s in projected_seqs)
-            acts = torch.zeros(len(prompts), max_len, TXT_DIM)
-            mask = torch.zeros(len(prompts), max_len, dtype=torch.int)
-            for j, s in enumerate(projected_seqs):
-                acts[j, : s.shape[0]] = s
-                mask[j, : s.shape[0]] = 1
+            acts, mask = _pack_sequences(projected_seqs, TXT_DIM)
             spec = _build_spec("txtfusion_out")
             artifacts.append(
                 self._make_artifact(
@@ -488,12 +478,7 @@ class Krea2Backend(BaseBackend):
             )
 
         if Stage.CONNECTOR_OUT in wanted:
-            max_len = max(s.shape[0] for s in connector_seqs)
-            acts = torch.zeros(len(prompts), max_len, DIT_DIM)
-            mask = torch.zeros(len(prompts), max_len, dtype=torch.int)
-            for j, s in enumerate(connector_seqs):
-                acts[j, : s.shape[0]] = s
-                mask[j, : s.shape[0]] = 1
+            acts, mask = _pack_sequences(connector_seqs, DIT_DIM)
             spec = _build_spec("connector_out")
             artifacts.append(
                 self._make_artifact(
@@ -513,14 +498,12 @@ class Krea2Backend(BaseBackend):
         prompts: list[str],
         categories: list[str],
     ) -> ConditioningArtifact:
-        if self._te_fake_quant:
-            dtype_str = f"fakequant_{self._te_fake_quant}"
-        elif self._gguf_meta is not None:
-            dtype_str = f"gguf_{self._gguf_meta.quant_label}"
-        elif self._quantized:
-            dtype_str = "comfy_int8_tensorwise"
-        else:
-            dtype_str = "comfy_bf16"
+        dtype_str = dtype_label(
+            fake_quant=self._te_fake_quant,
+            gguf_quant_label=self._gguf_meta.quant_label if self._gguf_meta is not None else None,
+            comfy_quantized=self._quantized,
+            comfy_quant_label="comfy_int8_tensorwise",
+        )
         meta: dict[str, Any] = {
             "comfyui_commit": comfyui_loader.get_comfyui_commit(self.comfyui_path),
             "quantized": self._quantized,

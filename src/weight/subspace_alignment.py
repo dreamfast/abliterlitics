@@ -15,7 +15,6 @@ occurs when tensors of different shapes are stacked.
 from __future__ import annotations
 
 import argparse
-import gc
 import json
 import logging
 from collections import defaultdict
@@ -24,7 +23,8 @@ from pathlib import Path
 import torch
 
 from src.config import ComparisonConfig, make_metadata
-from src.model_config import build_shard_map, detect_architecture, load_tensor
+from src.model_config import build_shard_map, detect_architecture
+from src.weight._common import StreamStats, iter_common_tensors
 
 log = logging.getLogger(__name__)
 
@@ -87,25 +87,20 @@ def run_analysis(
     all_keys = sorted(set(base_map) & set(mapa) & set(mapb))
     log.info("  Common keys: %d", len(all_keys))
 
-    shape_skipped = 0
+    stats = StreamStats()
     type_vectors_a: dict[str, list[torch.Tensor]] = defaultdict(list)
     type_vectors_b: dict[str, list[torch.Tensor]] = defaultdict(list)
     per_key_cos: list[dict] = []
     total_both_changed = 0
 
-    for i, ck in enumerate(all_keys):
-        t_base = load_tensor(base_map, ck)
-        t_a = load_tensor(mapa, ck)
-        t_b = load_tensor(mapb, ck)
-        if t_base is None or t_a is None or t_b is None:
-            continue
-        if t_base.shape != t_a.shape or t_base.shape != t_b.shape:
-            shape_skipped += 1  # architecture-extending edit (e.g. appended neuron)
-            continue
-
-        t_base = t_base.float()
-        t_a = t_a.float()
-        t_b = t_b.float()
+    for _i, ck, tensors in iter_common_tensors(
+        [base_map, mapa, mapb],
+        keys=all_keys,
+        stats=stats,
+    ):
+        t_base = tensors[0].float()
+        t_a = tensors[1].float()
+        t_b = tensors[2].float()
 
         v_a = (t_a - t_base).flatten()
         v_b = (t_b - t_base).flatten()
@@ -125,16 +120,17 @@ def run_analysis(
             total_both_changed += 1
 
         del t_base, t_a, t_b, v_a, v_b
-        if (i + 1) % 200 == 0:
-            gc.collect()
 
     log.info("  Both-variant changed tensors: %d", total_both_changed)
     log.info("  Tensor types with overlap: %d", len(type_vectors_a))
+    log.info("  Shape-skipped tensors: %d", stats.shape_skipped)
 
     if total_both_changed < 2:
         log.info("Not enough overlap for subspace analysis.")
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(output_path).write_text(json.dumps({"error": "insufficient overlap"}))
+        Path(output_path).write_text(
+            json.dumps({"error": "insufficient overlap", "shape_skipped": stats.shape_skipped})
+        )
         return
 
     per_type_results: dict[str, dict] = {}
@@ -204,6 +200,7 @@ def run_analysis(
         {
             "num_overlap_tensors": total_both_changed,
             "num_types_analyzed": len(per_type_results),
+            "shape_skipped": stats.shape_skipped,
             "top_k": top_k,
             "global_mean_cosine_principal": mean_cosine_global,
             "global_overlap_fraction_gt_0.9": overlap_frac_global,

@@ -30,7 +30,7 @@ import torch
 
 from src.text_encoder.artifact import ConditioningArtifact, Pooling, Stage, Stream, StreamSpec
 from src.text_encoder.backends import comfyui_loader
-from src.text_encoder.backends.base import BaseBackend, HookManager
+from src.text_encoder.backends.base import BaseBackend, HookManager, _pack_sequences, dtype_label
 from src.text_encoder.metrics import pool_mean
 
 log = logging.getLogger(__name__)
@@ -242,17 +242,8 @@ class LTX2Backend(BaseBackend):
         if Stage.PROJECTED in wanted:
             # Right-pad variable-length projected sequences to L_max
             streams = {}
-            video_max = max(v.shape[0] for v in video_seqs)
-            audio_max = max(a.shape[0] for a in audio_seqs)
-            video_padded = torch.zeros(len(prompts), video_max, VIDEO_DIM)
-            video_mask = torch.zeros(len(prompts), video_max, dtype=torch.int)
-            audio_padded = torch.zeros(len(prompts), audio_max, AUDIO_DIM)
-            audio_mask = torch.zeros(len(prompts), audio_max, dtype=torch.int)
-            for j, (v, a) in enumerate(zip(video_seqs, audio_seqs, strict=True)):
-                video_padded[j, : v.shape[0]] = v
-                video_mask[j, : v.shape[0]] = 1
-                audio_padded[j, : a.shape[0]] = a
-                audio_mask[j, : a.shape[0]] = 1
+            video_padded, video_mask = _pack_sequences(video_seqs, VIDEO_DIM)
+            audio_padded, audio_mask = _pack_sequences(audio_seqs, AUDIO_DIM)
 
             for name, acts, mask, dim in (
                 ("video_proj", video_padded, video_mask, VIDEO_DIM),
@@ -278,9 +269,12 @@ class LTX2Backend(BaseBackend):
         prompts: list[str],
         categories: list[str],
     ) -> ConditioningArtifact:
-        dtype_str = "comfy_bf16"
-        if self._quantized:
-            dtype_str = "comfy_int8_convrot"
+        dtype_str = dtype_label(
+            fake_quant=None,  # ltx2 has no apply_fake_quant (audit: Refactor #3)
+            gguf_quant_label=None,  # ltx2 has no GGUF path
+            comfy_quantized=self._quantized,
+            comfy_quant_label="comfy_int8_convrot",
+        )
         return ConditioningArtifact(
             model="ltx2",
             backend="LTX2Backend",

@@ -53,6 +53,7 @@ from src.text_encoder.phase4_report import (
     load_dit_divergence_summaries,
     load_img_metrics,
 )
+from src.text_encoder.report_style import CSS_DAMAGE_CELLS, FONT_STACK
 
 log = logging.getLogger(__name__)
 
@@ -1867,7 +1868,7 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path, 
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Text-Encoder Conditioning Fidelity Report</title>
 <style>
- body {{ font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; margin: 0 auto;
+ body {{ font-family: {FONT_STACK}; margin: 0 auto;
         max-width: 1080px; padding: 24px; color: #1a1a2e; background: #fafafa; }}
  h1 {{ border-bottom: 3px solid #4c72b0; padding-bottom: 8px; }}
  h2 {{ margin-top: 40px; color: #4c72b0; }}
@@ -1875,9 +1876,7 @@ def generate_html(variants: list[dict[str, Any]], results_dir: Path, out: Path, 
  th, td {{ border: 1px solid #ddd; padding: 6px 10px; text-align: right; }}
  th {{ background: #4c72b0; color: white; text-align: left; }}
  tr:nth-child(even) {{ background: #f4f6fa; }}
- .dmg-high {{ color: #c0392b; font-weight: bold; }}
- .dmg-low {{ color: #27ae60; }}
- .ref-var {{ color: #7f8c8d; font-style: italic; }}
+{CSS_DAMAGE_CELLS}
  .group-row td {{ background: #dde6f2; color: #2c3e66; font-weight: bold; text-align: left; }}
  /* --- A/B interactive comparator --- */
  .ab-app {{ margin: 16px 0 8px 0; }}

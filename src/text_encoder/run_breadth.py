@@ -34,6 +34,7 @@ import yaml
 from PIL import Image
 
 from src.text_encoder import TE_RESULTS_VERSION
+from src.text_encoder._cli import add_device
 from src.text_encoder.image_metrics import CLIPMeter, LPIPSMeter
 
 log = logging.getLogger(__name__)
@@ -45,10 +46,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--suite", required=True, help="te_breadth_prompts.yaml")
     p.add_argument("--base", default="base")
     p.add_argument("--out", required=True)
-    p.add_argument("--device", default="cuda")
+    add_device(p, default="cuda")
     p.add_argument("--clip-model", default="ViT-L-14")
     p.add_argument("--clip-pretrained", default="openai")
     p.add_argument("--pass-name", default="warm")
+    p.add_argument(
+        "--anchor-seeds",
+        default="",
+        help="Seed pair 'A,B' for the per-category seed anchor "
+        "(default: derived from the seeds present in the BASE records)",
+    )
     return p.parse_args()
 
 
@@ -68,6 +75,36 @@ def load_records(manifest: Path, pass_name: str) -> dict[tuple[str, str, int], d
             continue
         out[(str(r["variant"]), str(r["label"]), int(r["seed"]))] = r
     return out
+
+
+def _anchor_seed_pair(
+    records: dict[tuple[str, str, int], dict[str, Any]],
+    base: str,
+    anchor_arg: str,
+) -> tuple[int, int] | None:
+    """Seed pair for the per-category seed anchor.
+
+    ``--anchor-seeds 'A,B'`` wins; otherwise derived from the seeds present in
+    the BASE records (audit bug #7: the old code hardcoded 42/43 regardless of
+    the manifest, silently producing n=0 / null anchors for manifests
+    generated with other seed lists — the lesson #48 silent-empty class).
+    Returns None (with a loud warning) when fewer than 2 base seeds exist.
+    """
+    if anchor_arg.strip():
+        parts = [int(s) for s in anchor_arg.split(",") if s.strip()]
+        if len(parts) != 2:
+            raise SystemExit(f"--anchor-seeds needs exactly 2 seeds 'A,B', got: {anchor_arg!r}")
+        return parts[0], parts[1]
+    seeds = sorted({s for (v, _lab, s) in records if v == base})
+    if len(seeds) < 2:
+        log.warning(
+            "Seed anchor skipped: only %d seed(s) in base records %s — "
+            "generate a second seed or pass --anchor-seeds 'A,B'",
+            len(seeds),
+            seeds,
+        )
+        return None
+    return seeds[0], seeds[1]
 
 
 def main() -> int:
@@ -157,24 +194,28 @@ def main() -> int:
                 "clip_delta_mean": (sum(agg["clip_delta"]) / len(agg["clip_delta"]) if agg["clip_delta"] else None),
             }
 
-    # per-category seed anchor: base seed42 vs seed43 (same label)
+    # per-category seed anchor: base seedA vs seedB (same label) — seeds
+    # derived from the base records or --anchor-seeds (see _anchor_seed_pair)
+    anchor_pair = _anchor_seed_pair(records, args.base, args.anchor_seeds)
     seed_anchor: dict[str, dict[str, Any]] = {}
-    for cat in categories:
-        vals: list[float] = []
-        for lab in labels:
-            if by_label[lab]["category"] != cat:
-                continue
-            r42 = records.get((args.base, lab, 42))
-            r43 = records.get((args.base, lab, 43))
-            if r42 is None or r43 is None:
-                continue
-            t42, _ = _load_image(_rec_path(r42))
-            t43, _ = _load_image(_rec_path(r43))
-            vals.append(lpips_meter.score(t42 * 2 - 1, t43 * 2 - 1))
-        seed_anchor[cat] = {
-            "n": len(vals),
-            "lpips_mean": sum(vals) / len(vals) if vals else None,
-        }
+    if anchor_pair is not None:
+        seed_a, seed_b = anchor_pair
+        for cat in categories:
+            vals: list[float] = []
+            for lab in labels:
+                if by_label[lab]["category"] != cat:
+                    continue
+                r_a = records.get((args.base, lab, seed_a))
+                r_b = records.get((args.base, lab, seed_b))
+                if r_a is None or r_b is None:
+                    continue
+                t_a, _ = _load_image(_rec_path(r_a))
+                t_b, _ = _load_image(_rec_path(r_b))
+                vals.append(lpips_meter.score(t_a * 2 - 1, t_b * 2 - 1))
+            seed_anchor[cat] = {
+                "n": len(vals),
+                "lpips_mean": sum(vals) / len(vals) if vals else None,
+            }
 
     out = {
         "te_results_version": TE_RESULTS_VERSION,
@@ -185,6 +226,7 @@ def main() -> int:
         "clip_model": f"{args.clip_model}/{args.clip_pretrained}",
         "categories": categories,
         "per_category": per_cat,
+        "anchor_seeds": list(anchor_pair) if anchor_pair else [],
         "seed_anchor_per_category": seed_anchor,
         "per_pair": per_pair,
         "timestamp": datetime.now(timezone.utc).isoformat(),

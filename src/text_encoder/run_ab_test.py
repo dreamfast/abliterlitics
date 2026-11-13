@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -33,8 +34,6 @@ from typing import Any
 import yaml
 
 from src.text_encoder.comfy_client import (
-    POLL_INTERVAL,  # noqa: F401 - re-exported for downstream consumers
-    POLL_TIMEOUT,  # noqa: F401
     comfy_te_name,
     free_models,
     queue_and_fetch,
@@ -129,8 +128,7 @@ def load_prompt_suite(suite_path: Path, per_category: int) -> list[dict[str, str
     return out
 
 
-def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="A/B image generation via ComfyUI API")
     p.add_argument("--workflow", required=True)
     p.add_argument(
@@ -141,7 +139,12 @@ def main() -> None:
     p.add_argument("--comparison", required=True)
     p.add_argument("--api-url", default="http://host.docker.internal:8191")
     p.add_argument("--out-dir", required=True)
-    p.add_argument("--models-root", default="/home/maxx/extra/comfyui-models")
+    p.add_argument(
+        "--models-root",
+        default=os.environ.get("COMFYUI_MODELS", ""),
+        help="ComfyUI models root (TE files live under its text_encoders/). "
+        "Defaults to $COMFYUI_MODELS; required if that is unset.",
+    )
     p.add_argument("--prompt-suite", default="prompts/te_suite.yaml")
     p.add_argument("--prompts-per-category", type=int, default=1, help="0 = take all prompts in the suite")
     p.add_argument("--seed", type=int, default=42)
@@ -177,7 +180,15 @@ def main() -> None:
         "Merges into the existing manifest timing entries.",
     )
     p.add_argument("--dry-run", action="store_true")
-    args = p.parse_args()
+    args = p.parse_args(argv)
+    if not args.models_root:
+        p.error("--models-root is required (pass --models-root or set $COMFYUI_MODELS)")
+    return args
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
+    args = parse_args()
 
     gguf_wf_path = (
         Path(args.gguf_workflow) if args.gguf_workflow else Path(args.workflow).parent / "zimage_ab_gguf_api.json"

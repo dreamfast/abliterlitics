@@ -75,10 +75,41 @@ def init_stages(
     return inserted
 
 
-def stage_start(conn: sqlite3.Connection, comparison: str, model_name: str, stage: str) -> None:
-    """Set a stage to 'running' with started_at timestamp."""
+def stage_is_completed(conn: sqlite3.Connection, comparison: str, model_name: str, stage: str) -> bool:
+    """Read-only check: has this stage already reached 'completed'?
+
+    Library helper so every caller (runners, watchdogs) shares one guard
+    against demoting completed stages (lesson #83). Best-effort: any sqlite
+    error returns False so callers fall through to their normal write path.
+    """
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM model_stages WHERE comparison = ? AND model_name = ? AND stage = ? AND status = 'completed'",
+            (comparison, model_name, stage),
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    return row is not None
+
+
+def stage_start(conn: sqlite3.Connection, comparison: str, model_name: str, stage: str) -> int:
+    """Set a stage to 'running' with started_at timestamp.
+
+    Returns the number of stage rows affected (0 if the write was refused
+    because the stage is already 'completed' — lesson #83: a re-run/skip-walk
+    must never demote a completed stage; the stage stays 'completed' and the
+    eventual stage_complete refreshes duration/result instead).
+    """
+    if stage_is_completed(conn, comparison, model_name, stage):
+        log.warning(
+            "stage-start: %s/%s/%s already completed — preserving status (lesson #83)",
+            comparison,
+            model_name,
+            stage,
+        )
+        return 0
     ts = now_iso()
-    conn.execute(
+    cur = conn.execute(
         """INSERT INTO model_stages (comparison, model_name, stage, status, started_at, heartbeat_at)
         VALUES (?, ?, ?, 'running', ?, ?)
         ON CONFLICT(comparison, model_name, stage) DO UPDATE SET
@@ -87,6 +118,7 @@ def stage_start(conn: sqlite3.Connection, comparison: str, model_name: str, stag
     )
     conn.commit()
     log.info("Stage started: %s/%s/%s", comparison, model_name, stage)
+    return cur.rowcount
 
 
 def stage_heartbeat(conn: sqlite3.Connection, comparison: str, model_name: str, stage: str) -> None:
@@ -106,8 +138,14 @@ def stage_complete(
     stage: str,
     result_path: str | None = None,
     metadata: dict[str, Any] | None = None,
-) -> None:
-    """Set a stage to 'completed' with finished_at and duration."""
+) -> int:
+    """Set a stage to 'completed' with finished_at and duration.
+
+    Returns the number of rows updated. 0 means the stage name/model has no
+    row in model_stages (wrong stage name, or the model was added to
+    comparison.json after ``init`` — lesson #84): the caller is warned, never
+    silently told "Stage completed".
+    """
     ts = now_iso()
     meta_json = json.dumps(metadata) if metadata else None
 
@@ -126,7 +164,7 @@ def stage_complete(
         except (ValueError, TypeError):
             pass
 
-    conn.execute(
+    cur = conn.execute(
         """UPDATE model_stages SET
             status = 'completed', finished_at = ?, heartbeat_at = ?,
             result_path = ?, metadata = COALESCE(?, metadata), duration_secs = ?
@@ -134,7 +172,17 @@ def stage_complete(
         (ts, ts, result_path, meta_json, duration, comparison, model_name, stage),
     )
     conn.commit()
-    log.info("Stage completed: %s/%s/%s (%ds)", comparison, model_name, stage, duration or 0)
+    if cur.rowcount == 0:
+        log.warning(
+            "stage-complete matched 0 rows: %s/%s/%s — check stage name and that "
+            "the model is registered (lesson #84); re-run init_stages if the roster changed",
+            comparison,
+            model_name,
+            stage,
+        )
+    else:
+        log.info("Stage completed: %s/%s/%s (%ds)", comparison, model_name, stage, duration or 0)
+    return cur.rowcount
 
 
 def stage_fail(
@@ -143,28 +191,63 @@ def stage_fail(
     model_name: str,
     stage: str,
     error_message: str,
-) -> None:
-    """Set a stage to 'failed' with error message."""
+) -> int:
+    """Set a stage to 'failed' with error message.
+
+    Returns the number of rows updated (0 = no such stage row — warned,
+    lesson #84).
+    """
     ts = now_iso()
-    conn.execute(
+    cur = conn.execute(
         """UPDATE model_stages SET
             status = 'failed', finished_at = ?, heartbeat_at = ?, error_message = ?
         WHERE comparison = ? AND model_name = ? AND stage = ?""",
         (ts, ts, error_message, comparison, model_name, stage),
     )
     conn.commit()
-    log.error("Stage failed: %s/%s/%s: %s", comparison, model_name, stage, error_message[:200])
+    if cur.rowcount == 0:
+        log.warning(
+            "stage-fail matched 0 rows: %s/%s/%s — check stage name and that the model is registered (lesson #84)",
+            comparison,
+            model_name,
+            stage,
+        )
+    else:
+        log.error("Stage failed: %s/%s/%s: %s", comparison, model_name, stage, error_message[:200])
+    return cur.rowcount
 
 
-def stage_skip(conn: sqlite3.Connection, comparison: str, model_name: str, stage: str) -> None:
-    """Set a stage to 'skipped'."""
-    conn.execute(
+def stage_skip(conn: sqlite3.Connection, comparison: str, model_name: str, stage: str) -> int:
+    """Set a stage to 'skipped'.
+
+    Returns the number of rows updated. Refuses (returns 0) when the stage is
+    already 'completed' — a skip path must never overwrite a stronger terminal
+    status (lesson #83: the re-run/skip-walk demotion loop).
+    """
+    if stage_is_completed(conn, comparison, model_name, stage):
+        log.warning(
+            "stage-skip: %s/%s/%s already completed — preserving status (lesson #83)",
+            comparison,
+            model_name,
+            stage,
+        )
+        return 0
+    cur = conn.execute(
         """UPDATE model_stages SET status = 'skipped'
         WHERE comparison = ? AND model_name = ? AND stage = ?""",
         (comparison, model_name, stage),
     )
     conn.commit()
-    log.info("Stage skipped: %s/%s/%s", comparison, model_name, stage)
+    if cur.rowcount == 0:
+        log.warning(
+            "stage-skip matched 0 rows: %s/%s/%s — check stage name and that the model is registered (lesson #84)",
+            comparison,
+            model_name,
+            stage,
+        )
+    else:
+        log.info("Stage skipped: %s/%s/%s", comparison, model_name, stage)
+    return cur.rowcount
 
 
 def get_stale_stages(conn: sqlite3.Connection, max_age_hours: int = 2) -> list[ModelStage]:

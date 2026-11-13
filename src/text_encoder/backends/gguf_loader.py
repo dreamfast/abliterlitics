@@ -240,7 +240,8 @@ def load_gguf_te_state_dict(
 
     # Metadata read BEFORE the reader is released. qwen3vl GGUFs carry the
     # same fields under the qwen3vl.* prefix (text stack == qwen3 layout;
-    # visual tower lives in the mmproj sidecar — see load_qwen3vl_mmproj).
+    # visual tower lives in the mmproj sidecar, merged by the patched
+    # ComfyUI-GGUF loader — see scripts/patch_comfyui_gguf_qwen3vl.py).
     meta_pfx = f"{arch}."
     n_layers_meta = _get_meta_int(reader, f"{meta_pfx}block_count")
     vocab_meta = _get_meta_int(reader, f"{meta_pfx}vocab_size")  # 151936 for qwen3-4b
@@ -462,33 +463,3 @@ def find_qwen3vl_mmproj(te_file: str | Path) -> Path | None:
         if tenc in fname.name.lower():
             return fname
     return None
-
-
-def load_qwen3vl_mmproj(te_file: str | Path) -> dict[str, torch.Tensor]:
-    """Load + rename the mmproj visual tower for a qwen3vl TE gguf.
-
-    Returns a comfy-named ``model.visual.*`` state dict (315 tensors for the
-    4B tower after the temporal-conv concat). See the shape caveat above.
-    Raises FileNotFoundError when no sidecar matches.
-    """
-    import gguf  # local import: only qwen3vl arms need the reader here
-
-    sidecar = find_qwen3vl_mmproj(te_file)
-    if sidecar is None:
-        raise FileNotFoundError(
-            f"No mmproj sidecar found next to {Path(te_file).name} (matcher: "
-            f"'mmproj' + quant-stripped stem). Build one via llama.cpp "
-            "convert_hf_to_gguf.py --mmproj-only."
-        )
-    reader = gguf.GGUFReader(str(sidecar))
-    vsd: dict[str, torch.Tensor] = {}
-    for tensor in reader.tensors:
-        data = torch.from_numpy(tensor.data.copy())  # copy: own the mmap
-        # mmproj ships f16; keep torch bf16 storage convention.
-        vsd[tensor.name] = data.to(torch.bfloat16)
-    out = qwen3vl_mmproj_rename(vsd)
-    if len(out) != 315:
-        raise ValueError(
-            f"{sidecar.name}: expected 315 renamed visual tensors, got {len(out)} (first keys: {sorted(out)[:4]})"
-        )
-    return out

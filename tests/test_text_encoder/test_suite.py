@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
 import pytest
 
-from src.text_encoder.suite import count_per_category, load_suite, suite_hash
+from src.text_encoder.suite import load_suite, suite_hash
 
 
 class TestLoadSuite:
@@ -19,7 +20,7 @@ class TestLoadSuite:
     def test_counts_per_category(self) -> None:
         suite_path = Path(__file__).parent.parent.parent / "prompts" / "te_suite.yaml"
         _, categories = load_suite(suite_path)
-        counts = count_per_category(categories)
+        counts = Counter(categories)
         assert "innocent" in counts
         assert "extreme" in counts
         assert "multilingual" in counts

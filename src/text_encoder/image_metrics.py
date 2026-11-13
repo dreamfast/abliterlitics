@@ -457,13 +457,3 @@ class PairScores:
                 )
             )
         return out
-
-
-def divergence_ratio(te_swap_mean: float, anchor_mean: float) -> float | None:
-    """Express a te_swap mean in units of an anchor mean (P7 dual-anchor reporting).
-
-    Returns None when the anchor is ~0 (undefined ratio).
-    """
-    if anchor_mean is None or abs(anchor_mean) < 1e-12:
-        return None
-    return te_swap_mean / anchor_mean

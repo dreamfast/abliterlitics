@@ -18,7 +18,6 @@ from src.text_encoder.image_metrics import (
     LPIPSMeter,
     PairScores,
     _gaussian_window,
-    divergence_ratio,
     mine_cross_prompt_pairs,
     mine_floor_band_pairs,
     mine_seed_change_pairs,
@@ -232,14 +231,6 @@ class TestPairScores:
     def test_single_value_no_ci(self) -> None:
         scores = PairScores(kind="te_swap", lpips=[0.5])
         assert scores.summarize() == []
-
-
-class TestDivergenceRatio:
-    def test_simple_ratio(self) -> None:
-        assert divergence_ratio(0.10, 0.40) == pytest.approx(0.25)
-
-    def test_zero_anchor_none(self) -> None:
-        assert divergence_ratio(0.10, 0.0) is None
 
 
 # ---------------------------------------------------------------------------

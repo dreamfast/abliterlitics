@@ -40,11 +40,24 @@ from typing import Any
 import torch
 
 from src.text_encoder import TE_RESULTS_VERSION
+from src.text_encoder._cli import add_backend, add_cache_dir, add_device, add_results_dir
 
 log = logging.getLogger(__name__)
 
 DEFAULT_DOSE_STEPS = (0.25, 0.5, 1.0, 1.5, 2.0)
 DEFAULT_ALPHAS = (0.5, 1.0, 2.0, 10.0)
+
+
+def dose_mse_matches(prior: list[float], new: list[float], tol: float = 5e-2) -> bool:
+    """True when per-prompt max_dose_mse entries agree within ``tol`` RELATIVE.
+
+    Pure relative tolerance (audit bug #3): the old ``5e-2 * max(1.0, abs(a))``
+    floor made the check 0.05 ABSOLUTE for every sub-1.0 dose, letting a wrong
+    dose variant (e.g. 0.02 vs 0.052 MSE, 2.6x apart — exactly the
+    wrong-variant case lesson #40 says must be caught) pass the --merge guard.
+    The 1e-9 epsilon only guards the a==0 exact-match corner.
+    """
+    return all(abs(float(a) - float(b)) <= tol * abs(float(a)) + 1e-9 for a, b in zip(prior, new, strict=True))
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,9 +71,9 @@ def parse_args() -> argparse.Namespace:
         "(default: base + heretic only)",
     )
     p.add_argument("--dit", required=True)
-    p.add_argument("--cache-dir", default="/te_cache")
-    p.add_argument("--results-dir", default="/results")
-    p.add_argument("--device", default="cuda")
+    add_cache_dir(p, default="/te_cache")
+    add_results_dir(p, default="/results")
+    add_device(p, default="cuda")
     p.add_argument(
         "--cache-device",
         default="cpu",
@@ -83,12 +96,7 @@ def parse_args() -> argparse.Namespace:
         help="Merge into an existing tebench_controls.json instead of replacing it "
         "(required when adding bracket conditions post-hoc; refuses on metadata mismatch)",
     )
-    p.add_argument(
-        "--backend",
-        choices=["zimage", "krea2"],
-        default="zimage",
-        help="DiT + conditioning family",
-    )
+    add_backend(p, default="zimage", choices=("zimage", "krea2"), help_text="DiT + conditioning family")
     p.add_argument("--suite", default="/prompts/te_suite.yaml")
     return p.parse_args()
 
@@ -345,10 +353,7 @@ def main() -> int:
                 # have been recaptured since (small numeric drift). A wrong
                 # dose-variant is still caught: q3 differs ~2.7x, heretic-only
                 # ~70x from the int4 reference.
-                and all(
-                    abs(float(a) - float(b)) <= 5e-2 * max(1.0, abs(float(a)))
-                    for a, b in zip(prior["max_dose_mse"], results["max_dose_mse"], strict=True)
-                )
+                and dose_mse_matches(prior["max_dose_mse"], results["max_dose_mse"])
             )
             if not same_setup:
                 raise SystemExit(

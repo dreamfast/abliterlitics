@@ -100,7 +100,6 @@ class TestStageEnum:
         assert Stage.RAW_HIDDEN == "raw_hidden"
         assert Stage.PROJECTED == "projected"
         assert Stage.CONNECTOR_OUT == "connector_out"
-        assert Stage.DIT_INPUT == "dit_input"
 
     def test_stage_is_str(self) -> None:
         assert isinstance(Stage.RAW_HIDDEN, str)
@@ -110,8 +109,6 @@ class TestPoolingEnum:
     def test_pooling_values(self) -> None:
         assert Pooling.NONE == "none"
         assert Pooling.MEAN == "mean"
-        assert Pooling.LAST == "last"
-        assert Pooling.CLS == "cls"
 
 
 # ---------------------------------------------------------------------------
@@ -296,20 +293,6 @@ class TestConditioningArtifact:
         art2 = _make_artifact(prompts=["a", "b"], categories=["x", "z"])
         with pytest.raises(ValueError, match="Category lists do not match"):
             art1.assert_aligned(art2)
-
-    def test_stream_names_sorted(self) -> None:
-        spec_a = _make_spec(name="zzz")
-        spec_b = _make_spec(name="aaa")
-        acts = torch.randn(2, 3, spec_a.dim)
-        mask = torch.ones(2, 3, dtype=torch.int)
-        art = _make_artifact(
-            n=2,
-            streams={
-                "zzz": Stream(name="zzz", spec=spec_a, activations=acts, mask=mask),
-                "aaa": Stream(name="aaa", spec=spec_b, activations=acts.clone(), mask=mask.clone()),
-            },
-        )
-        assert art.stream_names() == ["aaa", "zzz"]
 
     def test_meta_defaults_empty(self) -> None:
         art = _make_artifact()

@@ -159,7 +159,7 @@ def main() -> int:
                 if entry["category"] != tier:
                     continue
                 for seed in sorted({s for (v, lb, s) in records if v == args.base and lb == lab}):
-                    rv = records.get((var if var != args.base else args.base, lab, seed))
+                    rv = records.get((var, lab, seed))
                     rb = records.get((args.base, lab, seed))
                     if rb is None or rv is None:
                         continue

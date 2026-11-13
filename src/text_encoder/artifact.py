@@ -31,7 +31,6 @@ class Stage(str, Enum):
     RAW_HIDDEN = "raw_hidden"  # encoder hidden states, pre-projection
     PROJECTED = "projected"  # after the linear projection(s)
     CONNECTOR_OUT = "connector_out"  # after any 1D connector transformer
-    DIT_INPUT = "dit_input"  # reserved: exactly what enters cross-attention
 
 
 class Pooling(str, Enum):
@@ -39,8 +38,6 @@ class Pooling(str, Enum):
 
     NONE = "none"  # no pooling — keep full [n, L, d]
     MEAN = "mean"  # mean across the sequence dimension
-    LAST = "last"  # last non-pad token
-    CLS = "cls"  # CLS-style (first token)
 
 
 @dataclass(frozen=True)
@@ -165,7 +162,3 @@ class ConditioningArtifact:
         if self.prompt_set_hash != other.prompt_set_hash:
             # Should be unreachable if the above pass, but as a belt-and-suspenders
             raise ValueError("prompt_set_hash mismatch despite matching prompts (internal error)")
-
-    def stream_names(self) -> list[str]:
-        """Sorted list of stream names in this artifact."""
-        return sorted(self.streams.keys())

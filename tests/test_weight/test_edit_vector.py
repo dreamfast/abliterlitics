@@ -140,3 +140,67 @@ class TestSummaryHelpers:
         s = summary([])
         assert s["count"] == 0
         assert s["mean"] is None
+
+
+class TestRunAnalysisShapeGuards:
+    """Lesson #79: architecture-extending variants must be skipped + counted."""
+
+    EXTENDED_KEY = "model.layers.0.mlp.gate_proj.weight"
+
+    def test_single_variant_emits_shape_skipped(self, tmp_path):
+        import json
+
+        from src.weight.edit_vector_analysis import run_analysis
+        from tests.conftest import create_mock_model
+        from tests.test_weight._arch_extending import make_arch_extending_variant
+
+        base_dir = create_mock_model(tmp_path / "base", arch="qwen3", seed=42)
+        var_dir = create_mock_model(tmp_path / "variant", arch="qwen3", seed=99)
+        ext_dir = make_arch_extending_variant(var_dir, tmp_path / "ext", self.EXTENDED_KEY)
+        output = tmp_path / "edit_vector.json"
+
+        run_analysis(
+            base_path=str(base_dir),
+            variant_a_path=str(ext_dir),
+            variant_b_path=None,
+            label_a="v",
+            label_b="b",
+            output_path=str(output),
+        )
+
+        data = json.loads(output.read_text())
+        assert data["shape_skipped"] == 1
+        assert data["total_keys"] == len(data["per_key_details"])
+        assert all(r["key"] != self.EXTENDED_KEY for r in data["per_key_details"])
+
+    def test_two_variant_shape_mismatch_skipped_not_crashed(self, tmp_path):
+        """Regression: analyze_two_variants had no shape guard (audit bug #1)."""
+        import json
+
+        from src.weight.edit_vector_analysis import run_analysis
+        from tests.conftest import create_mock_model
+        from tests.test_weight._arch_extending import make_arch_extending_variant
+
+        base_dir = create_mock_model(tmp_path / "base", arch="qwen3", seed=42)
+        var_a = create_mock_model(tmp_path / "va", arch="qwen3", seed=43)
+        var_b_ext = make_arch_extending_variant(
+            create_mock_model(tmp_path / "vb", arch="qwen3", seed=44),
+            tmp_path / "vb_ext",
+            self.EXTENDED_KEY,
+        )
+        output = tmp_path / "edit_vector_ab.json"
+
+        run_analysis(
+            base_path=str(base_dir),
+            variant_a_path=str(var_a),
+            variant_b_path=str(var_b_ext),
+            label_a="a",
+            label_b="b",
+            output_path=str(output),
+        )
+
+        data = json.loads(output.read_text())
+        assert data["shape_skipped"] == 1
+        assert "overlap_count" in data
+        assert data["total_keys"] == len(data["per_key_details"])
+        assert all(r["key"] != self.EXTENDED_KEY for r in data["per_key_details"])

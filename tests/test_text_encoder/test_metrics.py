@@ -25,9 +25,7 @@ from src.text_encoder.metrics import (
     cka_rbf,
     cosine_all_tokens,
     cosine_last_token,
-    l2_distance,
     mse,
-    per_dim_drift,
     pool_last,
     pool_mean,
     rank_correlation,
@@ -90,6 +88,30 @@ class TestPoolLast:
         mask = torch.tensor([[1, 1, 0]])  # third position is pad
         result = pool_last(x, mask)
         assert torch.allclose(result, torch.tensor([[3.0, 4.0]]))
+
+    def test_all_pad_row_is_nan(self) -> None:
+        """All-pad row has NO real token — NaN, never the pad-position vector.
+
+        Regression: idx clamping used to return activations[:, 0, :] (the pad
+        vector), silently corrupting downstream cosine_last_token values.
+        """
+        x = torch.tensor([[[7.0, 9.0], [11.0, 13.0]]])
+        mask = torch.tensor([[0, 0]])
+        result = pool_last(x, mask)
+        assert torch.all(torch.isnan(result))
+
+    def test_mixed_batch_pad_rows_nan_real_rows_kept(self) -> None:
+        """Real rows keep their last-token vector; only pad rows become NaN."""
+        x = torch.tensor(
+            [
+                [[1.0, 1.0], [2.0, 2.0]],  # row 0: two real tokens
+                [[50.0, 60.0], [70.0, 80.0]],  # row 1: all pad
+            ]
+        )
+        mask = torch.tensor([[1, 1], [0, 0]])
+        result = pool_last(x, mask)
+        assert torch.allclose(result[0], torch.tensor([2.0, 2.0]))
+        assert torch.all(torch.isnan(result[1]))
 
 
 # ---------------------------------------------------------------------------
@@ -365,27 +387,13 @@ class TestCosineLastToken:
 
 
 class TestL2AndMse:
-    def test_l2_identical_is_zero(self) -> None:
-        x = torch.randn(10, 5, 8)
-        assert l2_distance(x, x) == pytest.approx(0.0, abs=1e-10)
-
     def test_mse_identical_is_zero(self) -> None:
         x = torch.randn(10, 5, 8)
         assert mse(x, x) == pytest.approx(0.0, abs=1e-10)
 
-    def test_l2_is_sqrt_of_mse(self) -> None:
-        """L2 distance = sqrt(MSE) (RMS distance)."""
-        x = torch.randn(10, 5, 8)
-        y = torch.randn(10, 5, 8)
-        mse_val = mse(x, y)
-        l2_val = l2_distance(x, y)
-        assert l2_val == pytest.approx(mse_val**0.5, abs=1e-5)
-
     def test_shape_mismatch_rejected(self) -> None:
         x = torch.randn(10, 5, 8)
         y = torch.randn(10, 5, 16)
-        with pytest.raises(ValueError, match="same shape"):
-            l2_distance(x, y)
         with pytest.raises(ValueError, match="same shape"):
             mse(x, y)
 
@@ -418,38 +426,3 @@ class TestRankCorrelation:
         y = torch.randn(40, 8)
         with pytest.raises(ValueError, match="same n"):
             rank_correlation(x, y)
-
-
-class TestPerDimDrift:
-    def test_identical_is_zero(self) -> None:
-        g = torch.Generator().manual_seed(42)
-        x = torch.randn(50, 32, generator=g)
-        drift = per_dim_drift(x, x)
-        assert torch.all(drift <= 1e-10)
-
-    def test_nonzero_for_different(self) -> None:
-        g = torch.Generator().manual_seed(42)
-        x = torch.randn(50, 32, generator=g)
-        y = x + 0.1 * torch.randn(50, 32, generator=g)
-        drift = per_dim_drift(x, y)
-        assert torch.all(drift > 0.0)
-
-    def test_normalized_by_base_var(self) -> None:
-        """With base_var, drift should be relative (dimensionless)."""
-        g = torch.Generator().manual_seed(42)
-        x = torch.randn(50, 32, generator=g)
-        y = x + 0.1 * torch.randn(50, 32, generator=g)
-        base_var = x.var(dim=0)
-        drift_rel = per_dim_drift(x, y, base_var=base_var)
-        # Should be small positive (perturbation is small relative to base variance)
-        assert torch.all(drift_rel > 0.0)
-        assert torch.all(drift_rel < 1.0)
-
-    def test_base_var_epsilon_guard(self) -> None:
-        """Near-zero base_var should not cause inf/nan."""
-        x = torch.randn(10, 4)
-        y = x + 0.01
-        base_var = torch.tensor([0.0, 1e-20, 1.0, 2.0])  # includes near-zero
-        drift = per_dim_drift(x, y, base_var=base_var, epsilon=1e-10)
-        assert not torch.any(torch.isnan(drift))
-        assert not torch.any(torch.isinf(drift))

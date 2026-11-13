@@ -24,6 +24,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from src.text_encoder._cli import add_backend, add_cache_dir, add_device, add_results_dir
+
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
 
@@ -53,13 +55,18 @@ def parse_args() -> argparse.Namespace:
         "instead of fake-quantizing --base (literal damage-in-quant-units). "
         "Falls back to fake-quant int8 when not provided.",
     )
-    p.add_argument("--backend", default="zimage", choices=["zimage", "ltx2", "h3", "krea2"], help="Backend name")
+    add_backend(
+        p,
+        default="zimage",
+        choices=("zimage", "ltx2", "h3", "krea2"),
+        help_text="Backend name",
+    )
     p.add_argument("--comfyui", default="/comfyui", help="Path to ComfyUI repo (contains comfy/)")
     p.add_argument("--variant-name", default="variant", help="Variant display name")
     p.add_argument("--prompts", default="/prompts/te_suite.yaml", help="Path to prompt suite YAML")
-    p.add_argument("--results-dir", default="/results", help="Output directory for results")
-    p.add_argument("--cache-dir", default="/te_cache", help="Activation cache directory")
-    p.add_argument("--device", default="cpu", help="Device: cpu or cuda")
+    add_results_dir(p, default="/results", help_text="Output directory for results")
+    add_cache_dir(p, default="/te_cache", help_text="Activation cache directory")
+    add_device(p, default="cpu", help_text="Device: cpu or cuda")
     p.add_argument("--limit", type=int, default=0, help="Limit prompt count (0 = all)")
     p.add_argument("--n-boot", type=int, default=1000, help="Bootstrap resamples for CIs")
     return p.parse_args()
@@ -113,7 +120,7 @@ def _encode_and_cache(
     backend.load(te_file, device=device, dit_file=dit_file)
     try:
         if fake_quant:
-            backend.apply_fake_quant(fake_quant)  # type: ignore[attr-defined]
+            backend.apply_fake_quant(fake_quant)
         artifacts = backend.encode(prompts, categories)
     finally:
         backend.close()

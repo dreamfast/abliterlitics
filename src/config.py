@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -34,8 +34,6 @@ class VariantConfig:
     skip_lm_eval: bool = False
     skip_harmbench: bool = False
     skip_weight: bool = False
-    skip_te: bool = False
-    te_file: Path | None = None  # ComfyUI-format TE safetensors for tebench
 
 
 @dataclass
@@ -50,20 +48,11 @@ class ComparisonConfig:
     tokenizer_dir: Path | None
     lm_eval_tasks: str
     inference_backend: str = "auto"
-    lm_eval_max_gen_toks: int = 2048
-    lm_eval_max_model_len: int = 8192
+    lm_eval_max_gen_toks: int = 4096
+    lm_eval_max_model_len: int = 16384
     harmbench_max_tokens: int = 8096
     kl_num_prompts: int = 100
     kl_dataset: str = "mlabonne/harmless_alpaca"
-    # Text-encoder analysis settings (None/empty = tebench not configured)
-    tebench_backend: str = ""
-    tebench_base_te_file: Path | None = None
-    tebench_dit_file: Path | None = None
-    tebench_comfyui_path: Path | None = None
-    tebench_device: str = "cpu"
-    tebench_n_boot: int = 1000
-    tebench_prompt_suite: str = "default"
-    tebench_image: str = ""
     architecture: str = ""  # Auto-detected
     model_size_gb: float = 0.0  # Auto-computed
 
@@ -110,10 +99,6 @@ class ComparisonConfig:
             vpath = _resolve_model_path(vdata["path"], comparison_dir)
             _validate_model_dir(vpath)
 
-            te_file: Path | None = None
-            if vdata.get("te_file"):
-                te_file = _resolve_model_path(vdata["te_file"], comparison_dir)
-
             variants.append(
                 VariantConfig(
                     name=key,
@@ -123,8 +108,6 @@ class ComparisonConfig:
                     skip_lm_eval=vdata.get("skip_lm_eval", False),
                     skip_harmbench=vdata.get("skip_harmbench", False),
                     skip_weight=vdata.get("skip_weight", False),
-                    skip_te=vdata.get("skip_te", False),
-                    te_file=te_file,
                 )
             )
 
@@ -154,43 +137,23 @@ class ComparisonConfig:
             variants=variants,
             gguf_dir=gguf_dir,
             tokenizer_dir=tokenizer_dir,
+            # Defaults mirror runners/_load_comparison.py (the runner is the
+            # source of truth — tests/test_config.py enforces the lockstep).
+            # Tasks: Open LLM Leaderboard v2 suite per AGENTS.md lesson #9
+            # (the legacy v1 loglikelihood tasks are deprecated). Budgets:
+            # AGENTS.md "Key defaults" table.
             lm_eval_tasks=settings.get(
                 "lm_eval_tasks",
-                "mmlu,gsm8k,hellaswag,arc_challenge,winogrande,truthfulqa,piqa,lambada_openai",
+                "leaderboard_mmlu_pro,leaderboard_gpqa_diamond,leaderboard_bbh,"
+                "leaderboard_musr,leaderboard_ifeval,gsm8k,truthfulqa",
             ),
             inference_backend=settings.get("inference_backend", "auto"),
-            lm_eval_max_gen_toks=settings.get("lm_eval_max_gen_toks", 2048),
-            lm_eval_max_model_len=settings.get("lm_eval_max_model_len", 8192),
+            lm_eval_max_gen_toks=settings.get("lm_eval_max_gen_toks", 4096),
+            lm_eval_max_model_len=settings.get("lm_eval_max_model_len", 16384),
             harmbench_max_tokens=settings.get("harmbench_max_tokens", 8096),
             kl_num_prompts=settings.get("kl_num_prompts", 100),
             kl_dataset=settings.get("kl_dataset", "mlabonne/harmless_alpaca"),
         )
-
-        # Parse tebench settings if present
-        tebench = settings.get("tebench")
-        if tebench:
-            obj.tebench_backend = tebench.get("backend", "")
-            obj.tebench_device = tebench.get("device", "cpu")
-            obj.tebench_n_boot = tebench.get("n_boot", 1000)
-            obj.tebench_prompt_suite = tebench.get("prompt_suite", "default")
-            obj.tebench_image = tebench.get("te_image", "")
-            for key, attr in (
-                ("base_te_file", "tebench_base_te_file"),
-                ("dit_file", "tebench_dit_file"),
-                ("comfyui_path", "tebench_comfyui_path"),
-            ):
-                raw = tebench.get(key)
-                if raw:
-                    p = Path(raw)
-                    if not p.is_absolute():
-                        p = comparison_dir / p
-                    setattr(obj, attr, p.resolve())
-            log.info(
-                "TE bench configured: backend=%s device=%s base=%s",
-                obj.tebench_backend,
-                obj.tebench_device,
-                obj.tebench_base_te_file,
-            )
 
         # Auto-detect architecture
         obj.architecture = _detect_architecture(base_path)
@@ -208,25 +171,6 @@ class ComparisonConfig:
 
     def weight_results_dir(self, base_results_dir: Path) -> Path:
         return self.results_dir(base_results_dir) / "weight"
-
-    def kl_results_dir(self, base_results_dir: Path) -> Path:
-        return self.results_dir(base_results_dir) / "kl"
-
-    def lm_eval_results_dir(self, base_results_dir: Path) -> Path:
-        return self.results_dir(base_results_dir) / "lm_eval"
-
-    def harmbench_results_dir(self, base_results_dir: Path) -> Path:
-        return self.results_dir(base_results_dir) / "harmbench"
-
-    def te_results_dir(self, base_results_dir: Path) -> Path:
-        return self.results_dir(base_results_dir) / "text_encoder"
-
-    def get_variant(self, name: str) -> VariantConfig:
-        """Get a variant config by name."""
-        for v in self.variants:
-            if v.name == name:
-                return v
-        raise KeyError(f"Variant not found: {name!r}")
 
 
 def _resolve_model_path(path_str: str, comparison_dir: Path) -> Path:
@@ -260,16 +204,16 @@ def _detect_architecture(model_path: Path) -> str:
     Priority: safetensors key scan > model_type from config.json
     """
     # First try: scan safetensors keys (most reliable)
-    try:
-        from safetensors import safe_open
+    from safetensors import SafetensorError, safe_open
 
+    try:
         has_language_model = False
         has_experts = False
         has_mamba = False
         has_gemma4 = False
 
         for f in sorted(model_path.glob("*.safetensors")):
-            with safe_open(str(f), framework="pt", device="cpu") as sf:  # type: ignore[no-untyped-call]
+            with safe_open(str(f), framework="pt", device="cpu") as sf:
                 keys = sf.keys()
             for k in keys:
                 if "language_model" in k:
@@ -291,8 +235,16 @@ def _detect_architecture(model_path: Path) -> str:
             return "glm"
         if has_mamba:
             return "qwen3.5"
-    except Exception:
-        pass  # Fall through to config.json detection
+    except (OSError, SafetensorError, ValueError) as exc:
+        # Corrupted shard or unreadable file: fall back to config.json
+        # detection, but log the real error so a genuine I/O problem is not
+        # indistinguishable from "no safetensors present".
+        log.debug(
+            "safetensors key scan failed for %s (%s: %s); using config.json model_type",
+            model_path,
+            type(exc).__name__,
+            exc,
+        )
 
     # Second try: config.json model_type
     config_file = model_path / "config.json"

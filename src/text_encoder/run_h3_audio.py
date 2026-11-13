@@ -200,7 +200,11 @@ def run_battery(
             continue
         entry = entries[c["label"]]
         script, targets = extract_script_targets(entry)
-        text = transcriber.transcribe(path)
+        try:
+            text = transcriber.transcribe(path)
+        except Exception as exc:  # noqa: BLE001 — one corrupt/undecodable clip must not kill a multi-hour battery
+            log.warning("transcribe failed for %s (%s) — skipping clip", path, exc)
+            continue
         ls = score_line(script, text, targets)
         per_clip.append(
             {

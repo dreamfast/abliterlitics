@@ -12,9 +12,9 @@ into images".
 
 Usage (container):
     python3 -m src.text_encoder.run_krea2_attention \
-        --dit /home/maxx/extra/comfyui-models/diffusion_models/redcraft22INT8INT4_2Krea2Edition.safetensors \
+        --dit /models/diffusion_models/redcraft22INT8INT4_2Krea2Edition.safetensors \
         --base /comp/models/te/qwen3vl_4b_base.safetensors \
-        --variants /home/maxx/extra/comfyui-models/text_encoders/qwen3-vl-4b-heretic.safetensors \
+        --variants /models/text_encoders/qwen3-vl-4b-heretic.safetensors \
         --variant-names heretic \
         --suite prompts/te_krea2_prompts.yaml --n-prompts 2 \
         --results-dir /comp/results/te-krea2/text_encoder

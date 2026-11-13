@@ -70,8 +70,6 @@ def run_analysis(
     MAX_GPU_ELEMENT_BYTES = 2 * 1024**3
 
     per_tensor: list[dict] = []
-    total_orig_energy_a = 0.0
-    total_orig_energy_b = 0.0
 
     shape_skipped = 0
     for i, ck in enumerate(all_keys):
@@ -110,11 +108,6 @@ def run_analysis(
             "edit_norm_a": norm_a,
             "edit_norm_b": norm_b,
         }
-
-        if norm_a > THRESHOLD:
-            total_orig_energy_a += norm_a**2
-        if norm_b > THRESHOLD:
-            total_orig_energy_b += norm_b**2
 
         if delta_a.dim() > 1 and norm_a > THRESHOLD:
             try:
@@ -179,6 +172,7 @@ def run_analysis(
             "variant_b": label_b,
             "ranks_tested": ranks,
             "total_tensors_analyzed": len(per_tensor),
+            "shape_skipped": shape_skipped,
             "per_tensor": per_tensor,
         }
     )

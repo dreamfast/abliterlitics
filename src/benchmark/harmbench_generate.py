@@ -33,7 +33,8 @@ log = logging.getLogger(__name__)
 # Last verified: 2025-04. Update only after manual review of changes.
 HARMBENCH_BEHAVIORS_CSV = (
     "https://raw.githubusercontent.com/centerforaisafety/HarmBench/"
-    "main/data/behavior_datasets/harmbench_behaviors_text_all.csv"
+    "9d0e87a7e6776614c546f2e3d4392635e6e0cf8a/"
+    "data/behavior_datasets/harmbench_behaviors_text_all.csv"
 )
 
 REFUSAL_SUBSTRINGS = [

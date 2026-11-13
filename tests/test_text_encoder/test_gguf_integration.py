@@ -51,14 +51,19 @@ class TestArtifactLabeling:
         assert art.dtype == "comfy_bf16"
         assert "gguf" not in art.meta
 
-    def test_fake_quant_beats_comfy_but_not_gguf(self) -> None:
+    def test_fake_quant_beats_comfy_and_gguf(self) -> None:
+        # unified precedence (shared dtype_label helper): fakequant describes
+        # this run's numerics and outranks storage provenance; gguf provenance
+        # stays in meta["gguf"] either way. Before the unification z_image
+        # ranked gguf first here while krea2 ranked fakequant first.
         b = ZImageBackend(comfyui_path="/nonexistent")
         b._te_fake_quant = "int8"
         art = b._make_artifact(Stage.RAW_HIDDEN, {"s": _stream()}, ["a", "b"], ["innocent", "innocent"])
         assert art.dtype == "fakequant_int8"
         b._gguf_meta = _meta()
         art2 = b._make_artifact(Stage.RAW_HIDDEN, {"s": _stream()}, ["a", "b"], ["innocent", "innocent"])
-        assert art2.dtype == "gguf_q4_k_m"
+        assert art2.dtype == "fakequant_int8"
+        assert art2.meta["gguf"]["quant_label"] == "q4_k_m"  # provenance preserved
 
 
 class TestJsonThreading:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
@@ -191,21 +192,14 @@ class TestComparisonConfigLoad:
         base = Path("/tmp/results")
         assert cfg.results_dir(base) == Path("/tmp/results/test-comp")
         assert cfg.weight_results_dir(base) == Path("/tmp/results/test-comp/weight")
-        assert cfg.kl_results_dir(base) == Path("/tmp/results/test-comp/kl")
-
-    def test_get_variant(self, tmp_comparison_dir):
-        cfg = ComparisonConfig.from_dir(tmp_comparison_dir)
-        v = cfg.get_variant("variant_a")
-        assert v.name == "variant_a"
-
-    def test_get_variant_missing_raises(self, tmp_comparison_dir):
-        cfg = ComparisonConfig.from_dir(tmp_comparison_dir)
-        with pytest.raises(KeyError, match="not_found"):
-            cfg.get_variant("not_found")
 
     def test_settings_defaults(self, tmp_comparison_dir):
         cfg = ComparisonConfig.from_dir(tmp_comparison_dir)
-        assert "mmlu" in cfg.lm_eval_tasks
+        # v2 default suite (AGENTS.md lesson #9) — mirrors the runner default
+        assert "leaderboard_mmlu_pro" in cfg.lm_eval_tasks
+        assert "gsm8k" in cfg.lm_eval_tasks
+        assert cfg.lm_eval_max_gen_toks == 4096
+        assert cfg.lm_eval_max_model_len == 16384
         assert cfg.kl_num_prompts == 100
         assert cfg.inference_backend == "auto"
 
@@ -302,3 +296,145 @@ class TestMakeMetadata:
         assert meta["variant"] == "variant_a"
         assert "timestamp" in meta
         assert "architecture" in meta
+
+
+# ---------------------------------------------------------------------------
+# Lockstep guards: config.py vs runners/_load_comparison.py vs schema
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _get_call_keys(source: str, receiver: str) -> dict[str, object]:
+    """Collect {key: literal_default} for ``<receiver>.get('key', default)`` calls.
+
+    Read-only AST parse — no import or execution of the parsed module.
+    Keys whose default argument is not a plain literal (variable, absent,
+    or complex expression) map to None.
+    """
+    tree = ast.parse(source)
+    defaults: dict[str, object] = {}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr != "get":
+            continue
+        recv = node.func.value
+        if not (isinstance(recv, ast.Name) and recv.id == receiver):
+            continue
+        if not node.args or not isinstance(node.args[0], ast.Constant):
+            continue
+        default = node.args[1].value if len(node.args) > 1 and isinstance(node.args[1], ast.Constant) else None
+        defaults[node.args[0].value] = default
+    return defaults
+
+
+def _loader_default_tasks(loader_source: str) -> str:
+    """Extract the default v2 task list built into ``default_tasks`` in the loader."""
+    tree = ast.parse(loader_source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "default_tasks" for t in node.targets
+        ):
+            joined = node.value
+            assert isinstance(joined, ast.Call), "loader default_tasks is no longer ','.join([...])"
+            parts = [elt.value for elt in joined.args[0].elts]  # type: ignore[attr-defined]
+            assert all(isinstance(p, str) for p in parts)
+            return ",".join(parts)  # type: ignore[arg-type]
+    raise AssertionError("default_tasks assignment not found in _load_comparison.py")
+
+
+class TestLoaderSchemaLockstep:
+    """AGENTS.md lesson #28a regression guards (audit .cache/audit/src-top.md).
+
+    runners/_load_comparison.py reads comparison.json settings/variant keys
+    that comparison.schema.json must declare: the schema has
+    additionalProperties: false, so an undeclared key makes
+    ComparisonConfig.from_dir raise ValidationError and every src/weight/*
+    script crash — the lesson-#28a failure signature. config.py duplicates a
+    subset of the loader's settings parsing; its keys and defaults must not
+    drift from the runner, which is the source of truth.
+    """
+
+    @staticmethod
+    def _loader_source() -> str:
+        return (REPO_ROOT / "runners" / "_load_comparison.py").read_text()
+
+    @staticmethod
+    def _config_source() -> str:
+        return (REPO_ROOT / "src" / "config.py").read_text()
+
+    @staticmethod
+    def _schema_settings_properties() -> set[str]:
+        return set(load_schema()["properties"]["settings"]["properties"])
+
+    @staticmethod
+    def _schema_variant_properties() -> set[str]:
+        variants = load_schema()["properties"]["variants"]
+        props: set[str] = set()
+        for pattern_node in variants.get("patternProperties", {}).values():
+            props |= set(pattern_node.get("properties", {}))
+        return props
+
+    def test_loader_settings_keys_declared_in_schema(self):
+        loader_keys = set(_get_call_keys(self._loader_source(), "settings"))
+        assert loader_keys, "parsing regression: no settings.get() calls found in loader"
+        missing = loader_keys - self._schema_settings_properties()
+        assert not missing, (
+            "lesson #28a: settings keys read by _load_comparison.py but missing "
+            f"from comparison.schema.json: {sorted(missing)}"
+        )
+
+    def test_loader_tebench_keys_declared_in_schema(self):
+        loader_keys = set(_get_call_keys(self._loader_source(), "tebench"))
+        assert loader_keys, "parsing regression: no tebench.get() calls found in loader"
+        schema_te = set(load_schema()["properties"]["settings"]["properties"]["tebench"]["properties"])
+        missing = loader_keys - schema_te
+        assert not missing, f"tebench keys read by _load_comparison.py but missing from schema: {sorted(missing)}"
+
+    def test_loader_variant_keys_declared_in_schema(self):
+        """Includes lora_adapter_path — the schema fix is landed upstream;
+        if this key regresses out of the schema the suite goes red here."""
+        loader_keys = set(_get_call_keys(self._loader_source(), "v"))
+        assert loader_keys, "parsing regression: no v.get() calls found in loader"
+        missing = loader_keys - self._schema_variant_properties()
+        assert not missing, (
+            "lesson #28a: variant keys read by _load_comparison.py but missing "
+            f"from comparison.schema.json: {sorted(missing)}"
+        )
+
+    def test_config_settings_keys_are_schema_declared_and_loader_read(self):
+        config_keys = set(_get_call_keys(self._config_source(), "settings"))
+        assert config_keys, "parsing regression: no settings.get() calls found in config.py"
+        # config.py validates parsed data against the schema: every key it
+        # reads must be schema-declared ...
+        missing_schema = config_keys - self._schema_settings_properties()
+        assert not missing_schema, f"config.py reads undeclared settings keys: {sorted(missing_schema)}"
+        # ... and must stay a subset of what the runner consumes, or the two
+        # loaders' defaults can silently diverge (dual-loader divergence).
+        loader_keys = set(_get_call_keys(self._loader_source(), "settings"))
+        extra = config_keys - loader_keys
+        assert not extra, f"config.py reads settings keys the loader ignores: {sorted(extra)}"
+
+    def test_config_defaults_match_loader_defaults(self):
+        loader_defs = _get_call_keys(self._loader_source(), "settings")
+        config_defs = _get_call_keys(self._config_source(), "settings")
+        shared = set(loader_defs) & set(config_defs)
+        # Keys whose defaults are not plain literals in both files (e.g. the
+        # loader's lm_eval_tasks default is built from a list literal) are
+        # compared in dedicated tests below.
+        literal_shared = {k for k in shared if loader_defs[k] is not None and config_defs[k] is not None}
+        mismatched = {
+            k: {"config.py": config_defs[k], "loader": loader_defs[k]}
+            for k in literal_shared
+            if config_defs[k] != loader_defs[k]
+        }
+        assert not mismatched, f"config.py defaults diverge from runner truth: {mismatched}"
+
+    def test_config_lm_eval_tasks_default_matches_loader_v2_suite(self):
+        config_defs = _get_call_keys(self._config_source(), "settings")
+        expected = _loader_default_tasks(self._loader_source())
+        assert config_defs["lm_eval_tasks"] == expected, (
+            "config.py lm_eval_tasks default diverges from the runner's v2 suite: "
+            f"config.py={config_defs['lm_eval_tasks']!r} loader={expected!r}"
+        )

@@ -37,9 +37,17 @@ log = logging.getLogger(__name__)
 _LAYER_RE = re.compile(r"^layer_(\d+)$")
 
 
-def _load_raw_hidden(cache_dir: Path) -> dict[str, dict[str, Any]]:
-    """Index cached raw_hidden payloads by ckpt_id (last write wins)."""
-    by_ckpt: dict[str, dict[str, Any]] = {}
+def _load_raw_hidden(cache_dir: Path) -> dict[tuple[str, str, str], dict[str, Any]]:
+    """Index cached raw_hidden payloads by (ckpt_id, transform, device).
+
+    run_analysis writes raw_hidden for the SAME ckpt_id under several
+    transforms ("orig" plus the "fakequant_int8" noise floor it builds by
+    default) and potentially multiple devices into one cache dir. The old
+    last-write-wins ckpt_id index let a directional pair silently resolve to
+    the fake-quantized base payload — index the full key instead and let
+    ``_resolve_payload`` pick the entry explicitly.
+    """
+    by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
     for f in sorted(cache_dir.glob("*.pt")):
         try:
             payload = torch.load(f, weights_only=False, map_location="cpu")
@@ -48,8 +56,54 @@ def _load_raw_hidden(cache_dir: Path) -> dict[str, dict[str, Any]]:
             continue
         if payload.get("stage") != "raw_hidden":
             continue
-        by_ckpt[payload["ckpt_id"]] = payload
-    return by_ckpt
+        meta = payload.get("meta") or {}
+        by_key[(str(payload["ckpt_id"]), str(meta.get("transform", "orig")), str(payload.get("device", "")))] = payload
+    return by_key
+
+
+def _resolve_payload(
+    index: dict[tuple[str, str, str], dict[str, Any]],
+    ckpt_id: str,
+    transform: str = "orig",
+) -> dict[str, Any] | None:
+    """Pick the cache payload for ``ckpt_id``, preferring the orig transform.
+
+    Non-matching transforms (quant noise floors) and duplicate device entries
+    are dropped with a warning; picks are deterministic (sha-sorted filenames
+    upstream + sorted keys here).
+    """
+    matches = sorted((k, v) for k, v in index.items() if k[0] == ckpt_id)
+    if not matches:
+        return None
+    wanted = [(k, v) for k, v in matches if k[1] == transform]
+    if wanted:
+        if len(wanted) < len(matches):
+            dropped = sorted({k[1] for k, _ in matches if k[1] != transform})
+            log.warning(
+                "ckpt %s: ignoring cached transform(s) %s — using %r",
+                Path(ckpt_id).name,
+                dropped,
+                transform,
+            )
+        matches = wanted
+    else:
+        available = sorted({k[1] for k, _ in matches})
+        log.warning(
+            "ckpt %s: no %r-transform cache entry — falling back to %s",
+            Path(ckpt_id).name,
+            transform,
+            available,
+        )
+    if len(matches) > 1:
+        devices = sorted({k[2] for k, _ in matches})
+        log.warning(
+            "ckpt %s: transform %r cached on multiple devices %s — using %r",
+            Path(ckpt_id).name,
+            matches[0][0][1],
+            devices,
+            matches[0][0][2],
+        )
+    return matches[0][1]
 
 
 def run_pair(
@@ -121,8 +175,7 @@ def report_to_json(report: DirectionalReport, variant_name: str, n_perm: int) ->
     }
 
 
-def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Directional analysis from cached TE activations")
     p.add_argument("--cache-dir", required=True)
     p.add_argument("--results-dir", required=True)
@@ -137,7 +190,12 @@ def main() -> None:
         help="variant_display_name=variant_ckpt_id:reference_ckpt_id entries",
     )
     p.add_argument("--n-perm", type=int, default=200)
-    args = p.parse_args()
+    return p.parse_args(argv)
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
+    args = parse_args()
 
     cache = _load_raw_hidden(Path(args.cache_dir))
     log.info("Indexed %d raw_hidden artifacts in cache", len(cache))
@@ -148,8 +206,8 @@ def main() -> None:
     for pair in args.pairs:
         name, _, spec = pair.partition("=")
         var_id, _, ref_id = spec.partition(":")
-        var_payload = cache.get(var_id)
-        ref_payload = cache.get(ref_id)
+        var_payload = _resolve_payload(cache, var_id)
+        ref_payload = _resolve_payload(cache, ref_id)
         if var_payload is None or ref_payload is None:
             log.warning("Pair %s: cache miss (var=%s ref=%s) — skipping", name, var_id[-40:], ref_id[-40:])
             continue

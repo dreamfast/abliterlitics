@@ -14,8 +14,11 @@ Per-clip signals over uniformly sampled frames (FRAME_K):
     reading (same-scene subtraction isolates taboo content)
   - lpips_vs_base: mean frame-LPIPS to the BASE arm's same (label, seed)
 
-Ethics: videos stay LOCAL under the manifest's out-dir; consumers embed
-metrics only. The caller deletes the video directory after this scorer runs.
+Ethics: videos stay LOCAL under the manifest's out-dir and are RETAINED
+(nothing deletes them automatically); consumers embed metrics only. The
+output is a manual-analysis artifact (no programmatic consumer reads
+tebench_taboo_video.json; the tebench_ namespace keeps the DB importer
+away).
 
 Output: tebench_taboo_video.json (tebench_ namespace — importer glob safety).
 

@@ -149,6 +149,60 @@ def _round_to_fp8(x: torch.Tensor) -> torch.Tensor:
     return result
 
 
+def _pack_sequences(
+    seqs: list[torch.Tensor],
+    dim: int,
+    masks: list[torch.Tensor] | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Right-pad variable-length [L_i, dim] sequences into [n, max_len, dim].
+
+    One implementation of the pack step every backend's ``encode`` repeats:
+    activations are zero-filled past each sequence's real length; the mask
+    is [n, max_len] int with 1 = real position. When ``masks`` is supplied
+    (e.g. text-vs-pad or backend-applied cap-pad positions), mask row j
+    takes ``masks[j]`` values and is itself right-padded with 0.
+    """
+    n = len(seqs)
+    if n == 0:
+        raise ValueError("_pack_sequences: no sequences to pack")
+    max_len = max(s.shape[0] for s in seqs)
+    acts = torch.zeros(n, max_len, dim)
+    mask = torch.zeros(n, max_len, dtype=torch.int)
+    for j, s in enumerate(seqs):
+        acts[j, : s.shape[0]] = s
+        if masks is not None:
+            mask[j, : masks[j].shape[0]] = masks[j]
+        else:
+            mask[j, : s.shape[0]] = 1
+    return acts, mask
+
+
+def dtype_label(
+    fake_quant: str | None,
+    gguf_quant_label: str | None,
+    comfy_quantized: bool,
+    comfy_quant_label: str = "comfy_int8_convrot",
+) -> str:
+    """Canonical artifact dtype label — ONE precedence for all backends.
+
+    ``fakequant_<q>`` > ``gguf_<q>`` > ``<comfy_quant_label>`` > ``comfy_bf16``
+
+    fakequant outranks gguf because it describes the numerics actually
+    applied to the loaded weights this run; the GGUF provenance is not
+    lost either way (meta["gguf"] carries it). Before this helper,
+    z_image ranked gguf above fakequant while krea2 ranked fakequant
+    above gguf — a fake-quantized GGUF arm would have been labeled
+    differently per backend (audit te-backends.md, Bugs #2).
+    """
+    if fake_quant:
+        return f"fakequant_{fake_quant}"
+    if gguf_quant_label:
+        return f"gguf_{gguf_quant_label}"
+    if comfy_quantized:
+        return comfy_quant_label
+    return "comfy_bf16"
+
+
 class BaseBackend(ABC):
     """Abstract base class for text-encoder backends.
 
@@ -212,6 +266,16 @@ class BaseBackend(ABC):
             Dict with at least 'input_ids' key.
         """
         ...
+
+    def apply_fake_quant(self, quant_type: str = "int8") -> None:
+        """Fake-quantize the loaded backbone weights (noise-floor reference).
+
+        Optional capability: z_image/h3/krea2 override; ltx2 (no fake-quant
+        arms) inherits this stub. Declared concretely (not abstract) so
+        callers can invoke it through the BaseBackend type without a
+        ``# type: ignore[attr-defined]``.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support fake quantization")
 
     def close(self) -> None:  # noqa: B027
         """Release model resources. Override if cleanup is needed."""

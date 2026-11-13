@@ -22,11 +22,6 @@ import torch
 log = logging.getLogger(__name__)
 
 
-def _per_prompt_mse(base: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
-    """Mean squared error per prompt between [n, L, d] tensors -> [n]."""
-    return ((base - other) ** 2).mean(dim=(1, 2))
-
-
 def _match_mse(delta: torch.Tensor, target_mse: torch.Tensor) -> torch.Tensor:
     """Scale per-prompt deltas so each prompt's MSE equals its target.
 
@@ -186,8 +181,3 @@ def per_prompt_delta_norm(delta: torch.Tensor) -> torch.Tensor:
     """Mean per-token L2 norm of a delta [n, L, d] per prompt -> [n]."""
     norms: torch.Tensor = delta.norm(dim=-1).mean(dim=-1)
     return norms
-
-
-def per_prompt_delta_mse(base: torch.Tensor, variant: torch.Tensor) -> torch.Tensor:
-    """Per-prompt MSE of a real variant delta (dose reference for matching)."""
-    return _per_prompt_mse(base.float(), variant.float())

@@ -91,6 +91,37 @@ class TestFingerprintModel:
 
         assert fingerprint_model(multi_dir).sha256 == fp_single.sha256
 
+    def test_nonalphabetical_reshard_sha256_invariant(self, tmp_path):
+        # A re-shard that groups keys NON-alphabetically (e.g. alternating keys
+        # spanning the whole alphabet) must NOT change the fingerprint: the
+        # digest folds (key, hash) pairs sorted by key, so shard iteration order
+        # cannot leak into it.
+        single = create_mock_model(tmp_path / "single", arch="qwen3", seed=42)
+        fp_single = fingerprint_model(single)
+
+        from src.model_config import build_shard_map, detect_architecture, load_tensor
+
+        cfg = detect_architecture(str(single))
+        smap = build_shard_map(str(single), cfg)
+        keys = sorted(smap)
+        shard1_keys = keys[::2]  # interleaved: spans the whole alphabet
+        shard1_set = set(shard1_keys)
+        shard2_keys = [k for k in keys if k not in shard1_set]
+
+        multi_dir = tmp_path / "multi_nonalphabetical"
+        multi_dir.mkdir()
+        save_file(
+            {ck: load_tensor(smap, ck) for ck in shard1_keys},
+            str(multi_dir / "model-00001-of-00002.safetensors"),
+        )
+        save_file(
+            {ck: load_tensor(smap, ck) for ck in shard2_keys},
+            str(multi_dir / "model-00002-of-00002.safetensors"),
+        )
+        (multi_dir / "config.json").write_text((single / "config.json").read_text())
+
+        assert fingerprint_model(multi_dir).sha256 == fp_single.sha256
+
     def test_raises_when_no_safetensors(self, tmp_path):
         empty = tmp_path / "empty"
         empty.mkdir()

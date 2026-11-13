@@ -31,6 +31,7 @@ from typing import Any
 import torch
 
 from src.text_encoder import TE_RESULTS_VERSION
+from src.text_encoder._cli import add_cache_dir, add_device, add_results_dir
 from src.text_encoder.attention_capture import AttentionCapture
 from src.text_encoder.attention_metrics import summarize_readout
 
@@ -43,9 +44,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--variants", required=True, help="Comma-separated variant TE files")
     p.add_argument("--variant-names", default="", help="Comma-separated display names (default: filenames)")
     p.add_argument("--dit", required=True)
-    p.add_argument("--cache-dir", default="/te_cache")
-    p.add_argument("--results-dir", default="/results")
-    p.add_argument("--device", default="cuda")
+    add_cache_dir(p, default="/te_cache")
+    add_results_dir(p, default="/results")
+    add_device(p, default="cuda")
+    p.add_argument(
+        "--cache-device",
+        default="cpu",
+        help="Device key the forensics cache was written with (analysis runners cache on cpu). "
+        "Defaults to cpu — the runtime --device is NOT the cache key.",
+    )
     p.add_argument("--n-steps", type=int, default=20)
     p.add_argument(
         "--n-prompts",
@@ -141,7 +148,7 @@ def main() -> int:
     cache_dir = Path(args.cache_dir)
     ctx_scope = f"zimage:{Path(args.dit).name}"
     base_ctxs = _load_consumed_from_cache(
-        cache_dir, args.base, args.device, ctx_scope, prompts, categories, suite_path=args.suite
+        cache_dir, args.base, args.cache_device, ctx_scope, prompts, categories, suite_path=args.suite
     )
 
     log.info("Loading Z-Image DiT: %s", Path(args.dit).name)
@@ -178,7 +185,7 @@ def main() -> int:
 
     for vfile, vname in zip(variant_files, names, strict=True):
         var_ctxs = _load_consumed_from_cache(
-            cache_dir, vfile, args.device, ctx_scope, prompts, categories, suite_path=args.suite
+            cache_dir, vfile, args.cache_device, ctx_scope, prompts, categories, suite_path=args.suite
         )
         per_prompt_metrics: list[dict[str, Any]] = []
         token_strings = _token_strings(True, prompts)

@@ -69,7 +69,9 @@ def pool_last(activations: torch.Tensor, mask: torch.Tensor | None) -> torch.Ten
         mask: [n, L] int tensor. None = last position is last token.
 
     Returns:
-        [n, d] tensor of the last real token per prompt.
+        [n, d] tensor of the last real token per prompt. Rows whose mask is
+        all-zero (all-pad prompt) have NO real token — they return NaN rather
+        than silently yielding the pad-position vector.
     """
     if mask is None:
         return activations[:, -1, :]
@@ -78,7 +80,12 @@ def pool_last(activations: torch.Tensor, mask: torch.Tensor | None) -> torch.Ten
     lengths = mask.sum(dim=1)  # [n]
     # Index into activations using gathered indices
     idx = (lengths - 1).clamp(min=0).long()  # [n]
-    return activations[torch.arange(activations.shape[0]), idx]
+    out = activations[torch.arange(activations.shape[0]), idx]  # [n, d] (advanced indexing -> copy)
+    empty = lengths == 0
+    if bool(empty.any()):
+        log.warning("pool_last: %d all-pad row(s) — no real token; NaN returned for those rows", int(empty.sum()))
+        out[empty] = float("nan")
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -276,22 +283,6 @@ def cosine_last_token(x: torch.Tensor, y: torch.Tensor, mask: torch.Tensor | Non
     return float(cos.mean().item())
 
 
-def l2_distance(x: torch.Tensor, y: torch.Tensor) -> float:
-    """Mean L2 distance per element.
-
-    Args:
-        x: [n, L, d] or [n, d] float32 tensor.
-        y: same shape as x.
-
-    Returns:
-        sqrt(mean(||x - y||^2)) — the RMS distance.
-    """
-    if x.shape != y.shape:
-        raise ValueError(f"l2_distance requires same shape: x={tuple(x.shape)}, y={tuple(y.shape)}")
-    mse_val = ((x - y) ** 2).mean()
-    return float(torch.sqrt(mse_val).item())
-
-
 def mse(x: torch.Tensor, y: torch.Tensor) -> float:
     """Mean squared error per element.
 
@@ -390,38 +381,3 @@ def _pearson(x: torch.Tensor, y: torch.Tensor) -> float:
     if denom < 1e-15:
         return 0.0
     return float(((x_centered * y_centered).sum() / denom).clamp(-1.0, 1.0).item())
-
-
-def per_dim_drift(
-    x: torch.Tensor,
-    y: torch.Tensor,
-    base_var: torch.Tensor | None = None,
-    epsilon: float = 1e-10,
-) -> torch.Tensor:
-    """Per-dimension drift profile (diagnostic).
-
-    For each latent dimension, computes the variance of (X - Y) across prompts.
-    If base_var is provided, normalizes to a relative drift (drift / base variance).
-
-    Args:
-        x: [n, d] float32 tensor (pooled, one row per prompt).
-        y: [n, d] float32 tensor (same shape as x).
-        base_var: [d] float32 tensor of per-dim variance in the base model.
-                  If None, returns absolute drift. If provided, returns relative
-                  drift (drift / max(base_var, epsilon)).
-        epsilon: minimum value for base_var to avoid division by near-zero.
-
-    Returns:
-        [d] float32 tensor of per-dimension drift.
-    """
-    if x.shape != y.shape:
-        raise ValueError(f"per_dim_drift requires same shape: x={tuple(x.shape)}, y={tuple(y.shape)}")
-    if x.shape[0] < 2:
-        raise ValueError(f"per_dim_drift requires n >= 2, got n={x.shape[0]}")
-    diff = x - y
-    drift = diff.var(dim=0)  # [d] variance of differences per dim
-    if base_var is not None:
-        if base_var.shape[0] != drift.shape[0]:
-            raise ValueError(f"base_var dim ({base_var.shape[0]}) != activations dim ({drift.shape[0]})")
-        drift = drift / base_var.clamp(min=epsilon)
-    return drift

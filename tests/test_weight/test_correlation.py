@@ -49,3 +49,36 @@ class TestProjectOut:
         direction = torch.zeros(2)
         residual = project_out(vec, direction)
         assert (residual - vec.float()).abs().max().item() < 1e-6
+
+
+class TestCorrelationRunAnalysis:
+    """Lesson #79 observability: emitted shape_skipped (counted via skeleton)."""
+
+    def test_emits_shape_skipped(self, tmp_path):
+        import json
+
+        from src.weight.technique_correlation import run_analysis
+        from tests.conftest import create_mock_model
+        from tests.test_weight._arch_extending import make_arch_extending_variant
+
+        base_dir = create_mock_model(tmp_path / "base", arch="qwen3", seed=42)
+        var_a = create_mock_model(tmp_path / "va", arch="qwen3", seed=43)
+        var_b_ext = make_arch_extending_variant(
+            create_mock_model(tmp_path / "vb", arch="qwen3", seed=44),
+            tmp_path / "vb_ext",
+            "model.layers.0.mlp.gate_proj.weight",
+        )
+        output = tmp_path / "correlation.json"
+
+        run_analysis(
+            base_path=str(base_dir),
+            variant_a_path=str(var_a),
+            variant_b_path=str(var_b_ext),
+            label_a="a",
+            label_b="b",
+            output_path=str(output),
+        )
+
+        data = json.loads(output.read_text())
+        assert data["shape_skipped"] == 1
+        assert data["total_keys"] == len(data["per_key_details"]) + 1

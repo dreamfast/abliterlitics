@@ -46,9 +46,7 @@ _VIEW_RE = re.compile(r"CREATE VIEW IF NOT EXISTS (\w+) AS")
 
 def _migrate_table(conn: sqlite3.Connection, table: str, dry_run: bool) -> int:
     """Rewrite legacy verdict values in one table. Returns rows changed."""
-    rows = conn.execute(
-        f"SELECT rowid, verdict FROM {table} WHERE verdict IN ('complied', 'refused')"
-    ).fetchall()
+    rows = conn.execute(f"SELECT rowid, verdict FROM {table} WHERE verdict IN ('complied', 'refused')").fetchall()
     for rowid, verdict in rows:
         new = _VERDICT_MAP[verdict]
         if not dry_run:

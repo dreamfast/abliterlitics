@@ -41,3 +41,40 @@ class TestSVDForRanks:
         delta = torch.randn(100, 50)
         U, S, Vh = _svd_for_ranks(delta, ranks=[1, 2, 5])
         assert S.shape[0] >= 5  # at least max_rank singular values
+
+
+class TestLowrankRunAnalysis:
+    """Audit deletions + emission: no total_orig_energy_*, shape_skipped emitted."""
+
+    def test_report_has_no_orig_energy_and_emits_shape_skipped(self, tmp_path):
+        import json
+
+        from src.weight.lowrank_reconstruction import run_analysis
+        from tests.conftest import create_mock_model
+        from tests.test_weight._arch_extending import make_arch_extending_variant
+
+        base_dir = create_mock_model(tmp_path / "base", arch="qwen3", seed=42)
+        var_a = create_mock_model(tmp_path / "va", arch="qwen3", seed=43)
+        var_b_ext = make_arch_extending_variant(
+            create_mock_model(tmp_path / "vb", arch="qwen3", seed=44),
+            tmp_path / "vb_ext",
+            "model.layers.0.mlp.gate_proj.weight",
+        )
+        output = tmp_path / "lowrank.json"
+
+        run_analysis(
+            base_path=str(base_dir),
+            variant_a_path=str(var_a),
+            variant_b_path=str(var_b_ext),
+            label_a="a",
+            label_b="b",
+            output_path=str(output),
+            ranks=[1, 2],
+        )
+
+        text = output.read_text()
+        data = json.loads(text)
+        assert "total_orig_energy_a" not in text
+        assert "total_orig_energy_b" not in text
+        assert data["shape_skipped"] == 1
+        assert data["ranks_tested"] == [1, 2]
