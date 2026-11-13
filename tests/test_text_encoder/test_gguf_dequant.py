@@ -9,6 +9,7 @@ directory is absent.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,7 @@ import torch
 
 from src.text_encoder.backends import gguf_dequant as gd
 
-GGUF_DIR = Path("/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b/gguf")
+GGUF_DIR = Path(os.environ["TE_TEST_GGUF_DIR"]) if os.environ.get("TE_TEST_GGUF_DIR") else None
 
 gguf = pytest.importorskip("gguf", reason="gguf package not installed")
 quants = pytest.importorskip("gguf.quants", reason="gguf.quants not available")
@@ -96,7 +97,7 @@ def _real_tensor(file_name: str, tensor_name: str):  # type: ignore[no-untyped-d
     raise AssertionError(f"{tensor_name} not found in {file_name}")
 
 
-@pytest.mark.skipif(not GGUF_DIR.exists(), reason="qwen3-4b GGUF files not on this host")
+@pytest.mark.skipif(GGUF_DIR is None or not GGUF_DIR.exists(), reason="TE_TEST_GGUF_DIR not set or dir absent")
 class TestGoldenAgainstNumpyReference:
     """Vendored torch dequant must reproduce gguf's numpy reference bit-exactly."""
 

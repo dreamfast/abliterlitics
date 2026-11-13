@@ -10,6 +10,7 @@ f16 container and key-set equality with the safetensors base.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -28,8 +29,8 @@ from src.text_encoder.backends.gguf_loader import (  # noqa: E402
     sd_map_replace,
 )
 
-GGUF_DIR = Path("/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b/gguf")
-ST_BASE = Path("/home/maxx/extra/comfyui-models/text_encoders/qwen3-4b/qwen_3_4b.safetensors")
+GGUF_DIR = Path(os.environ["TE_TEST_GGUF_DIR"]) if os.environ.get("TE_TEST_GGUF_DIR") else None
+ST_BASE = Path(os.environ["TE_TEST_ST_BASE"]) if os.environ.get("TE_TEST_ST_BASE") else None
 
 N_LAYERS = 2
 HIDDEN = 8
@@ -312,8 +313,8 @@ class TestSyntheticLoader:
         assert meta.n_tensors == N_LAYERS * 11 + 2
 
 
-@pytest.mark.skipif(not GGUF_DIR.exists(), reason="qwen3-4b GGUF files not on this host")
-@pytest.mark.skipif(not ST_BASE.exists(), reason="safetensors base not on this host")
+@pytest.mark.skipif(GGUF_DIR is None or not GGUF_DIR.exists(), reason="TE_TEST_GGUF_DIR not set or dir absent")
+@pytest.mark.skipif(ST_BASE is None or not ST_BASE.exists(), reason="TE_TEST_ST_BASE not set or file absent")
 class TestRealFileIntegration:
     def test_f16_container_identity(self) -> None:
         """The f16 GGUF must reproduce the bf16 safetensors base bit-exactly."""

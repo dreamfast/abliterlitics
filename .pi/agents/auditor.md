@@ -24,7 +24,7 @@ You audit ONE assigned area of the codebase and produce a structured report. You
 4. **Lint/type debt**: run `ruff check <area>` and `mypy <area>` yourself and include ACTUAL counts + the meaningful violations (not the full dump). Note per-file-ignores that mask real issues.
 5. **Test coverage**: run `python3 -m pytest tests/test_<area>/ -q --cov=<area> --cov-report=term` (MPLCONFIGDIR=/tmp/mpl) and report per-file coverage; list the highest-value UNTESTED paths (public entry points, error branches) — not every line.
 6. **Refactor opportunities**: concrete, ranked by value/effort. Respect FROZEN code (src/kl/kl_divergence.py compute path — never propose changes there; CLI/logging/metadata only).
-7. **GitHub-readiness blockers** (if in scope): secrets/tokens/keys, absolute paths (/home/maxx), internal hostnames/URLs/IPs, scratch-file references, TODO/FIXME with sensitive context.
+7. **GitHub-readiness blockers** (if in scope): secrets/tokens/keys, absolute user-home paths, internal hostnames/URLs/IPs, scratch-file references, TODO/FIXME with sensitive context.
 
 ## Hard rules
 
